@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from datetime import date
 from pathlib import Path
 
 import pandas as pd
@@ -378,6 +379,21 @@ def test_page_to_table_filters_by_updated_after() -> None:
         scientific_name="",
         min_confidence=0.0,
         updated_after="2026-03-24",
+    )
+
+    assert len(rows) == 1
+    assert rows[0][0] == "dkey_01"
+
+
+def test_page_to_table_filters_by_updated_after_date_object() -> None:
+    rows, _, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        updated_after=date(2026, 3, 24),
     )
 
     assert len(rows) == 1

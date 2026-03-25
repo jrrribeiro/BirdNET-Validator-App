@@ -1,6 +1,6 @@
 import gradio as gr
 import tempfile
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -105,7 +105,7 @@ def _page_to_table(
     min_confidence: float,
     validator_filter: str = "",
     status_filter: str = "all",
-    updated_after: str = "",
+    updated_after: object = None,
     conflict_detection_key: str = "",
     show_conflicts_only: bool = False,
 ):
@@ -122,7 +122,24 @@ def _page_to_table(
 
     normalized_status_filter = status_filter.strip().lower() if status_filter else "all"
     normalized_validator_filter = validator_filter.strip().lower()
-    updated_after_date = updated_after.strip()
+    updated_after_date: date | None = None
+    if updated_after is not None:
+        if isinstance(updated_after, datetime):
+            updated_after_date = updated_after.date()
+        elif isinstance(updated_after, date):
+            updated_after_date = updated_after
+        elif isinstance(updated_after, (int, float)):
+            updated_after_date = datetime.fromtimestamp(float(updated_after)).date()
+        else:
+            updated_after_text = str(updated_after).strip()
+            if updated_after_text:
+                try:
+                    updated_after_date = datetime.strptime(updated_after_text, "%Y-%m-%d").date()
+                except ValueError:
+                    try:
+                        updated_after_date = datetime.fromisoformat(updated_after_text.replace("Z", "+00:00")).date()
+                    except ValueError:
+                        updated_after_date = None
 
     rows = [
         [
@@ -151,23 +168,19 @@ def _page_to_table(
         rows = [row for row in rows if str(row[6]).strip().lower() == normalized_status_filter]
 
     if updated_after_date:
-        try:
-            cutoff_date = datetime.strptime(updated_after_date, "%Y-%m-%d").date()
-            filtered_rows: list[list[object]] = []
-            for row in rows:
-                snapshot_item = snapshot.get(str(row[0]), {})
-                updated_at_value = str(snapshot_item.get("updated_at", "")).strip()
-                if not updated_at_value:
-                    continue
-                try:
-                    item_date = datetime.fromisoformat(updated_at_value.replace("Z", "+00:00")).date()
-                    if item_date >= cutoff_date:
-                        filtered_rows.append(row)
-                except ValueError:
-                    continue
-            rows = filtered_rows
-        except ValueError:
-            pass
+        filtered_rows: list[list[object]] = []
+        for row in rows:
+            snapshot_item = snapshot.get(str(row[0]), {})
+            updated_at_value = str(snapshot_item.get("updated_at", "")).strip()
+            if not updated_at_value:
+                continue
+            try:
+                item_date = datetime.fromisoformat(updated_at_value.replace("Z", "+00:00")).date()
+                if item_date >= updated_after_date:
+                    filtered_rows.append(row)
+            except ValueError:
+                continue
+        rows = filtered_rows
 
     if show_conflicts_only:
         rows = [row for row in rows if str(row[8]) == "CONFLICT"]
@@ -359,7 +372,7 @@ def _save_selected_validation_with_refresh(
     min_confidence: float,
     validator_filter: str,
     status_filter: str,
-    updated_after: str,
+    updated_after: object,
     show_conflicts_only: bool,
 ) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
     selected_key = ""
@@ -451,7 +464,7 @@ def _reapply_last_conflict_validation_with_refresh(
     min_confidence: float,
     validator_filter: str,
     status_filter: str,
-    updated_after: str,
+    updated_after: object,
     show_conflicts_only: bool,
 ) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
     if not pending_status_value:
@@ -517,7 +530,7 @@ def _batch_validate_conflicts(
     min_confidence: float,
     validator_filter: str,
     status_filter: str,
-    updated_after: str,
+    updated_after: object,
 ) -> tuple[str, str, str | None, list[list[object]], int]:
     """Apply the same validation status to all visible conflicts in the table."""
     validator_name = validator.strip()
@@ -597,7 +610,7 @@ def _batch_reapply_all_pending(
     min_confidence: float,
     validator_filter: str,
     status_filter: str,
-    updated_after: str,
+    updated_after: object,
 ) -> tuple[str, str, str | None, list[list[object]], int]:
     """Reapply all pending validations (stored conflicts) with current version."""
     if not pending_statuses:
@@ -678,7 +691,7 @@ def create_app() -> gr.Blocks:
                 choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
                 value="all",
             )
-            updated_after_filter = gr.Textbox(label="Atualizado a partir de (YYYY-MM-DD)", placeholder="Ex: 2026-03-25")
+            updated_after_filter = gr.DateTime(label="Atualizado a partir de", include_time=False, type="string")
 
         with gr.Row():
             prev_btn = gr.Button("Pagina anterior")
@@ -767,7 +780,7 @@ def create_app() -> gr.Blocks:
             confidence: float,
             validator_filter_value: str,
             status_filter_value: str,
-            updated_after_value: str,
+            updated_after_value: object,
             only_conflicts: bool,
         ):
             return _page_to_table(
@@ -789,7 +802,7 @@ def create_app() -> gr.Blocks:
             confidence: float,
             validator_filter_value: str,
             status_filter_value: str,
-            updated_after_value: str,
+            updated_after_value: object,
             only_conflicts: bool,
         ):
             return refresh(
@@ -808,7 +821,7 @@ def create_app() -> gr.Blocks:
             confidence: float,
             validator_filter_value: str,
             status_filter_value: str,
-            updated_after_value: str,
+            updated_after_value: object,
             only_conflicts: bool,
         ):
             return refresh(
