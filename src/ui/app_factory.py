@@ -513,6 +513,35 @@ def create_app() -> gr.Blocks:
         status = gr.Textbox(label="Status", interactive=False)
         report_box = gr.Textbox(label="Relatorio", interactive=False)
 
+        # Keyboard shortcuts: 1=positive, 2=negative, 3=uncertain, 4=skip, R=reapply
+        keyboard_shortcuts_info = gr.HTML(
+            value="<div style='font-size: 12px; color: #666; padding: 8px; background-color: #f5f5f5; border-radius: 4px; margin-bottom: 10px;'>"
+            "<strong>Atalhos de teclado:</strong> 1=Positivo | 2=Negativo | 3=Indeterminado | 4=Pular | R=Reaplicar"
+            "</div>"
+            "<script>"
+            "document.addEventListener('keydown', function(event) {"
+            "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
+            "  const key = event.key.toLowerCase();"
+            "  let buttonText = null;"
+            "  if (key === '1') buttonText = 'Validar positivo';"
+            "  else if (key === '2') buttonText = 'Validar negativo';"
+            "  else if (key === '3') buttonText = 'Indeterminado';"
+            "  else if (key === '4') buttonText = 'Pular';"
+            "  else if (key === 'r') buttonText = 'Reaplicar validacao apos conflito';"
+            "  if (buttonText) {"
+            "    event.preventDefault();"
+            "    const buttons = document.querySelectorAll('button');"
+            "    for (const btn of buttons) {"
+            "      if (btn.textContent.includes(buttonText)) {"
+            "        btn.click();"
+            "        break;"
+            "      }"
+            "    }"
+            "  }"
+            "});"
+            "</script>"
+        )
+
         def refresh(page: int, species: str, confidence: float, only_conflicts: bool):
             return _page_to_table(
                 service=service,

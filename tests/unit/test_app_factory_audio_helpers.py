@@ -14,6 +14,7 @@ from src.ui.app_factory import (
     _save_selected_validation,
     _save_selected_validation_with_refresh,
     _reapply_last_conflict_validation_with_refresh,
+    create_app,
 )
 
 
@@ -454,3 +455,12 @@ def test_reapply_last_conflict_without_pending_status() -> None:
     assert "Nenhuma validacao pendente" in status
     assert pending_status == ""
     assert conflict_key == ""
+
+
+def test_create_app_with_keyboard_shortcuts() -> None:
+    """Test that create_app successfully creates the UI with keyboard shortcuts enabled."""
+    app = create_app()
+    assert app is not None
+    # Verify the app is a Gradio Blocks instance
+    assert hasattr(app, "queue")
+    assert hasattr(app, "launch")
