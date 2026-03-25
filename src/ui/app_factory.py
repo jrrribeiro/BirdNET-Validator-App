@@ -1,5 +1,6 @@
 import gradio as gr
 import tempfile
+from datetime import datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -102,6 +103,9 @@ def _page_to_table(
     page: int,
     scientific_name: str,
     min_confidence: float,
+    validator_filter: str = "",
+    status_filter: str = "all",
+    updated_after: str = "",
     conflict_detection_key: str = "",
     show_conflicts_only: bool = False,
 ):
@@ -115,6 +119,10 @@ def _page_to_table(
     )
 
     snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
+
+    normalized_status_filter = status_filter.strip().lower() if status_filter else "all"
+    normalized_validator_filter = validator_filter.strip().lower()
+    updated_after_date = updated_after.strip()
 
     rows = [
         [
@@ -132,10 +140,39 @@ def _page_to_table(
         for item in page_obj.items
     ]
 
+    if normalized_validator_filter:
+        rows = [
+            row
+            for row in rows
+            if normalized_validator_filter in str(snapshot.get(str(row[0]), {}).get("validator", "")).strip().lower()
+        ]
+
+    if normalized_status_filter and normalized_status_filter != "all":
+        rows = [row for row in rows if str(row[6]).strip().lower() == normalized_status_filter]
+
+    if updated_after_date:
+        try:
+            cutoff_date = datetime.strptime(updated_after_date, "%Y-%m-%d").date()
+            filtered_rows: list[list[object]] = []
+            for row in rows:
+                snapshot_item = snapshot.get(str(row[0]), {})
+                updated_at_value = str(snapshot_item.get("updated_at", "")).strip()
+                if not updated_at_value:
+                    continue
+                try:
+                    item_date = datetime.fromisoformat(updated_at_value.replace("Z", "+00:00")).date()
+                    if item_date >= cutoff_date:
+                        filtered_rows.append(row)
+                except ValueError:
+                    continue
+            rows = filtered_rows
+        except ValueError:
+            pass
+
     if show_conflicts_only:
         rows = [row for row in rows if str(row[8]) == "CONFLICT"]
 
-    status = f"Pagina {page_obj.page}/{page_obj.total_pages} | Total filtrado: {page_obj.total_items}"
+    status = f"Pagina {page_obj.page}/{page_obj.total_pages} | Total base: {page_obj.total_items} | Exibidos: {len(rows)}"
     if show_conflicts_only:
         status = f"{status} | Apenas conflitos: {len(rows)} item(ns)"
     return rows, status, page_obj.page
@@ -320,6 +357,9 @@ def _save_selected_validation_with_refresh(
     page: int,
     scientific_name: str,
     min_confidence: float,
+    validator_filter: str,
+    status_filter: str,
+    updated_after: str,
     show_conflicts_only: bool,
 ) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
     selected_key = ""
@@ -347,6 +387,9 @@ def _save_selected_validation_with_refresh(
         page=page,
         scientific_name=scientific_name,
         min_confidence=min_confidence,
+        validator_filter=validator_filter,
+        status_filter=status_filter,
+        updated_after=updated_after,
         show_conflicts_only=show_conflicts_only,
     )
 
@@ -364,6 +407,9 @@ def _save_selected_validation_with_refresh(
             page=refreshed_page,
             scientific_name=scientific_name,
             min_confidence=min_confidence,
+            validator_filter=validator_filter,
+            status_filter=status_filter,
+            updated_after=updated_after,
             conflict_detection_key=conflict_key,
             show_conflicts_only=show_conflicts_only,
         )
@@ -403,6 +449,9 @@ def _reapply_last_conflict_validation_with_refresh(
     page: int,
     scientific_name: str,
     min_confidence: float,
+    validator_filter: str,
+    status_filter: str,
+    updated_after: str,
     show_conflicts_only: bool,
 ) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
     if not pending_status_value:
@@ -413,6 +462,9 @@ def _reapply_last_conflict_validation_with_refresh(
             page=page,
             scientific_name=scientific_name,
             min_confidence=min_confidence,
+            validator_filter=validator_filter,
+            status_filter=status_filter,
+            updated_after=updated_after,
             show_conflicts_only=show_conflicts_only,
         )
         return (
@@ -442,6 +494,9 @@ def _reapply_last_conflict_validation_with_refresh(
         page=page,
         scientific_name=scientific_name,
         min_confidence=min_confidence,
+        validator_filter=validator_filter,
+        status_filter=status_filter,
+        updated_after=updated_after,
         show_conflicts_only=show_conflicts_only,
     )
 
@@ -460,6 +515,9 @@ def _batch_validate_conflicts(
     page: int,
     scientific_name: str,
     min_confidence: float,
+    validator_filter: str,
+    status_filter: str,
+    updated_after: str,
 ) -> tuple[str, str, str | None, list[list[object]], int]:
     """Apply the same validation status to all visible conflicts in the table."""
     validator_name = validator.strip()
@@ -511,6 +569,9 @@ def _batch_validate_conflicts(
         page=page,
         scientific_name=scientific_name,
         min_confidence=min_confidence,
+        validator_filter=validator_filter,
+        status_filter=status_filter,
+        updated_after=updated_after,
         show_conflicts_only=False,
     )
 
@@ -534,6 +595,9 @@ def _batch_reapply_all_pending(
     page: int,
     scientific_name: str,
     min_confidence: float,
+    validator_filter: str,
+    status_filter: str,
+    updated_after: str,
 ) -> tuple[str, str, str | None, list[list[object]], int]:
     """Reapply all pending validations (stored conflicts) with current version."""
     if not pending_statuses:
@@ -576,6 +640,9 @@ def _batch_reapply_all_pending(
         page=page,
         scientific_name=scientific_name,
         min_confidence=min_confidence,
+        validator_filter=validator_filter,
+        status_filter=status_filter,
+        updated_after=updated_after,
         show_conflicts_only=False,
     )
 
@@ -603,6 +670,15 @@ def create_app() -> gr.Blocks:
             species_filter = gr.Textbox(label="Filtro especie", placeholder="Ex: Cyanocorax cyanopogon")
             min_confidence = gr.Slider(label="Confianca minima", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
             show_conflicts_only = gr.Checkbox(label="Mostrar apenas conflitos", value=False)
+
+        with gr.Row():
+            validator_filter = gr.Textbox(label="Filtro validador", placeholder="Ex: validator-demo")
+            validation_status_filter = gr.Dropdown(
+                label="Filtro status",
+                choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
+                value="all",
+            )
+            updated_after_filter = gr.Textbox(label="Atualizado a partir de (YYYY-MM-DD)", placeholder="Ex: 2026-03-25")
 
         with gr.Row():
             prev_btn = gr.Button("Pagina anterior")
@@ -685,7 +761,15 @@ def create_app() -> gr.Blocks:
             "</script>"
         )
 
-        def refresh(page: int, species: str, confidence: float, only_conflicts: bool):
+        def refresh(
+            page: int,
+            species: str,
+            confidence: float,
+            validator_filter_value: str,
+            status_filter_value: str,
+            updated_after_value: str,
+            only_conflicts: bool,
+        ):
             return _page_to_table(
                 service=service,
                 snapshot_reader=validation_repository,
@@ -693,14 +777,49 @@ def create_app() -> gr.Blocks:
                 page=page,
                 scientific_name=species,
                 min_confidence=confidence,
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
                 show_conflicts_only=only_conflicts,
             )
 
-        def go_next(page: int, species: str, confidence: float, only_conflicts: bool):
-            return refresh(page + 1, species, confidence, only_conflicts)
+        def go_next(
+            page: int,
+            species: str,
+            confidence: float,
+            validator_filter_value: str,
+            status_filter_value: str,
+            updated_after_value: str,
+            only_conflicts: bool,
+        ):
+            return refresh(
+                page + 1,
+                species,
+                confidence,
+                validator_filter_value,
+                status_filter_value,
+                updated_after_value,
+                only_conflicts,
+            )
 
-        def go_prev(page: int, species: str, confidence: float, only_conflicts: bool):
-            return refresh(max(1, page - 1), species, confidence, only_conflicts)
+        def go_prev(
+            page: int,
+            species: str,
+            confidence: float,
+            validator_filter_value: str,
+            status_filter_value: str,
+            updated_after_value: str,
+            only_conflicts: bool,
+        ):
+            return refresh(
+                max(1, page - 1),
+                species,
+                confidence,
+                validator_filter_value,
+                status_filter_value,
+                updated_after_value,
+                only_conflicts,
+            )
 
         def on_select(evt):
             if isinstance(evt.index, tuple):
@@ -711,22 +830,61 @@ def create_app() -> gr.Blocks:
 
         demo.load(
             fn=refresh,
-            inputs=[page_state, species_filter, min_confidence, show_conflicts_only],
+            inputs=[
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[table, status, page_state],
         )
         refresh_btn.click(
-            fn=lambda species, confidence, only_conflicts: refresh(1, species, confidence, only_conflicts),
-            inputs=[species_filter, min_confidence, show_conflicts_only],
+            fn=lambda species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: refresh(
+                1,
+                species,
+                confidence,
+                validator_filter_value,
+                status_filter_value,
+                updated_after_value,
+                only_conflicts,
+            ),
+            inputs=[
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[table, status, page_state],
         )
         next_btn.click(
             fn=go_next,
-            inputs=[page_state, species_filter, min_confidence, show_conflicts_only],
+            inputs=[
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[table, status, page_state],
         )
         prev_btn.click(
             fn=go_prev,
-            inputs=[page_state, species_filter, min_confidence, show_conflicts_only],
+            inputs=[
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[table, status, page_state],
         )
         table.select(fn=on_select, inputs=None, outputs=[selected_index])
@@ -747,7 +905,7 @@ def create_app() -> gr.Blocks:
             outputs=[status, audio_player],
         )
         approve_btn.click(
-            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, only_conflicts: _save_selected_validation_with_refresh(
+            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: _save_selected_validation_with_refresh(
                 validation_service=validation_service,
                 audio_service=audio_service,
                 queue_service=service,
@@ -762,13 +920,29 @@ def create_app() -> gr.Blocks:
                 page=int(page),
                 scientific_name=species,
                 min_confidence=float(confidence),
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
                 show_conflicts_only=bool(only_conflicts),
             ),
-            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence, show_conflicts_only],
+            inputs=[
+                table,
+                selected_index,
+                validator_name,
+                validation_notes,
+                cache_key_state,
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         reject_btn.click(
-            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, only_conflicts: _save_selected_validation_with_refresh(
+            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: _save_selected_validation_with_refresh(
                 validation_service=validation_service,
                 audio_service=audio_service,
                 queue_service=service,
@@ -783,13 +957,29 @@ def create_app() -> gr.Blocks:
                 page=int(page),
                 scientific_name=species,
                 min_confidence=float(confidence),
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
                 show_conflicts_only=bool(only_conflicts),
             ),
-            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence, show_conflicts_only],
+            inputs=[
+                table,
+                selected_index,
+                validator_name,
+                validation_notes,
+                cache_key_state,
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         uncertain_btn.click(
-            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, only_conflicts: _save_selected_validation_with_refresh(
+            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: _save_selected_validation_with_refresh(
                 validation_service=validation_service,
                 audio_service=audio_service,
                 queue_service=service,
@@ -804,13 +994,29 @@ def create_app() -> gr.Blocks:
                 page=int(page),
                 scientific_name=species,
                 min_confidence=float(confidence),
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
                 show_conflicts_only=bool(only_conflicts),
             ),
-            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence, show_conflicts_only],
+            inputs=[
+                table,
+                selected_index,
+                validator_name,
+                validation_notes,
+                cache_key_state,
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         skip_btn.click(
-            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, only_conflicts: _save_selected_validation_with_refresh(
+            fn=lambda rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: _save_selected_validation_with_refresh(
                 validation_service=validation_service,
                 audio_service=audio_service,
                 queue_service=service,
@@ -825,13 +1031,29 @@ def create_app() -> gr.Blocks:
                 page=int(page),
                 scientific_name=species,
                 min_confidence=float(confidence),
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
                 show_conflicts_only=bool(only_conflicts),
             ),
-            inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence, show_conflicts_only],
+            inputs=[
+                table,
+                selected_index,
+                validator_name,
+                validation_notes,
+                cache_key_state,
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+                show_conflicts_only,
+            ],
             outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         reapply_btn.click(
-            fn=lambda rows, idx, pending_status, conflict_key, name, notes, cache_key, page, species, confidence, only_conflicts: _reapply_last_conflict_validation_with_refresh(
+            fn=lambda rows, idx, pending_status, conflict_key, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: _reapply_last_conflict_validation_with_refresh(
                 validation_service=validation_service,
                 audio_service=audio_service,
                 queue_service=service,
@@ -847,6 +1069,9 @@ def create_app() -> gr.Blocks:
                 page=int(page),
                 scientific_name=species,
                 min_confidence=float(confidence),
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
                 show_conflicts_only=bool(only_conflicts),
             ),
             inputs=[
@@ -860,12 +1085,15 @@ def create_app() -> gr.Blocks:
                 page_state,
                 species_filter,
                 min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
                 show_conflicts_only,
             ],
             outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         batch_approve_conflicts_btn.click(
-            fn=lambda rows, name, notes, cache_key, page, species, confidence: _batch_validate_conflicts(
+            fn=lambda rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: _batch_validate_conflicts(
                 validation_service=validation_service,
                 audio_service=audio_service,
                 queue_service=service,
@@ -879,12 +1107,26 @@ def create_app() -> gr.Blocks:
                 page=int(page),
                 scientific_name=species,
                 min_confidence=float(confidence),
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
             ),
-            inputs=[table, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
+            inputs=[
+                table,
+                validator_name,
+                validation_notes,
+                cache_key_state,
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+            ],
             outputs=[status, cache_key_state, audio_player, table, page_state],
         )
         batch_reject_conflicts_btn.click(
-            fn=lambda rows, name, notes, cache_key, page, species, confidence: _batch_validate_conflicts(
+            fn=lambda rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: _batch_validate_conflicts(
                 validation_service=validation_service,
                 audio_service=audio_service,
                 queue_service=service,
@@ -898,8 +1140,22 @@ def create_app() -> gr.Blocks:
                 page=int(page),
                 scientific_name=species,
                 min_confidence=float(confidence),
+                validator_filter=validator_filter_value,
+                status_filter=status_filter_value,
+                updated_after=updated_after_value,
             ),
-            inputs=[table, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
+            inputs=[
+                table,
+                validator_name,
+                validation_notes,
+                cache_key_state,
+                page_state,
+                species_filter,
+                min_confidence,
+                validator_filter,
+                validation_status_filter,
+                updated_after_filter,
+            ],
             outputs=[status, cache_key_state, audio_player, table, page_state],
         )
         report_btn.click(

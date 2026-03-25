@@ -94,12 +94,19 @@ class FakeSnapshotReader:
             "dkey_01": {
                 "status": "positive",
                 "validator": "validator-demo",
+                "updated_at": "2026-03-25T10:00:00+00:00",
                 "version": 2,
+            },
+            "dkey_02": {
+                "status": "negative",
+                "validator": "validator-other",
+                "updated_at": "2026-03-20T10:00:00+00:00",
+                "version": 1,
             }
         }
         self.events: list[dict[str, object]] = [
             {"detection_key": "dkey_01", "status": "positive"},
-            {"detection_key": "dkey_01", "status": "negative"},
+            {"detection_key": "dkey_02", "status": "negative"},
         ]
 
     def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
@@ -116,7 +123,7 @@ class FakeQueueService:
         def __init__(self) -> None:
             self.page = 1
             self.total_pages = 1
-            self.total_items = 1
+            self.total_items = 2
             self.items = [
                 type(
                     "DetectionLike",
@@ -129,7 +136,19 @@ class FakeQueueService:
                         "start_time": 0.0,
                         "end_time": 1.0,
                     },
-                )()
+                )(),
+                type(
+                    "DetectionLike",
+                    (),
+                    {
+                        "detection_key": "dkey_02",
+                        "audio_id": "audio_02",
+                        "scientific_name": "sp2",
+                        "confidence": 0.85,
+                        "start_time": 1.0,
+                        "end_time": 2.0,
+                    },
+                )(),
             ]
 
     def get_page(self, **kwargs: object) -> "FakeQueueService._Page":
@@ -249,8 +268,9 @@ def test_build_validation_report() -> None:
 
     assert "Projeto: demo-project" in report
     assert "Eventos append-only: 2" in report
-    assert "Deteccoes com estado atual: 1" in report
+    assert "Deteccoes com estado atual: 2" in report
     assert "positive=1" in report
+    assert "negative=1" in report
 
 
 def test_page_to_table_includes_validation_status() -> None:
@@ -319,6 +339,51 @@ def test_page_to_table_conflicts_only_filter_keeps_conflict_rows() -> None:
     assert "Apenas conflitos: 1 item(ns)" in status
 
 
+def test_page_to_table_filters_by_validator() -> None:
+    rows, _, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        validator_filter="other",
+    )
+
+    assert len(rows) == 1
+    assert rows[0][0] == "dkey_02"
+
+
+def test_page_to_table_filters_by_status() -> None:
+    rows, _, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        status_filter="negative",
+    )
+
+    assert len(rows) == 1
+    assert rows[0][0] == "dkey_02"
+
+
+def test_page_to_table_filters_by_updated_after() -> None:
+    rows, _, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        updated_after="2026-03-24",
+    )
+
+    assert len(rows) == 1
+    assert rows[0][0] == "dkey_01"
+
+
 def test_find_detection_row_index() -> None:
     rows = [["dkey_00", "audio_00"], ["dkey_01", "audio_01"]]
 
@@ -346,6 +411,9 @@ def test_save_selected_validation_with_refresh_success() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
         show_conflicts_only=False,
     )
 
@@ -379,6 +447,9 @@ def test_save_selected_validation_with_refresh_conflict() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
         show_conflicts_only=False,
     )
 
@@ -416,6 +487,9 @@ def test_reapply_last_conflict_validation_with_refresh() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
         show_conflicts_only=False,
     )
 
@@ -450,6 +524,9 @@ def test_reapply_last_conflict_without_pending_status() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
         show_conflicts_only=False,
     )
 
@@ -490,6 +567,9 @@ def test_batch_validate_conflicts_all_success() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
     )
 
     assert "Processados 2 conflitos" in status
@@ -521,6 +601,9 @@ def test_batch_validate_conflicts_no_conflicts() -> None:
         page=1,
         scientific_name="",
         min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
     )
 
     assert "Nenhuma deteccao com conflito" in status

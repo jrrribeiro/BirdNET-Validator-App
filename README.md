@@ -61,3 +61,4 @@ Estrutura base criada por projeto/dataset:
 - Sprint 3 (UX conflito+++): filtro rapido "mostrar apenas conflitos" integrado em refresh, paginacao e acoes de validacao
 - Sprint 3 (UX conflito++++): atalhos teclado para validacao rapida (1=positivo 2=negativo 3=indeterminado 4=pular R=reaplicar)
 - Sprint 3 (UX conflito+++++): operacoes em lote para aprovar/rejeitar todos os conflitos em uma unica acao
+- Sprint 3 (UX conflito++++++): filtros avancados por validador, status e data de atualizacao em toda a navegacao
