@@ -1292,16 +1292,32 @@ def create_app() -> gr.Blocks:
                     """Update project dropdown when user logs in."""
                     if session is None:
                         return (
-                            gr.Dropdown(choices=[], interactive=False),
+                            gr.Dropdown(choices=[], value=None, interactive=False),
                             "❌ Not logged in. Please login first.",
+                            None,
                         )
 
-                    return create_project_selector(auth_service, session)
+                    projects = session.authorized_projects
+                    if not projects:
+                        return (
+                            gr.Dropdown(choices=[], value=None, interactive=False),
+                            "⚠️ **No Projects Assigned**\n\nYou don't have access to any projects yet. Contact an administrator.",
+                            None,
+                        )
+
+                    selected = projects[0]
+                    role = auth_service.get_user_role_for_project(session.username, selected)
+                    role_label = role.value.upper() if role else "UNKNOWN"
+                    return (
+                        gr.Dropdown(choices=projects, value=selected, interactive=True),
+                        f"📁 **Project:** {selected} | **Your Role:** {role_label}",
+                        selected,
+                    )
 
                 session_state.change(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_info_display],
+                    outputs=[project_selector, project_info_display, selected_project_state],
                 )
 
                 def update_selected_project(selected: str, session):
@@ -1323,32 +1339,90 @@ def create_app() -> gr.Blocks:
                 def create_admin_display(session):
                     """Show admin panel or access denied message."""
                     if session is None:
-                        return "❌ **Not Logged In** — Please login first in the Login tab."
+                        return (
+                            "❌ **Not Logged In** — Please login first in the Login tab.",
+                            gr.update(visible=False),
+                        )
                     if session.role.value != "admin":
-                        return "❌ **Access Denied** — Only administrators can access this panel."
-                    return f"✅ **Admin Panel** — Welcome {session.username}! Click below to manage projects and users."
+                        return (
+                            "❌ **Access Denied** — Only administrators can access this panel.",
+                            gr.update(visible=False),
+                        )
+                    return (
+                        f"✅ **Admin Panel** — Welcome {session.username}! Click below to manage projects and users.",
+                        gr.update(visible=True),
+                    )
 
-                session_state.change(
-                    fn=create_admin_display,
-                    inputs=[session_state],
-                    outputs=[admin_info],
-                )
-
-                # Admin controls (always rendered, but backend enforces access)
-                with gr.Group():
+                with gr.Group(visible=False) as admin_controls:
                     gr.Markdown("#### Projetos Cadastrados")
+
+                    with gr.Row():
+                        create_project_slug = gr.Textbox(
+                            label="Novo Project Slug",
+                            placeholder="ex: amazonas-2026",
+                        )
+                        create_project_name = gr.Textbox(
+                            label="Nome do Projeto",
+                            placeholder="ex: Amazonas Survey 2026",
+                        )
+                        create_project_repo = gr.Textbox(
+                            label="HF Dataset Repo ID",
+                            placeholder="ex: birdnet/amazonas-2026-dataset",
+                        )
+
+                    create_project_message = gr.Markdown()
+
+                    def create_project(session, slug: str, name: str, repo_id: str):
+                        if session is None or session.role.value != "admin":
+                            return "❌ Access denied. Apenas admin pode criar projetos.", gr.update(), gr.update()
+
+                        slug = (slug or "").strip()
+                        name = (name or "").strip()
+                        repo_id = (repo_id or "").strip()
+                        if not slug or not name or not repo_id:
+                            return "⚠️ Preencha slug, nome e repo id.", gr.update(), gr.update()
+
+                        created = admin_manager.register_project(
+                            Project(
+                                project_slug=slug,
+                                name=name,
+                                dataset_repo_id=repo_id,
+                                active=True,
+                            )
+                        )
+                        if not created:
+                            return (
+                                f"⚠️ Projeto '{slug}' já existe.",
+                                admin_manager.list_projects(),
+                                gr.update(choices=[p["project_slug"] for p in admin_manager.list_projects()]),
+                            )
+
+                        return (
+                            f"✅ Projeto '{slug}' criado com sucesso.",
+                            admin_manager.list_projects(),
+                            gr.update(choices=[p["project_slug"] for p in admin_manager.list_projects()], value=slug),
+                        )
+
+                    create_project_btn = gr.Button("➕ Criar Projeto", variant="primary")
                     projects_table = gr.Dataframe(
                         value=admin_manager.list_projects(),
                         headers=["project_slug", "name", "dataset_repo_id", "active"],
                         interactive=False,
                     )
                     refresh_projects_btn = gr.Button("🔄 Atualizar Lista")
+
+                    def refresh_projects(session):
+                        if session is None or session.role.value != "admin":
+                            return []
+                        return admin_manager.list_projects()
+
                     refresh_projects_btn.click(
-                        fn=lambda: admin_manager.list_projects(),
+                        fn=refresh_projects,
+                        inputs=[session_state],
                         outputs=[projects_table],
                     )
 
-                with gr.Group():
+                with gr.Group(visible=False) as admin_users_controls:
                     gr.Markdown("#### Assignar Usuário a Projeto")
                     with gr.Row():
                         admin_username = gr.Textbox(
@@ -1366,7 +1440,9 @@ def create_app() -> gr.Blocks:
 
                     admin_message = gr.Markdown()
 
-                    def assign_user(username: str, project: str, role: str):
+                    def assign_user(session, username: str, project: str, role: str):
+                        if session is None or session.role.value != "admin":
+                            return "❌ Access denied. Apenas admin pode atribuir usuários."
                         success, msg = admin_manager.assign_user_to_project(
                             username, project, role
                         )
@@ -1375,9 +1451,27 @@ def create_app() -> gr.Blocks:
                     assign_btn = gr.Button("✅ Assignar", variant="primary")
                     assign_btn.click(
                         fn=assign_user,
-                        inputs=[admin_username, admin_project, admin_role],
+                        inputs=[session_state, admin_username, admin_project, admin_role],
                         outputs=[admin_message],
                     )
+
+                create_project_btn.click(
+                    fn=create_project,
+                    inputs=[session_state, create_project_slug, create_project_name, create_project_repo],
+                    outputs=[create_project_message, projects_table, admin_project],
+                )
+
+                session_state.change(
+                    fn=create_admin_display,
+                    inputs=[session_state],
+                    outputs=[admin_info, admin_controls],
+                )
+
+                session_state.change(
+                    fn=lambda s: gr.update(visible=bool(s is not None and s.role.value == "admin")),
+                    inputs=[session_state],
+                    outputs=[admin_users_controls],
+                )
 
             # ===== TAB 4: Validation =====
             with gr.Tab("✓ Validação", id="validation_tab"):
