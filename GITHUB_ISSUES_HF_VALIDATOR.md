@@ -25,7 +25,7 @@ Sugestao: criar milestones por sprint e labels por tipo.
 - Sprint 6 - Operacao e qualidade
 
 ## Issue 01 - Bootstrap do repositorio e CI minima
-Title: [Sprint 0][P0] Bootstrap do repositorio birdnet-validator-hf-app
+Title: [Sprint 0][P0] Bootstrap do repositorio BirdNET-validator-App
 Labels: epic, p0, infra
 Milestone: Sprint 0 - Preparacao
 Body:

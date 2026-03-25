@@ -11,7 +11,7 @@ Construir um novo app de validacao de deteccoes BirdNET para Hugging Face Spaces
 
 ## 2) Estrategia de repositorios
 ### Repositorio 1 (novo): app
-- Nome sugerido: `birdnet-validator-hf-app`
+- Nome sugerido: `BirdNET-validator-App`
 - Conteudo: Gradio app, servicos, auth, cache, UI, testes, docs de deploy
 
 ### Repositorios 2..N: datasets por projeto
@@ -20,7 +20,7 @@ Construir um novo app de validacao de deteccoes BirdNET para Hugging Face Spaces
 
 ### Estrutura de pastas do app
 ```text
-birdnet-validator-hf-app/
+BirdNET-validator-App/
   app.py
   requirements.txt
   README.md
@@ -65,7 +65,7 @@ Uma tarefa so e considerada pronta quando:
 
 ## Epic A - Bootstrap do novo app e arquitetura base (P0)
 ### A1. Criar novo repositorio do app
-- Descricao: inicializar `birdnet-validator-hf-app` com estrutura base
+- Descricao: inicializar `BirdNET-validator-App` com estrutura base
 - Entregavel: repo criado + branch strategy + CI minima
 - Criterio de aceite: app sobe local com tela inicial vazia
 

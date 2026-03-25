@@ -1,5 +1,5 @@
 [project]
-name = "birdnet-validator-hf-app"
+name = "BirdNET-validator-App"
 version = "0.1.0"
 description = "BirdNET detection validator for Hugging Face Spaces"
 readme = "README.md"

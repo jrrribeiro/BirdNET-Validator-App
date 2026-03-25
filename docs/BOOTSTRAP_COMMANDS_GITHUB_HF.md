@@ -15,7 +15,7 @@ Este roteiro cria:
 PowerShell (Windows):
 
 1. Ir para a pasta do novo app
-   cd "c:\Users\jonat\Documents\Python\BirdNET PPBIO-RABECA\birdnet-validator-hf-app"
+   cd "c:\Users\jonat\Documents\Python\BirdNET-validator-App"
 
 2. Inicializar git local
    git init
@@ -23,7 +23,7 @@ PowerShell (Windows):
    git commit -m "chore: bootstrap sprint 0 for HF validator app"
 
 3. Criar repo remoto e enviar
-   gh repo create birdnet-validator-hf-app --public --source . --remote origin --push
+   gh repo create BirdNET-validator-App --public --source . --remote origin --push
 
 Observacao:
 - Se quiser privado, troque --public por --private.
@@ -33,14 +33,14 @@ Observacao:
    huggingface-cli login
 
 2. Criar Space
-   huggingface-cli repo create birdnet-validator-hf-app --type space --space_sdk gradio --public
+   huggingface-cli repo create BirdNET-validator-App --type space --space_sdk gradio --public
 
 Observacao:
 - Para privado, troque --public por --private.
 
 ## C) Conectar app ao Space e fazer deploy inicial
 1. Adicionar remoto do Space
-   git remote add hf https://huggingface.co/spaces/SEU_USUARIO/birdnet-validator-hf-app
+   git remote add hf https://huggingface.co/spaces/SEU_USUARIO/BirdNET-validator-App
 
 2. Enviar codigo para o Space
    git push hf main
@@ -56,7 +56,7 @@ No painel do Space (Settings > Variables and secrets), adicionar:
 
 ## E) Validar deploy
 1. Abrir URL do Space:
-   https://huggingface.co/spaces/SEU_USUARIO/birdnet-validator-hf-app
+   https://huggingface.co/spaces/SEU_USUARIO/BirdNET-validator-App
 2. Verificar se a tela "BirdNET Validator HF" carregou.
 
 ## F) Primeiros comandos da CLI do projeto (quando implementar Sprint 1)
