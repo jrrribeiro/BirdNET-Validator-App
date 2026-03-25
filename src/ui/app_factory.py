@@ -1213,7 +1213,7 @@ def create_app() -> gr.Blocks:
     )
     auth_service.register_user_project_access(
         "validator_demo",
-        {"dem o-project": Role.validator, "kenya-2024": Role.validator},
+        {"demo-project": Role.validator, "kenya-2024": Role.validator},
     )
     auth_service.register_user_project_access(
         "validator_other",
