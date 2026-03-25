@@ -4,10 +4,12 @@ from pathlib import Path
 import pandas as pd
 
 from src.ui.app_factory import (
+    _build_validation_report,
     _cleanup_selected_audio,
     _extract_audio_id,
     _extract_detection_key,
     _fetch_selected_audio,
+    _page_to_table,
     _save_selected_validation,
 )
 
@@ -54,6 +56,54 @@ class FakeValidationService:
         }
         self.calls.append(payload)
         return payload
+
+
+class FakeSnapshotReader:
+    def __init__(self) -> None:
+        self.snapshot: dict[str, dict[str, object]] = {
+            "dkey_01": {
+                "status": "positive",
+                "validator": "validator-demo",
+            }
+        }
+        self.events: list[dict[str, object]] = [
+            {"detection_key": "dkey_01", "status": "positive"},
+            {"detection_key": "dkey_01", "status": "negative"},
+        ]
+
+    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
+        _ = project_slug
+        return self.snapshot
+
+    def list_events(self, project_slug: str) -> list[dict[str, object]]:
+        _ = project_slug
+        return self.events
+
+
+class FakeQueueService:
+    class _Page:
+        def __init__(self) -> None:
+            self.page = 1
+            self.total_pages = 1
+            self.total_items = 1
+            self.items = [
+                type(
+                    "DetectionLike",
+                    (),
+                    {
+                        "detection_key": "dkey_01",
+                        "audio_id": "audio_01",
+                        "scientific_name": "sp",
+                        "confidence": 0.9,
+                        "start_time": 0.0,
+                        "end_time": 1.0,
+                    },
+                )()
+            ]
+
+    def get_page(self, **kwargs: object) -> "FakeQueueService._Page":
+        _ = kwargs
+        return FakeQueueService._Page()
 
 
 def test_extract_audio_id_from_list_rows() -> None:
@@ -138,3 +188,28 @@ def test_save_selected_validation_saves_and_cleans_audio_cache() -> None:
     assert len(validation_service.calls) == 1
     assert validation_service.calls[0]["detection_key"] == "0000000000001111"
     assert audio_service.cleaned == ["cache:audio_11"]
+
+
+def test_build_validation_report() -> None:
+    report = _build_validation_report(FakeSnapshotReader(), "demo-project")
+
+    assert "Projeto: demo-project" in report
+    assert "Eventos append-only: 2" in report
+    assert "Deteccoes com estado atual: 1" in report
+    assert "positive=1" in report
+
+
+def test_page_to_table_includes_validation_status() -> None:
+    rows, status, page = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+    )
+
+    assert page == 1
+    assert "Pagina 1/1" in status
+    assert rows[0][0] == "dkey_01"
+    assert rows[0][6] == "positive"
