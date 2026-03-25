@@ -102,6 +102,7 @@ def _page_to_table(
     page: int,
     scientific_name: str,
     min_confidence: float,
+    conflict_detection_key: str = "",
 ):
     filter_name = scientific_name.strip() if scientific_name.strip() else None
     page_obj = service.get_page(
@@ -124,6 +125,7 @@ def _page_to_table(
             item.end_time,
             str(snapshot.get(item.detection_key, {}).get("status", "pending")),
             int(snapshot.get(item.detection_key, {}).get("version", 0)),
+            "conflict" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
         ]
         for item in page_obj.items
     ]
@@ -309,7 +311,7 @@ def _save_selected_validation_with_refresh(
     page: int,
     scientific_name: str,
     min_confidence: float,
-) -> tuple[str, str, str | None, list[list[object]], int, int]:
+) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
     selected_key = ""
     try:
         selected_key = _extract_detection_key(rows=rows, selected_index=selected_index)
@@ -343,11 +345,90 @@ def _save_selected_validation_with_refresh(
         refreshed_index = 0
 
     if "Conflito de concorrencia" in save_status:
+        conflict_key = selected_key
+        refreshed_rows, page_status, refreshed_page = _page_to_table(
+            service=queue_service,
+            snapshot_reader=snapshot_reader,
+            project_slug=project_slug,
+            page=refreshed_page,
+            scientific_name=scientific_name,
+            min_confidence=min_confidence,
+            conflict_detection_key=conflict_key,
+        )
+        refreshed_index = _find_detection_row_index(refreshed_rows, selected_key) if selected_key else 0
+        pending_status_value = status_value
         status = f"{save_status} Tabela recarregada para resolver conflito."
     else:
+        conflict_key = ""
+        pending_status_value = ""
         status = f"{save_status} | {page_status}"
 
-    return status, updated_cache_key, audio_path, refreshed_rows, refreshed_page, refreshed_index
+    return (
+        status,
+        updated_cache_key,
+        audio_path,
+        refreshed_rows,
+        refreshed_page,
+        refreshed_index,
+        pending_status_value,
+        conflict_key,
+    )
+
+
+def _reapply_last_conflict_validation_with_refresh(
+    validation_service: _ValidationServiceProtocol,
+    audio_service: _AudioServiceProtocol,
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    rows: object,
+    selected_index: int,
+    pending_status_value: str,
+    conflict_detection_key: str,
+    validator: str,
+    notes: str,
+    cache_key: str,
+    page: int,
+    scientific_name: str,
+    min_confidence: float,
+) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
+    if not pending_status_value:
+        refreshed_rows, page_status, refreshed_page = _page_to_table(
+            service=queue_service,
+            snapshot_reader=snapshot_reader,
+            project_slug=project_slug,
+            page=page,
+            scientific_name=scientific_name,
+            min_confidence=min_confidence,
+        )
+        return (
+            f"Nenhuma validacao pendente para reaplicar | {page_status}",
+            cache_key,
+            None,
+            refreshed_rows,
+            refreshed_page,
+            selected_index,
+            "",
+            "",
+        )
+
+    target_index = _find_detection_row_index(rows, conflict_detection_key) if conflict_detection_key else selected_index
+    return _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=queue_service,
+        snapshot_reader=snapshot_reader,
+        project_slug=project_slug,
+        rows=rows,
+        selected_index=target_index,
+        status_value=pending_status_value,
+        validator=validator,
+        notes=notes,
+        cache_key=cache_key,
+        page=page,
+        scientific_name=scientific_name,
+        min_confidence=min_confidence,
+    )
 
 
 def create_app() -> gr.Blocks:
@@ -384,6 +465,7 @@ def create_app() -> gr.Blocks:
                 "end_time",
                 "validation_status",
                 "version",
+                "conflict_flag",
             ],
             label="Deteccoes",
             interactive=False,
@@ -403,11 +485,14 @@ def create_app() -> gr.Blocks:
             reject_btn = gr.Button("Validar negativo")
             uncertain_btn = gr.Button("Indeterminado")
             skip_btn = gr.Button("Pular")
+            reapply_btn = gr.Button("Reaplicar validacao apos conflito")
 
         report_btn = gr.Button("Gerar relatorio de validacoes")
 
         audio_player = gr.Audio(label="Audio sob demanda", type="filepath")
         cache_key_state = gr.State(value="")
+        pending_status_state = gr.State(value="")
+        conflict_detection_key_state = gr.State(value="")
         status = gr.Textbox(label="Status", interactive=False)
         report_box = gr.Textbox(label="Relatorio", interactive=False)
 
@@ -489,7 +574,7 @@ def create_app() -> gr.Blocks:
                 min_confidence=float(confidence),
             ),
             inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
-            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index],
+            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         reject_btn.click(
             fn=lambda rows, idx, name, notes, cache_key, page, species, confidence: _save_selected_validation_with_refresh(
@@ -509,7 +594,7 @@ def create_app() -> gr.Blocks:
                 min_confidence=float(confidence),
             ),
             inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
-            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index],
+            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         uncertain_btn.click(
             fn=lambda rows, idx, name, notes, cache_key, page, species, confidence: _save_selected_validation_with_refresh(
@@ -529,7 +614,7 @@ def create_app() -> gr.Blocks:
                 min_confidence=float(confidence),
             ),
             inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
-            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index],
+            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         skip_btn.click(
             fn=lambda rows, idx, name, notes, cache_key, page, species, confidence: _save_selected_validation_with_refresh(
@@ -549,7 +634,39 @@ def create_app() -> gr.Blocks:
                 min_confidence=float(confidence),
             ),
             inputs=[table, selected_index, validator_name, validation_notes, cache_key_state, page_state, species_filter, min_confidence],
-            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index],
+            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+        )
+        reapply_btn.click(
+            fn=lambda rows, idx, pending_status, conflict_key, name, notes, cache_key, page, species, confidence: _reapply_last_conflict_validation_with_refresh(
+                validation_service=validation_service,
+                audio_service=audio_service,
+                queue_service=service,
+                snapshot_reader=validation_repository,
+                project_slug=project_slug,
+                rows=rows,
+                selected_index=int(idx),
+                pending_status_value=pending_status,
+                conflict_detection_key=conflict_key,
+                validator=name,
+                notes=notes,
+                cache_key=cache_key,
+                page=int(page),
+                scientific_name=species,
+                min_confidence=float(confidence),
+            ),
+            inputs=[
+                table,
+                selected_index,
+                pending_status_state,
+                conflict_detection_key_state,
+                validator_name,
+                validation_notes,
+                cache_key_state,
+                page_state,
+                species_filter,
+                min_confidence,
+            ],
+            outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
         )
         report_btn.click(
             fn=lambda: _build_validation_report(validation_repository, project_slug),
