@@ -8,7 +8,23 @@ class ProjectRepository(Protocol):
 
 
 class DetectionRepository(Protocol):
-    def list_detections(self, project_slug: str, page: int, page_size: int) -> list[Detection]: ...
+    def list_detections(
+        self,
+        project_slug: str,
+        page: int,
+        page_size: int,
+        scientific_name: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ) -> list[Detection]: ...
+
+    def count_detections(
+        self,
+        project_slug: str,
+        scientific_name: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ) -> int: ...
 
 
 class ValidationRepository(Protocol):
