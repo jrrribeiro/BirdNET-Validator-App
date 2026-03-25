@@ -267,6 +267,7 @@ def test_page_to_table_includes_validation_status() -> None:
     assert rows[0][6] == "positive"
     assert rows[0][7] == 2
     assert rows[0][8] == ""
+    assert rows[0][9] == ""
 
 
 def test_page_to_table_marks_conflict_row() -> None:
@@ -280,7 +281,8 @@ def test_page_to_table_marks_conflict_row() -> None:
         conflict_detection_key="dkey_01",
     )
 
-    assert rows[0][8] == "conflict"
+    assert rows[0][8] == "CONFLICT"
+    assert rows[0][9] == "HIGH"
 
 
 def test_find_detection_row_index() -> None:
@@ -351,7 +353,8 @@ def test_save_selected_validation_with_refresh_conflict() -> None:
     assert refreshed_page == 1
     assert refreshed_index == 0
     assert refreshed_rows[0][0] == "dkey_01"
-    assert refreshed_rows[0][8] == "conflict"
+    assert refreshed_rows[0][8] == "CONFLICT"
+    assert refreshed_rows[0][9] == "HIGH"
     assert pending_status == "positive"
     assert conflict_key == "dkey_01"
 
