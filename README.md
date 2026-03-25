@@ -59,3 +59,4 @@ Estrutura base criada por projeto/dataset:
 - Sprint 3 (UX conflito+): flag visual de conflito na linha e botao para reaplicar validacao na versao atual
 - Sprint 3 (UX conflito++): sinalizacao explicita com conflict_flag=CONFLICT e conflict_severity=HIGH na deteccao afetada
 - Sprint 3 (UX conflito+++): filtro rapido "mostrar apenas conflitos" integrado em refresh, paginacao e acoes de validacao
+- Sprint 3 (UX conflito++++): atalhos teclado para validacao rapida (1=positivo 2=negativo 3=indeterminado 4=pular R=reaplicar)
