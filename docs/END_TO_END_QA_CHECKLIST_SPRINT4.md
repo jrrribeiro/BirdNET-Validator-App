@@ -5,6 +5,55 @@ Status legend:
 - FAIL = behavior not validated
 - BLOCKED = could not validate due to environment/tooling limitation
 
+## 5-Minute Smoke Test (Pre-Deploy)
+
+Use this quick run before each deploy or before a manual retest cycle.
+
+### A. Start and Health (about 1 min)
+1. Start app (use a free port if 7860 is busy).
+2. Open local URL in browser.
+3. Confirm app loads all tabs.
+
+Pass criteria:
+- App boots without traceback.
+- Home screen renders Login, Select Project, Admin, and Validation tabs.
+
+### B. Auth and ACL Core (about 2 min)
+1. Login as validator_demo.
+2. Open Select Project tab and verify only allowed projects are shown.
+3. Open Admin tab and verify access denied with hidden controls.
+4. Switch user to admin_user.
+5. Open Admin tab and verify controls are visible.
+
+Pass criteria:
+- validator_demo sees only demo-project and kenya-2024.
+- validator_demo cannot use admin actions.
+- admin_user can see admin controls.
+
+### C. Critical Admin Action (about 1 min)
+1. As admin_user, create a temporary project using slug/name/repo id.
+2. Click refresh project list.
+3. Verify new slug appears in project list.
+
+Pass criteria:
+- Project creation returns success message.
+- New project appears in list/dropdown immediately.
+
+### D. Validation Readiness (about 1 min)
+1. Select an authorized project.
+2. Open Validation tab.
+
+Pass criteria:
+- Status changes to ready for selected project.
+- Message "Projeto nao selecionado" no longer appears after valid selection.
+
+### Smoke Evidence (copy/paste)
+1. Date/time:
+2. Tester:
+3. Build/commit:
+4. Result: PASS | FAIL
+5. Notes:
+
 ## Scope
 This checklist validates Sprint 4 multi-project security flow:
 - Login and session creation
