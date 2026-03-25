@@ -36,6 +36,24 @@ class _ValidationServiceProtocol(Protocol):
     ) -> object: ...
 
 
+class _ValidationReadRepositoryProtocol(Protocol):
+    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]: ...
+
+    def list_events(self, project_slug: str) -> list[dict[str, object]]: ...
+
+
+class _QueueServiceProtocol(Protocol):
+    def get_page(
+        self,
+        project_slug: str,
+        page: int,
+        page_size: int,
+        scientific_name: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ) -> object: ...
+
+
 def _seed_service() -> DetectionQueueService:
     repo = InMemoryDetectionRepository()
     demo_items = [
@@ -76,7 +94,14 @@ def _seed_service() -> DetectionQueueService:
     return DetectionQueueService(repo)
 
 
-def _page_to_table(service: DetectionQueueService, page: int, scientific_name: str, min_confidence: float):
+def _page_to_table(
+    service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    page: int,
+    scientific_name: str,
+    min_confidence: float,
+):
     filter_name = scientific_name.strip() if scientific_name.strip() else None
     page_obj = service.get_page(
         project_slug="demo-project",
@@ -86,6 +111,8 @@ def _page_to_table(service: DetectionQueueService, page: int, scientific_name: s
         min_confidence=min_confidence,
     )
 
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
+
     rows = [
         [
             item.detection_key,
@@ -94,11 +121,34 @@ def _page_to_table(service: DetectionQueueService, page: int, scientific_name: s
             round(item.confidence, 3),
             item.start_time,
             item.end_time,
+            str(snapshot.get(item.detection_key, {}).get("status", "pending")),
         ]
         for item in page_obj.items
     ]
     status = f"Pagina {page_obj.page}/{page_obj.total_pages} | Total filtrado: {page_obj.total_items}"
     return rows, status, page_obj.page
+
+
+def _build_validation_report(snapshot_reader: _ValidationReadRepositoryProtocol, project_slug: str) -> str:
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
+    events = snapshot_reader.list_events(project_slug=project_slug)
+
+    counts: dict[str, int] = {}
+    for payload in snapshot.values():
+        status_value = str(payload.get("status", "unknown"))
+        counts[status_value] = counts.get(status_value, 0) + 1
+
+    parts = [
+        f"Projeto: {project_slug}",
+        f"Eventos append-only: {len(events)}",
+        f"Deteccoes com estado atual: {len(snapshot)}",
+    ]
+    if counts:
+        summary = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
+        parts.append(f"Status atual: {summary}")
+    else:
+        parts.append("Status atual: sem validacoes")
+    return " | ".join(parts)
 
 
 def _extract_audio_id(rows: object, selected_index: int) -> str:
@@ -203,10 +253,12 @@ def _save_selected_validation(
 
 
 def create_app() -> gr.Blocks:
+    project_slug = "demo-project"
     service = _seed_service()
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
     validation_base_dir = str(Path(tempfile.gettempdir()) / "birdnet-validator-validations")
-    validation_service = ValidationService(AppendOnlyValidationRepository(base_dir=validation_base_dir))
+    validation_repository = AppendOnlyValidationRepository(base_dir=validation_base_dir)
+    validation_service = ValidationService(validation_repository)
 
     with gr.Blocks(title="BirdNET Validator HF") as demo:
         gr.Markdown("# BirdNET Validator HF")
@@ -225,7 +277,15 @@ def create_app() -> gr.Blocks:
 
         page_state = gr.State(value=1)
         table = gr.Dataframe(
-            headers=["detection_key", "audio_id", "scientific_name", "confidence", "start_time", "end_time"],
+            headers=[
+                "detection_key",
+                "audio_id",
+                "scientific_name",
+                "confidence",
+                "start_time",
+                "end_time",
+                "validation_status",
+            ],
             label="Deteccoes",
             interactive=False,
         )
@@ -245,12 +305,22 @@ def create_app() -> gr.Blocks:
             uncertain_btn = gr.Button("Indeterminado")
             skip_btn = gr.Button("Pular")
 
+        report_btn = gr.Button("Gerar relatorio de validacoes")
+
         audio_player = gr.Audio(label="Audio sob demanda", type="filepath")
         cache_key_state = gr.State(value="")
         status = gr.Textbox(label="Status", interactive=False)
+        report_box = gr.Textbox(label="Relatorio", interactive=False)
 
         def refresh(page: int, species: str, confidence: float):
-            return _page_to_table(service, page=page, scientific_name=species, min_confidence=confidence)
+            return _page_to_table(
+                service=service,
+                snapshot_reader=validation_repository,
+                project_slug=project_slug,
+                page=page,
+                scientific_name=species,
+                min_confidence=confidence,
+            )
 
         def go_next(page: int, species: str, confidence: float):
             return refresh(page + 1, species, confidence)
@@ -306,7 +376,7 @@ def create_app() -> gr.Blocks:
             fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
                 validation_service=validation_service,
                 audio_service=audio_service,
-                project_slug="demo-project",
+                project_slug=project_slug,
                 rows=rows,
                 selected_index=int(idx),
                 status_value="positive",
@@ -321,7 +391,7 @@ def create_app() -> gr.Blocks:
             fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
                 validation_service=validation_service,
                 audio_service=audio_service,
-                project_slug="demo-project",
+                project_slug=project_slug,
                 rows=rows,
                 selected_index=int(idx),
                 status_value="negative",
@@ -336,7 +406,7 @@ def create_app() -> gr.Blocks:
             fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
                 validation_service=validation_service,
                 audio_service=audio_service,
-                project_slug="demo-project",
+                project_slug=project_slug,
                 rows=rows,
                 selected_index=int(idx),
                 status_value="uncertain",
@@ -351,7 +421,7 @@ def create_app() -> gr.Blocks:
             fn=lambda rows, idx, name, notes, cache_key: _save_selected_validation(
                 validation_service=validation_service,
                 audio_service=audio_service,
-                project_slug="demo-project",
+                project_slug=project_slug,
                 rows=rows,
                 selected_index=int(idx),
                 status_value="skip",
@@ -361,6 +431,11 @@ def create_app() -> gr.Blocks:
             ),
             inputs=[table, selected_index, validator_name, validation_notes, cache_key_state],
             outputs=[status, cache_key_state, audio_player],
+        )
+        report_btn.click(
+            fn=lambda: _build_validation_report(validation_repository, project_slug),
+            inputs=None,
+            outputs=[report_box],
         )
 
     return demo
