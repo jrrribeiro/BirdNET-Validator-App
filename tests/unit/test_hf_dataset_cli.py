@@ -6,10 +6,15 @@ import pytest
 
 from cli.hf_dataset_cli import (
     SCHEMA_VERSION,
+    _chunk_items,
+    _load_resume_state,
+    _save_resume_state,
     build_manifest_payload,
     build_shards_in_directory,
     collect_verify_errors,
+    discover_audio_files,
     load_detections_table,
+    sync_audio_batches,
 )
 
 
@@ -133,3 +138,94 @@ def test_manifest_json_roundtrip(tmp_path: Path) -> None:
 
     loaded = json.loads(manifest_path.read_text(encoding="utf-8"))
     assert loaded["project_slug"] == "ppbio-rabeca"
+
+
+def test_discover_audio_files_filters_supported_extensions(tmp_path: Path) -> None:
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "a.wav").write_bytes(b"wav")
+    (audio_dir / "b.mp3").write_bytes(b"mp3")
+    (audio_dir / "c.txt").write_text("ignore", encoding="utf-8")
+
+    files = discover_audio_files(str(audio_dir))
+    names = [item.name for item in files]
+
+    assert names == ["a.wav", "b.mp3"]
+
+
+def test_chunk_items() -> None:
+    files = [Path(f"f{i}.wav") for i in range(5)]
+    chunks = _chunk_items(files, 2)
+
+    assert len(chunks) == 3
+    assert len(chunks[0]) == 2
+    assert len(chunks[1]) == 2
+    assert len(chunks[2]) == 1
+
+
+def test_resume_state_roundtrip(tmp_path: Path) -> None:
+    state_file = tmp_path / "state.json"
+    _save_resume_state(state_file=state_file, uploaded={"audio/a.wav"}, failed={"audio/b.wav"})
+
+    loaded = _load_resume_state(state_file=state_file)
+
+    assert loaded["uploaded"] == ["audio/a.wav"]
+    assert loaded["failed"] == ["audio/b.wav"]
+
+
+def test_sync_audio_batches_skips_remote_and_checkpointed(tmp_path: Path) -> None:
+    class FakeApi:
+        def __init__(self) -> None:
+            self.files = {
+                "audio/existing.wav",
+                "manifest.json",
+                "audio/.gitkeep",
+                "index/.gitkeep",
+                "index/shards/.gitkeep",
+                "validations/.gitkeep",
+                "audit/.gitkeep",
+            }
+            self.uploaded: list[str] = []
+
+        def create_repo(self, **kwargs: object) -> None:
+            _ = kwargs
+
+        def list_repo_files(self, **kwargs: object) -> list[str]:
+            _ = kwargs
+            return sorted(self.files)
+
+        def upload_file(self, *, path_or_fileobj: object, path_in_repo: str, **kwargs: object) -> None:
+            _ = path_or_fileobj
+            _ = kwargs
+            self.uploaded.append(path_in_repo)
+            self.files.add(path_in_repo)
+
+    audio_dir = tmp_path / "audio"
+    audio_dir.mkdir(parents=True)
+    (audio_dir / "existing.wav").write_bytes(b"x")
+    (audio_dir / "new.wav").write_bytes(b"x")
+    (audio_dir / "checkpointed.wav").write_bytes(b"x")
+
+    state_file = tmp_path / "resume.json"
+    state_file.write_text(
+        json.dumps({"uploaded": ["audio/checkpointed.wav"], "failed": []}),
+        encoding="utf-8",
+    )
+
+    api = FakeApi()
+    result = sync_audio_batches(
+        api=api,
+        project_slug="ppbio-rabeca",
+        dataset_repo="org/birdnet-ppbio-rabeca-dataset",
+        local_audio_dir=str(audio_dir),
+        batch_size=2,
+        max_retries=1,
+        retry_backoff_seconds=0,
+        resume_state_file=str(state_file),
+    )
+
+    assert result["total_local_audio_files"] == 3
+    assert result["pending_uploads"] == 1
+    assert result["uploaded_now"] == 1
+    assert result["failed"] == 0
+    assert api.uploaded == ["audio/new.wav"]

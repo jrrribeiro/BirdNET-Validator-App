@@ -22,7 +22,10 @@ Comandos principais:
 2. Gerar manifesto e shards iniciais de indice:
    python -m cli.hf_dataset_cli build-index --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset --detections-file detections.csv --shard-size 10000
 
-3. Verificar consistencia basica do projeto:
+3. Fazer upload de audio em lotes com retry e resume:
+   python -m cli.hf_dataset_cli sync-audio --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset --local-audio-dir ./audio --batch-size 100 --max-retries 3 --resume-state-file .sync-audio-state.json
+
+4. Verificar consistencia basica do projeto:
    python -m cli.hf_dataset_cli verify-project --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset
 
 Estrutura base criada por projeto/dataset:
