@@ -1257,6 +1257,21 @@ def create_app() -> gr.Blocks:
         session_state = gr.State(value=None)
         selected_project_state = gr.State(value=None)
 
+        def _project_rows() -> list[list[object]]:
+            projects = admin_manager.list_projects()
+            return [
+                [
+                    p["project_slug"],
+                    p["name"],
+                    p["dataset_repo_id"],
+                    "yes" if bool(p["active"]) else "no",
+                ]
+                for p in projects
+            ]
+
+        def _project_slugs() -> list[str]:
+            return [p["project_slug"] for p in admin_manager.list_projects()]
+
         with gr.Tabs():
             # ===== TAB 1: Login =====
             with gr.Tab("🔐 Login", id="login_tab"):
@@ -1277,62 +1292,7 @@ def create_app() -> gr.Blocks:
                     outputs=[session_state],
                 )
 
-            # ===== TAB 2: Project Selection =====
-            with gr.Tab("📁 Selecionar Projeto", id="project_tab"):
-                project_info_display = gr.Markdown(
-                    value="⚠️ Faça login primeiro na aba **Login**"
-                )
-                project_selector = gr.Dropdown(
-                    choices=[],
-                    label="Projeto Autorizado",
-                    interactive=False,
-                )
-
-                def update_project_selector(session):
-                    """Update project dropdown when user logs in."""
-                    if session is None:
-                        return (
-                            gr.Dropdown(choices=[], value=None, interactive=False),
-                            "❌ Not logged in. Please login first.",
-                            None,
-                        )
-
-                    projects = session.authorized_projects
-                    if not projects:
-                        return (
-                            gr.Dropdown(choices=[], value=None, interactive=False),
-                            "⚠️ **No Projects Assigned**\n\nYou don't have access to any projects yet. Contact an administrator.",
-                            None,
-                        )
-
-                    selected = projects[0]
-                    role = auth_service.get_user_role_for_project(session.username, selected)
-                    role_label = role.value.upper() if role else "UNKNOWN"
-                    return (
-                        gr.Dropdown(choices=projects, value=selected, interactive=True),
-                        f"📁 **Project:** {selected} | **Your Role:** {role_label}",
-                        selected,
-                    )
-
-                session_state.change(
-                    fn=update_project_selector,
-                    inputs=[session_state],
-                    outputs=[project_selector, project_info_display, selected_project_state],
-                )
-
-                def update_selected_project(selected: str, session):
-                    """Update state when project is selected."""
-                    if session and selected:
-                        return selected
-                    return None
-
-                project_selector.change(
-                    fn=update_selected_project,
-                    inputs=[project_selector, session_state],
-                    outputs=[selected_project_state],
-                )
-
-            # ===== TAB 3: Admin Panel =====
+            # ===== TAB 2: Admin Panel =====
             with gr.Tab("⚙️ Admin", id="admin_tab"):
                 admin_info = gr.Markdown(value="⚠️ Faça login primeiro")
 
@@ -1393,19 +1353,19 @@ def create_app() -> gr.Blocks:
                         if not created:
                             return (
                                 f"⚠️ Projeto '{slug}' já existe.",
-                                admin_manager.list_projects(),
-                                gr.update(choices=[p["project_slug"] for p in admin_manager.list_projects()]),
+                                _project_rows(),
+                                gr.update(choices=_project_slugs()),
                             )
 
                         return (
                             f"✅ Projeto '{slug}' criado com sucesso.",
-                            admin_manager.list_projects(),
-                            gr.update(choices=[p["project_slug"] for p in admin_manager.list_projects()], value=slug),
+                            _project_rows(),
+                            gr.update(choices=_project_slugs(), value=slug),
                         )
 
                     create_project_btn = gr.Button("➕ Criar Projeto", variant="primary")
                     projects_table = gr.Dataframe(
-                        value=admin_manager.list_projects(),
+                        value=_project_rows(),
                         headers=["project_slug", "name", "dataset_repo_id", "active"],
                         interactive=False,
                     )
@@ -1414,7 +1374,7 @@ def create_app() -> gr.Blocks:
                     def refresh_projects(session):
                         if session is None or session.role.value != "admin":
                             return []
-                        return admin_manager.list_projects()
+                        return _project_rows()
 
                     refresh_projects_btn.click(
                         fn=refresh_projects,
@@ -1429,7 +1389,7 @@ def create_app() -> gr.Blocks:
                             label="Usuário", placeholder="validator_001"
                         )
                         admin_project = gr.Dropdown(
-                            choices=[p["project_slug"] for p in admin_manager.list_projects()],
+                            choices=_project_slugs(),
                             label="Projeto",
                         )
                         admin_role = gr.Dropdown(
@@ -1471,6 +1431,61 @@ def create_app() -> gr.Blocks:
                     fn=lambda s: gr.update(visible=bool(s is not None and s.role.value == "admin")),
                     inputs=[session_state],
                     outputs=[admin_users_controls],
+                )
+
+            # ===== TAB 3: Project Selection =====
+            with gr.Tab("📁 Selecionar Projeto", id="project_tab"):
+                project_info_display = gr.Markdown(
+                    value="⚠️ Faça login primeiro na aba **Login**"
+                )
+                project_selector = gr.Dropdown(
+                    choices=[],
+                    label="Projeto Autorizado",
+                    interactive=False,
+                )
+
+                def update_project_selector(session):
+                    """Update project dropdown when user logs in."""
+                    if session is None:
+                        return (
+                            gr.Dropdown(choices=[], value=None, interactive=False),
+                            "❌ Not logged in. Please login first.",
+                            None,
+                        )
+
+                    projects = session.authorized_projects
+                    if not projects:
+                        return (
+                            gr.Dropdown(choices=[], value=None, interactive=False),
+                            "⚠️ **No Projects Assigned**\n\nYou don't have access to any projects yet. Contact an administrator.",
+                            None,
+                        )
+
+                    selected = projects[0]
+                    role = auth_service.get_user_role_for_project(session.username, selected)
+                    role_label = role.value.upper() if role else "UNKNOWN"
+                    return (
+                        gr.Dropdown(choices=projects, value=selected, interactive=True),
+                        f"📁 **Project:** {selected} | **Your Role:** {role_label}",
+                        selected,
+                    )
+
+                session_state.change(
+                    fn=update_project_selector,
+                    inputs=[session_state],
+                    outputs=[project_selector, project_info_display, selected_project_state],
+                )
+
+                def update_selected_project(selected: str, session):
+                    """Update state when project is selected."""
+                    if session and selected:
+                        return selected
+                    return None
+
+                project_selector.change(
+                    fn=update_selected_project,
+                    inputs=[project_selector, session_state],
+                    outputs=[selected_project_state],
                 )
 
             # ===== TAB 4: Validation =====
