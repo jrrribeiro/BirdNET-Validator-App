@@ -12,6 +12,17 @@ Aplicacao de validacao de deteccoes para Hugging Face Spaces (Gradio), com foco 
    pip install -r requirements.txt
 3. Rodar app:
    python app.py
+4. Rodar uploader (app separado para ingestao):
+   python app_uploader.py
+
+## Fluxo recomendado (separado)
+1. Uploader app (porta 7862 por padrao):
+   - Rodar dry-run com CSV + pasta de segmentos
+   - Rodar upload real para owner/repo do projeto
+2. Validator app (porta 7860):
+   - Validar deteccoes do projeto com dados ja publicados
+
+Essa separacao evita impacto de performance na validacao durante uploads grandes.
 
 ## CLI de dataset (Sprint 1)
 Comandos principais:
@@ -27,6 +38,12 @@ Comandos principais:
 
 4. Verificar consistencia basica do projeto:
    python -m cli.hf_dataset_cli verify-project --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset
+
+5. Ingestao BirdNET por projeto (dry-run):
+   python -m cli.hf_dataset_cli ingest-segments --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset --detections-csv detections.csv --segments-root "C:\\BirdNET Segments" --dry-run --report-file .ingest-dry-run-report.json
+
+6. Ingestao BirdNET por projeto (upload real):
+   python -m cli.hf_dataset_cli ingest-segments --project-slug ppbio-rabeca --dataset-repo USUARIO/birdnet-ppbio-rabeca-dataset --detections-csv detections.csv --segments-root "C:\\BirdNET Segments" --batch-size 200 --shard-size 10000 --max-retries 3 --retry-backoff-seconds 1.0 --resume-state-file .ingest-segments-state.json --report-file .ingest-run-report.json
 
 Estrutura base criada por projeto/dataset:
 - audio/
