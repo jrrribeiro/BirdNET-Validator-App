@@ -1334,13 +1334,13 @@ def create_app() -> gr.Blocks:
 
                     def create_project(session, slug: str, name: str, repo_id: str):
                         if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Apenas admin pode criar projetos.", gr.update(), gr.update()
+                            return "❌ Access denied. Apenas admin pode criar projetos.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
                         slug = (slug or "").strip()
                         name = (name or "").strip()
                         repo_id = (repo_id or "").strip()
                         if not slug or not name or not repo_id:
-                            return "⚠️ Preencha slug, nome e repo id.", gr.update(), gr.update()
+                            return "⚠️ Preencha slug, nome e repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
                         created = admin_manager.register_project(
                             Project(
@@ -1355,12 +1355,18 @@ def create_app() -> gr.Blocks:
                                 f"⚠️ Projeto '{slug}' já existe.",
                                 _project_rows(),
                                 gr.update(choices=_project_slugs()),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
                             )
 
                         return (
                             f"✅ Projeto '{slug}' criado com sucesso.",
                             _project_rows(),
                             gr.update(choices=_project_slugs(), value=slug),
+                            gr.update(value=""),
+                            gr.update(value=""),
+                            gr.update(value=""),
                         )
 
                     create_project_btn = gr.Button("➕ Criar Projeto", variant="primary")
@@ -1402,23 +1408,32 @@ def create_app() -> gr.Blocks:
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Apenas admin pode atribuir usuários."
+                            return "❌ Access denied. Apenas admin pode atribuir usuários.", gr.update(), gr.update(), gr.update()
                         success, msg = admin_manager.assign_user_to_project(
                             username, project, role
                         )
-                        return msg
+                        if success:
+                            return msg, gr.update(value=""), gr.update(value=None), gr.update(value="validator")
+                        return msg, gr.update(), gr.update(), gr.update()
 
                     assign_btn = gr.Button("✅ Assignar", variant="primary")
                     assign_btn.click(
                         fn=assign_user,
                         inputs=[session_state, admin_username, admin_project, admin_role],
-                        outputs=[admin_message],
+                        outputs=[admin_message, admin_username, admin_project, admin_role],
                     )
 
                 create_project_btn.click(
                     fn=create_project,
                     inputs=[session_state, create_project_slug, create_project_name, create_project_repo],
-                    outputs=[create_project_message, projects_table, admin_project],
+                    outputs=[
+                        create_project_message,
+                        projects_table,
+                        admin_project,
+                        create_project_slug,
+                        create_project_name,
+                        create_project_repo,
+                    ],
                 )
 
                 session_state.change(
