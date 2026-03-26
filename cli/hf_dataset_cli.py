@@ -241,7 +241,7 @@ def discover_segment_records(segments_root: str) -> list[SegmentFileRecord]:
     return records
 
 
-def run_ingest_segments_dry_run(project_slug: str, detections_csv: str, segments_root: str) -> dict[str, Any]:
+def _match_birdnet_rows(project_slug: str, detections_csv: str, segments_root: str) -> dict[str, Any]:
     frame = load_birdnet_detections_csv(detections_csv=detections_csv)
     segment_records = discover_segment_records(segments_root=segments_root)
 
@@ -328,6 +328,26 @@ def run_ingest_segments_dry_run(project_slug: str, detections_csv: str, segments
             }
         )
 
+    return {
+        "frame": frame,
+        "segment_records_total": len(segment_records),
+        "matched_rows": matched_rows,
+        "unmatched_rows": unmatched_rows,
+        "ambiguous_rows": ambiguous_rows,
+    }
+
+
+def run_ingest_segments_dry_run(project_slug: str, detections_csv: str, segments_root: str) -> dict[str, Any]:
+    match_result = _match_birdnet_rows(
+        project_slug=project_slug,
+        detections_csv=detections_csv,
+        segments_root=segments_root,
+    )
+    frame = match_result["frame"]
+    matched_rows = match_result["matched_rows"]
+    unmatched_rows = match_result["unmatched_rows"]
+    ambiguous_rows = match_result["ambiguous_rows"]
+
     unique_audio = {row["audio_id"] for row in matched_rows}
     result = {
         "mode": "dry-run",
@@ -335,7 +355,7 @@ def run_ingest_segments_dry_run(project_slug: str, detections_csv: str, segments
         "detections_csv": detections_csv,
         "segments_root": segments_root,
         "csv_rows_total": int(len(frame)),
-        "segments_found_total": len(segment_records),
+        "segments_found_total": int(match_result["segment_records_total"]),
         "matched_rows": len(matched_rows),
         "unmatched_rows": len(unmatched_rows),
         "ambiguous_rows": len(ambiguous_rows),
@@ -422,7 +442,7 @@ def discover_audio_files(local_audio_dir: str) -> list[Path]:
     return sorted(files)
 
 
-def _chunk_items(items: list[Path], chunk_size: int) -> list[list[Path]]:
+def _chunk_items(items: list[Any], chunk_size: int) -> list[list[Any]]:
     if chunk_size <= 0:
         raise ValueError("chunk_size must be greater than zero")
     return [items[index : index + chunk_size] for index in range(0, len(items), chunk_size)]
@@ -474,6 +494,154 @@ def _upload_audio_with_retry(
             if attempts > max_retries:
                 raise
             time.sleep(retry_backoff_seconds * attempts)
+
+
+def ingest_segments_to_hf(
+    api: HfApi,
+    project_slug: str,
+    dataset_repo: str,
+    detections_csv: str,
+    segments_root: str,
+    batch_size: int,
+    shard_size: int,
+    max_retries: int,
+    retry_backoff_seconds: float,
+    resume_state_file: str,
+) -> dict[str, Any]:
+    ensure_project_dataset_structure(
+        api=api,
+        project_slug=project_slug,
+        dataset_repo=dataset_repo,
+        create_private_repo=False,
+    )
+
+    match_result = _match_birdnet_rows(
+        project_slug=project_slug,
+        detections_csv=detections_csv,
+        segments_root=segments_root,
+    )
+    frame = match_result["frame"]
+    matched_rows = match_result["matched_rows"]
+    unmatched_rows = match_result["unmatched_rows"]
+    ambiguous_rows = match_result["ambiguous_rows"]
+
+    # Deduplicate by remote path so retries/resume work on a stable key.
+    path_to_local: dict[str, Path] = {}
+    for row in matched_rows:
+        repo_path = f"audio/segments/{row['segment_relpath']}"
+        if repo_path in path_to_local:
+            continue
+        path_to_local[repo_path] = Path(segments_root) / row["segment_relpath"]
+
+    state_path = Path(resume_state_file)
+    state_payload = _load_resume_state(state_file=state_path)
+    uploaded_state = set(str(item) for item in state_payload["uploaded"])
+    failed_state = set(str(item) for item in state_payload["failed"])
+
+    remote_files = set(api.list_repo_files(repo_id=dataset_repo, repo_type="dataset"))
+
+    pending: list[tuple[Path, str]] = []
+    skipped_existing = 0
+    for repo_path, local_path in path_to_local.items():
+        if repo_path in remote_files:
+            uploaded_state.add(repo_path)
+            skipped_existing += 1
+            continue
+        if repo_path in uploaded_state:
+            continue
+        pending.append((local_path, repo_path))
+
+    uploaded_now: set[str] = set()
+    failed_now: set[str] = set()
+
+    for batch_index, batch in enumerate(_chunk_items(pending, batch_size), start=1):
+        batch_uploaded = 0
+        batch_failed = 0
+        for local_path, repo_path in batch:
+            try:
+                _upload_audio_with_retry(
+                    api=api,
+                    dataset_repo=dataset_repo,
+                    local_path=local_path,
+                    path_in_repo=repo_path,
+                    max_retries=max_retries,
+                    retry_backoff_seconds=retry_backoff_seconds,
+                )
+                uploaded_state.add(repo_path)
+                failed_state.discard(repo_path)
+                uploaded_now.add(repo_path)
+                batch_uploaded += 1
+            except Exception:
+                failed_state.add(repo_path)
+                failed_now.add(repo_path)
+                batch_failed += 1
+
+        print(
+            json.dumps(
+                {
+                    "event": "ingest-segments-audio-batch",
+                    "batch_index": batch_index,
+                    "batch_size": len(batch),
+                    "uploaded": batch_uploaded,
+                    "failed": batch_failed,
+                }
+            )
+        )
+        _save_resume_state(state_file=state_path, uploaded=uploaded_state, failed=failed_state)
+
+    index_frame = pd.DataFrame(matched_rows)
+    if not index_frame.empty:
+        index_frame["segment_path_in_repo"] = index_frame["segment_relpath"].apply(lambda value: f"audio/segments/{value}")
+
+    with tempfile.TemporaryDirectory(prefix="birdnet-ingest-index-") as temp_dir_str:
+        temp_dir = Path(temp_dir_str)
+        shard_dir = temp_dir / "index" / "shards"
+        shard_metadata = build_shards_in_directory(frame=index_frame, output_dir=shard_dir, shard_size=shard_size)
+
+        for item in shard_metadata:
+            local_path = temp_dir / item.path
+            api.upload_file(
+                path_or_fileobj=str(local_path),
+                path_in_repo=item.path,
+                repo_id=dataset_repo,
+                repo_type="dataset",
+            )
+
+    manifest = build_manifest_payload(
+        project_slug=project_slug,
+        dataset_repo=dataset_repo,
+        frame=index_frame,
+        shard_size=shard_size,
+        shard_metadata=shard_metadata,
+    )
+    _upload_text(api=api, dataset_repo=dataset_repo, path_in_repo="manifest.json", content=json.dumps(manifest, indent=2))
+
+    run_report = {
+        "mode": "execute",
+        "project_slug": project_slug,
+        "dataset_repo": dataset_repo,
+        "detections_csv": detections_csv,
+        "segments_root": segments_root,
+        "csv_rows_total": int(len(frame)),
+        "segments_found_total": int(match_result["segment_records_total"]),
+        "matched_rows": len(matched_rows),
+        "unmatched_rows": len(unmatched_rows),
+        "ambiguous_rows": len(ambiguous_rows),
+        "unique_audio_ids": int(index_frame["audio_id"].nunique()) if not index_frame.empty else 0,
+        "pending_audio_uploads": len(pending),
+        "uploaded_audio_now": len(uploaded_now),
+        "uploaded_audio_skipped_existing": skipped_existing,
+        "failed_uploads": len(failed_now),
+        "resume_state_file": str(state_path),
+        "index_rows_written": len(index_frame),
+        "shards_written": len(shard_metadata),
+        "sample_unmatched": unmatched_rows[:20],
+        "sample_ambiguous": ambiguous_rows[:20],
+    }
+
+    audit_path = f"audit/ingestion-runs/{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}.json"
+    _upload_text(api=api, dataset_repo=dataset_repo, path_in_repo=audit_path, content=json.dumps(run_report, indent=2))
+    return run_report
 
 
 def sync_audio_batches(
@@ -706,6 +874,11 @@ def build_parser() -> argparse.ArgumentParser:
     ingest_segments.add_argument("--dataset-repo", required=True)
     ingest_segments.add_argument("--detections-csv", required=True)
     ingest_segments.add_argument("--segments-root", required=True)
+    ingest_segments.add_argument("--batch-size", type=int, default=200)
+    ingest_segments.add_argument("--shard-size", type=int, default=10000)
+    ingest_segments.add_argument("--max-retries", type=int, default=3)
+    ingest_segments.add_argument("--retry-backoff-seconds", type=float, default=1.0)
+    ingest_segments.add_argument("--resume-state-file", default=".ingest-segments-state.json")
     ingest_segments.add_argument("--dry-run", action="store_true")
     ingest_segments.add_argument("--report-file", default="")
 
@@ -762,20 +935,31 @@ def main() -> int:
         return 0 if result["ok"] else 1
 
     if args.command == "ingest-segments":
-        if not args.dry_run:
-            parser.error("ingest-segments currently supports only --dry-run in this phase")
-
-        result = run_ingest_segments_dry_run(
-            project_slug=args.project_slug,
-            detections_csv=args.detections_csv,
-            segments_root=args.segments_root,
-        )
+        if args.dry_run:
+            result = run_ingest_segments_dry_run(
+                project_slug=args.project_slug,
+                detections_csv=args.detections_csv,
+                segments_root=args.segments_root,
+            )
+        else:
+            result = ingest_segments_to_hf(
+                api=api,
+                project_slug=args.project_slug,
+                dataset_repo=args.dataset_repo,
+                detections_csv=args.detections_csv,
+                segments_root=args.segments_root,
+                batch_size=args.batch_size,
+                shard_size=args.shard_size,
+                max_retries=args.max_retries,
+                retry_backoff_seconds=args.retry_backoff_seconds,
+                resume_state_file=args.resume_state_file,
+            )
 
         if args.report_file:
             Path(args.report_file).write_text(json.dumps(result, indent=2), encoding="utf-8")
 
         print(json.dumps(result, indent=2))
-        return 0
+        return 0 if result.get("failed_uploads", 0) == 0 else 1
 
     parser.error("Unknown command")
     return 2

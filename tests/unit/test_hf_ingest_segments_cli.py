@@ -4,6 +4,7 @@ import pandas as pd
 
 from cli.hf_dataset_cli import (
     _build_detection_key,
+    build_parser,
     parse_segment_filename,
     run_ingest_segments_dry_run,
 )
@@ -99,3 +100,28 @@ def test_run_ingest_segments_dry_run_matches_rows(tmp_path: Path):
     assert result["segments_found_total"] == 2
     assert result["matched_rows"] == 1
     assert result["unmatched_rows"] == 1
+
+
+def test_build_parser_ingest_segments_defaults():
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "ingest-segments",
+            "--project-slug",
+            "ppbio-aiuaba",
+            "--dataset-repo",
+            "owner/repo",
+            "--detections-csv",
+            "detections.csv",
+            "--segments-root",
+            "segments",
+        ]
+    )
+
+    assert args.command == "ingest-segments"
+    assert args.batch_size == 200
+    assert args.shard_size == 10000
+    assert args.max_retries == 3
+    assert args.retry_backoff_seconds == 1.0
+    assert args.resume_state_file == ".ingest-segments-state.json"
+    assert args.dry_run is False
