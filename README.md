@@ -62,3 +62,49 @@ Default port is 7860.
 ## Project Status
 
 Validator workflow is active and under continuous development, with emphasis on reliability, auditability, and operator productivity.
+
+## FAQ
+
+### Is this app intended for production use?
+
+Yes, for validator workflows. It is already structured for multi-project access control, audit-friendly writes, and collaborative validation.
+
+### Does the app preload all audio files?
+
+No. Audio is fetched on demand for the selected detection, helping keep memory and network usage under control.
+
+### Can multiple validators work at the same time?
+
+Yes. The validation flow uses optimistic concurrency checks to detect and handle conflicting updates.
+
+### Can this run on Hugging Face Spaces?
+
+Yes. The project is designed for Gradio deployment on Hugging Face Spaces.
+
+## Troubleshooting
+
+### The app does not start locally
+
+1. Confirm Python 3.11+ is active.
+2. Reinstall dependencies with `pip install -r requirements.txt`.
+3. Run `python app.py` from the repository root.
+
+### Port 7860 is already in use
+
+Stop the existing process using that port, or launch after setting a different `GRADIO_SERVER_PORT` environment variable.
+
+### Login works but no project appears
+
+Your user likely has no project assignment. Add project access through the admin flow.
+
+### Audio does not load for a detection
+
+Check that:
+
+1. `audio_id` exists and is valid for the selected project.
+2. The dataset repository is reachable.
+3. You have permission to read the project dataset.
+
+### I get conflict messages while validating
+
+This means another validator updated the same detection first. Refresh and reapply your decision on the newest version.
