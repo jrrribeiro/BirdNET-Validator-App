@@ -35,6 +35,35 @@ class AudioFetchService:
         local_path = self._cache.put_bytes(cache_key, downloaded_path.read_bytes(), suffix=suffix)
         return AudioFetchResult(cache_key=cache_key, local_path=str(local_path), source="remote")
 
+    def fetch_local(self, local_audio_path: str) -> AudioFetchResult:
+        """Load audio from local filesystem (useful for testing with local segments).
+        
+        Args:
+            local_audio_path: Full path to local audio file
+            
+        Returns:
+            AudioFetchResult with cache_key based on file path
+            
+        Raises:
+            FileNotFoundError: If local file doesn't exist or is not a supported audio format
+        """
+        audio_path = Path(local_audio_path)
+        if not audio_path.exists():
+            raise FileNotFoundError(f"Local audio file not found: {local_audio_path}")
+        
+        if audio_path.suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS:
+            raise ValueError(f"Unsupported audio format: {audio_path.suffix}. Supported: {SUPPORTED_AUDIO_EXTENSIONS}")
+        
+        cache_key = f"local:{audio_path.name}:{audio_path.stat().st_size}"
+        cached_path = self._cache.get(cache_key)
+        if cached_path:
+            return AudioFetchResult(cache_key=cache_key, local_path=str(cached_path), source="cache")
+        
+        # Cache the local file by copying it into the ephemeral cache
+        local_bytes = audio_path.read_bytes()
+        cached_path = self._cache.put_bytes(cache_key, local_bytes, suffix=audio_path.suffix)
+        return AudioFetchResult(cache_key=cache_key, local_path=str(cached_path), source="local")
+
     def cleanup_after_validation(self, cache_key: str) -> None:
         self._cache.cleanup_key(cache_key)
 

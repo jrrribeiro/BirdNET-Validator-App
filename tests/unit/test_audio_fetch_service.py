@@ -78,3 +78,57 @@ def test_cleanup_after_validation_removes_cached_file(tmp_path: Path, monkeypatc
 
     assert not path_before.exists()
     assert cache.get(result.cache_key) is None
+
+
+def test_fetch_local_loads_local_audio_file(tmp_path: Path) -> None:
+    """Test loading audio from local filesystem (useful for testing with local segments)."""
+    # Create a local audio file
+    local_audio = tmp_path / "local_segment.wav"
+    local_audio.write_bytes(b"local-audio-bytes")
+
+    cache = EphemeralCacheManager(cache_dir=str(tmp_path / "cache"), ttl_seconds=60, max_files=10)
+    service = AudioFetchService(cache)
+
+    result = service.fetch_local(str(local_audio))
+
+    assert result.source == "local"
+    assert Path(result.local_path).exists()
+    assert Path(result.local_path).read_bytes() == b"local-audio-bytes"
+    assert "local:" in result.cache_key
+
+
+def test_fetch_local_caches_on_second_call(tmp_path: Path) -> None:
+    """Test that local audio is cached after first fetch."""
+    local_audio = tmp_path / "segment.wav"
+    local_audio.write_bytes(b"segment-bytes")
+
+    cache = EphemeralCacheManager(cache_dir=str(tmp_path / "cache"), ttl_seconds=60, max_files=10)
+    service = AudioFetchService(cache)
+
+    first = service.fetch_local(str(local_audio))
+    second = service.fetch_local(str(local_audio))
+
+    assert first.source == "local"
+    assert second.source == "cache"
+    assert first.cache_key == second.cache_key
+
+
+def test_fetch_local_raises_on_nonexistent_file(tmp_path: Path) -> None:
+    """Test that fetch_local raises error for missing files."""
+    cache = EphemeralCacheManager(cache_dir=str(tmp_path / "cache"), ttl_seconds=60, max_files=10)
+    service = AudioFetchService(cache)
+
+    with pytest.raises(FileNotFoundError, match="Local audio file not found"):
+        service.fetch_local(str(tmp_path / "nonexistent.wav"))
+
+
+def test_fetch_local_raises_on_unsupported_format(tmp_path: Path) -> None:
+    """Test that fetch_local rejects unsupported audio formats."""
+    unsupported_file = tmp_path / "audio.xyz"
+    unsupported_file.write_bytes(b"not-audio")
+
+    cache = EphemeralCacheManager(cache_dir=str(tmp_path / "cache"), ttl_seconds=60, max_files=10)
+    service = AudioFetchService(cache)
+
+    with pytest.raises(ValueError, match="Unsupported audio format"):
+        service.fetch_local(str(unsupported_file))
