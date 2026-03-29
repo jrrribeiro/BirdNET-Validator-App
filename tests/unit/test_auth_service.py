@@ -1,7 +1,7 @@
 """Unit tests for AuthService and ACL enforcement."""
 
 import pytest
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 from src.auth.auth_service import AuthService, Session, UserProjectAccess
 from src.domain.models import Role
@@ -84,7 +84,7 @@ class TestAuthService:
         assert session is not None
 
         # Manually set expiration to past
-        session.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        session.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
         # Try to retrieve expired session
         retrieved = short_ttl_service.get_session(session.session_id)
@@ -165,7 +165,7 @@ class TestAuthService:
         session2 = auth_service.login("validator1")
 
         # Expire session1
-        session1.expires_at = datetime.utcnow() - timedelta(seconds=1)
+        session1.expires_at = datetime.now(UTC) - timedelta(seconds=1)
 
         # Cleanup
         auth_service.cleanup_expired_sessions()
@@ -206,6 +206,35 @@ class TestAuthService:
         projects = auth_service.list_user_projects("user1")
         assert len(projects) == 2
         assert auth_service.get_user_role_for_project("user1", "project-2") == Role.admin
+
+    def test_upsert_user_project_role_creates_and_updates_user(self, auth_service):
+        auth_service.upsert_user_project_role("new_user", "project-1", Role.validator)
+        assert auth_service.get_user_role_for_project("new_user", "project-1") == Role.validator
+
+        auth_service.upsert_user_project_role("new_user", "project-1", Role.admin)
+        assert auth_service.get_user_role_for_project("new_user", "project-1") == Role.admin
+
+    def test_remove_user_project_role(self, auth_service):
+        auth_service.register_user_project_access("temp_user", {"project-1": Role.validator})
+
+        removed = auth_service.remove_user_project_role("temp_user", "project-1")
+        assert removed is True
+        assert auth_service.get_user_role_for_project("temp_user", "project-1") is None
+
+        removed_again = auth_service.remove_user_project_role("temp_user", "project-1")
+        assert removed_again is False
+
+    def test_list_usernames_honors_active_filter(self, auth_service):
+        auth_service.register_user_project_access("active_user", {"project-1": Role.validator})
+        auth_service.register_user_project_access("inactive_user", {"project-1": Role.validator})
+        auth_service.set_user_active("inactive_user", False)
+
+        active_only = auth_service.list_usernames()
+        with_inactive = auth_service.list_usernames(include_inactive=True)
+
+        assert "active_user" in active_only
+        assert "inactive_user" not in active_only
+        assert "inactive_user" in with_inactive
 
     def test_session_isolation_between_users(self, auth_service, setup_users):
         """Test that sessions are isolated between users."""
@@ -253,7 +282,7 @@ class TestSessionModel:
 
     def test_session_creation(self):
         """Test creating a session."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         session = Session(
             session_id="test-session-123",
             username="test_user",
@@ -271,7 +300,7 @@ class TestSessionModel:
 
     def test_session_expiration_check(self):
         """Test session expiration detection."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
 
         # Not expired
         session = Session(
@@ -292,7 +321,7 @@ class TestSessionModel:
 
     def test_session_activity_update(self):
         """Test updating session activity."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         session = Session(
             session_id="test",
             username="user",
@@ -312,6 +341,6 @@ class TestSessionModel:
 
         assert session.last_activity >= original_activity
         # The new expiration should be approximately 30 minutes from now
-        expected_expires = datetime.utcnow() + timedelta(minutes=30)
+        expected_expires = datetime.now(UTC) + timedelta(minutes=30)
         # Allow 5 seconds of variance due to timing
         assert abs((session.expires_at - expected_expires).total_seconds()) < 5

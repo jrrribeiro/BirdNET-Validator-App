@@ -45,7 +45,7 @@ Pass criteria:
 
 Pass criteria:
 - Status changes to ready for selected project.
-- Message "Projeto nao selecionado" no longer appears after valid selection.
+- Message "Project not selected" no longer appears after valid selection.
 
 ### Smoke Evidence (copy/paste)
 1. Date/time:
@@ -88,9 +88,9 @@ Expected access matrix:
 | E2E-10 | ACL isolation | Test suite available | Run ACL tests | ACL tests pass (project isolation enforced) | PASS |
 
 ## Execution Notes
-- This checklist is aligned with fixes applied in src/ui/app_factory.py.
+- This checklist is aligned with fixes applied in `src/ui/app_factory.py`.
 - The app uses Gradio and callback-driven state transitions.
-- ACL behavior is also covered by unit tests in tests/unit/test_acl_enforcement.py.
+- ACL behavior is also covered by unit tests in `tests/unit/test_acl_enforcement.py`.
 
 ## Evidence Commands
 1. python -m pytest tests/unit/test_acl_enforcement.py -q

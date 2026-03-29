@@ -1,9 +1,11 @@
 import gradio as gr
-import tempfile
+import hashlib
+import json
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
 
+from src.config.runtime_config import RuntimeConfig
 from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection, Project, Role
 from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository, OptimisticLockError
@@ -13,8 +15,7 @@ from src.services.detection_queue_service import DetectionQueueService
 from src.services.validation_service import ValidationService
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
-from src.ui.project_selector import create_project_selector
-from src.ui.admin_panel import AdminPanelManager, create_admin_panel
+from src.ui.admin_panel import AdminPanelManager
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -61,43 +62,314 @@ class _QueueServiceProtocol(Protocol):
 
 
 def _seed_service() -> DetectionQueueService:
+    return _seed_service_for_projects(["demo-project"])
+
+
+def _seed_service_for_projects(
+    project_slugs: list[str],
+    seed_file_path: str | None = None,
+) -> DetectionQueueService:
     repo = InMemoryDetectionRepository()
-    demo_items = [
+    detected_by_project = _load_seed_detections(seed_file_path)
+
+    for project_slug in project_slugs:
+        seeded_items = detected_by_project.get(project_slug, [])
+        items = seeded_items or _default_demo_detections(project_slug)
+        items = sorted(items, key=lambda item: item.detection_key)
+        repo.seed(project_slug, items)
+
+    return DetectionQueueService(repo)
+
+
+def _build_detection_repository(
+    project_slugs: list[str],
+    seed_file_path: str | None,
+) -> tuple[DetectionQueueService, str]:
+    warning = _validate_seed_file(seed_file_path)
+    return _seed_service_for_projects(project_slugs, seed_file_path=seed_file_path), warning
+
+
+def _validate_seed_file(seed_file_path: str | None) -> str:
+    if not seed_file_path:
+        return ""
+
+    normalized_path = Path(seed_file_path)
+    if not normalized_path.exists():
+        return (
+            f"⚠️ BIRDNET_DETECTIONS_FILE not found: {normalized_path}. "
+            "Set BIRDNET_DETECTIONS_FILE to a valid JSON file path or unset it to use default demo detections."
+        )
+
+    try:
+        payload = json.loads(normalized_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return (
+            f"⚠️ BIRDNET_DETECTIONS_FILE invalid: {exc}. "
+            "Fix JSON syntax and ensure UTF-8 encoding."
+        )
+
+    if isinstance(payload, dict):
+        non_list_projects = [slug for slug, rows in payload.items() if not isinstance(rows, list)]
+        if non_list_projects:
+            sample = ", ".join(non_list_projects[:3])
+            return (
+                f"⚠️ Invalid seed JSON: projects without a detection list ({sample}). "
+                "Each project key must map to a list of detection objects."
+            )
+        return ""
+
+    if isinstance(payload, list):
+        missing_project = 0
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            if not str(row.get("project_slug", "")).strip():
+                missing_project += 1
+        if missing_project:
+            return (
+                "⚠️ Invalid seed JSON: entries without project_slug in list. "
+                "Add project_slug to each detection object when using list format."
+            )
+        return ""
+
+    return (
+        "⚠️ Invalid seed JSON: format must be object-by-project or detection list. "
+        "See README for supported examples."
+    )
+
+
+def _default_demo_detections(project_slug: str) -> list[Detection]:
+    stable_prefix = hashlib.sha1(project_slug.encode("utf-8")).hexdigest()[:8]
+    slug_prefix = project_slug.replace("-", "_")
+    return [
         Detection(
-            detection_key="0000000000001001",
-            audio_id="audio_1001",
+            detection_key=f"{stable_prefix}00001001",
+            audio_id=f"{slug_prefix}_audio_1001",
             scientific_name="Cyanocorax cyanopogon",
             confidence=0.93,
             start_time=1.2,
             end_time=2.5,
         ),
         Detection(
-            detection_key="0000000000001002",
-            audio_id="audio_1002",
+            detection_key=f"{stable_prefix}00001002",
+            audio_id=f"{slug_prefix}_audio_1002",
             scientific_name="Ramphastos toco",
             confidence=0.88,
             start_time=0.8,
             end_time=2.1,
         ),
         Detection(
-            detection_key="0000000000001003",
-            audio_id="audio_1003",
+            detection_key=f"{stable_prefix}00001003",
+            audio_id=f"{slug_prefix}_audio_1003",
             scientific_name="Cyanocorax cyanopogon",
             confidence=0.72,
             start_time=3.1,
             end_time=4.0,
         ),
         Detection(
-            detection_key="0000000000001004",
-            audio_id="audio_1004",
+            detection_key=f"{stable_prefix}00001004",
+            audio_id=f"{slug_prefix}_audio_1004",
             scientific_name="Psarocolius decumanus",
             confidence=0.67,
             start_time=5.0,
             end_time=6.3,
         ),
     ]
-    repo.seed("demo-project", demo_items)
-    return DetectionQueueService(repo)
+
+
+def _load_seed_detections(seed_file_path: str | None) -> dict[str, list[Detection]]:
+    if not seed_file_path:
+        return {}
+
+    normalized_path = Path(seed_file_path)
+    if not normalized_path.exists():
+        return {}
+
+    try:
+        payload = json.loads(normalized_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    result: dict[str, list[Detection]] = {}
+
+    if isinstance(payload, dict):
+        for project_slug, rows in payload.items():
+            parsed_rows = _parse_detection_rows(rows)
+            if parsed_rows:
+                result[str(project_slug)] = parsed_rows
+        return result
+
+    if isinstance(payload, list):
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for row in payload:
+            if not isinstance(row, dict):
+                continue
+            project_slug = str(row.get("project_slug", "")).strip()
+            if not project_slug:
+                continue
+            grouped.setdefault(project_slug, []).append(row)
+
+        for project_slug, rows in grouped.items():
+            parsed_rows = _parse_detection_rows(rows)
+            if parsed_rows:
+                result[project_slug] = parsed_rows
+
+    return result
+
+
+def _parse_detection_rows(rows: object) -> list[Detection]:
+    parsed: list[Detection] = []
+    if not isinstance(rows, list):
+        return parsed
+
+    for raw in rows:
+        if not isinstance(raw, dict):
+            continue
+        try:
+            parsed.append(
+                Detection(
+                    detection_key=str(raw.get("detection_key", "")).strip(),
+                    audio_id=str(raw.get("audio_id", "")).strip(),
+                    scientific_name=str(raw.get("scientific_name", "")).strip(),
+                    confidence=float(raw.get("confidence", 0.0)),
+                    start_time=float(raw.get("start_time", 0.0)),
+                    end_time=float(raw.get("end_time", 0.0)),
+                )
+            )
+        except Exception:
+            continue
+
+    return parsed
+
+
+def _default_projects() -> list[Project]:
+    return [
+        Project(
+            project_slug="kenya-2024",
+            name="Kenya Survey 2024",
+            dataset_repo_id="birdnet/kenya-2024-dataset",
+            active=True,
+        ),
+        Project(
+            project_slug="nairobi-2023",
+            name="Nairobi Survey 2023",
+            dataset_repo_id="birdnet/nairobi-2023-dataset",
+            active=True,
+        ),
+        Project(
+            project_slug="demo-project",
+            name="Demo Project",
+            dataset_repo_id="birdnet/demo-dataset",
+            active=True,
+        ),
+    ]
+
+
+def _default_user_access() -> dict[str, dict[str, Role]]:
+    return {
+        "admin_user": {"kenya-2024": Role.admin, "nairobi-2023": Role.admin},
+        "validator_demo": {"demo-project": Role.validator, "kenya-2024": Role.validator},
+        "validator_other": {"nairobi-2023": Role.validator},
+    }
+
+
+def _load_projects_from_file(projects_file_path: str | None) -> list[Project]:
+    if not projects_file_path:
+        return []
+
+    path = Path(projects_file_path)
+    if not path.exists():
+        return []
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    if not isinstance(payload, list):
+        return []
+
+    projects: list[Project] = []
+    for row in payload:
+        if not isinstance(row, dict):
+            continue
+        try:
+            projects.append(
+                Project(
+                    project_slug=str(row.get("project_slug", "")).strip(),
+                    name=str(row.get("name", "")).strip(),
+                    dataset_repo_id=str(row.get("dataset_repo_id", "")).strip(),
+                    active=bool(row.get("active", True)),
+                )
+            )
+        except Exception:
+            continue
+    return projects
+
+
+def _load_user_access_from_file(user_access_file_path: str | None) -> dict[str, dict[str, Role]]:
+    if not user_access_file_path:
+        return {}
+
+    path = Path(user_access_file_path)
+    if not path.exists():
+        return {}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    if not isinstance(payload, dict):
+        return {}
+
+    result: dict[str, dict[str, Role]] = {}
+    for username, roles_payload in payload.items():
+        if not isinstance(roles_payload, dict):
+            continue
+        normalized_roles: dict[str, Role] = {}
+        for project_slug, role_value in roles_payload.items():
+            role_text = str(role_value).strip().lower()
+            if role_text not in {"admin", "validator"}:
+                continue
+            normalized_roles[str(project_slug)] = Role(role_text)
+        if normalized_roles:
+            result[str(username)] = normalized_roles
+    return result
+
+
+def _bootstrap_auth_and_projects(auth_service: AuthService, admin_manager: AdminPanelManager, runtime_config: RuntimeConfig) -> str:
+    projects = _load_projects_from_file(runtime_config.projects_file_path)
+    user_access = _load_user_access_from_file(runtime_config.user_access_file_path)
+
+    used_demo_fallback = False
+    if not projects and runtime_config.enable_demo_bootstrap:
+        projects = _default_projects()
+        used_demo_fallback = True
+
+    if not user_access and runtime_config.enable_demo_bootstrap:
+        user_access = _default_user_access()
+        used_demo_fallback = True
+
+    for project in projects:
+        _ = admin_manager.register_project(project)
+
+    for username, access in user_access.items():
+        auth_service.register_user_project_access(username, access)
+
+    if used_demo_fallback:
+        return (
+            "⚠️ Demo bootstrap enabled via BIRDNET_ENABLE_DEMO_BOOTSTRAP. "
+            "Use BIRDNET_PROJECTS_FILE and BIRDNET_USER_ACCESS_FILE for production auth/project setup."
+        )
+
+    if not projects or not user_access:
+        return (
+            "⚠️ Production bootstrap incomplete. Configure BIRDNET_PROJECTS_FILE and "
+            "BIRDNET_USER_ACCESS_FILE (or enable demo bootstrap for local testing)."
+        )
+
+    return ""
 
 
 def _page_to_table(
@@ -107,6 +379,7 @@ def _page_to_table(
     page: int,
     scientific_name: str,
     min_confidence: float,
+    page_size: int = 25,
     validator_filter: str = "",
     status_filter: str = "all",
     updated_after: object = None,
@@ -115,9 +388,9 @@ def _page_to_table(
 ):
     filter_name = scientific_name.strip() if scientific_name.strip() else None
     page_obj = service.get_page(
-        project_slug="demo-project",
+        project_slug=project_slug,
         page=page,
-        page_size=2,
+        page_size=page_size,
         scientific_name=filter_name,
         min_confidence=min_confidence,
     )
@@ -189,10 +462,38 @@ def _page_to_table(
     if show_conflicts_only:
         rows = [row for row in rows if str(row[8]) == "CONFLICT"]
 
-    status = f"Pagina {page_obj.page}/{page_obj.total_pages} | Total base: {page_obj.total_items} | Exibidos: {len(rows)}"
+    status = f"Page {page_obj.page}/{page_obj.total_pages} | Base total: {page_obj.total_items} | Shown: {len(rows)}"
     if show_conflicts_only:
-        status = f"{status} | Apenas conflitos: {len(rows)} item(ns)"
+        status = f"{status} | Conflicts only: {len(rows)} item(ns)"
     return rows, status, page_obj.page
+
+
+def _get_project_detection_count(service: _QueueServiceProtocol, project_slug: str) -> int:
+    if not project_slug:
+        return 0
+
+    try:
+        page_obj = service.get_page(
+            project_slug=project_slug,
+            page=1,
+            page_size=1,
+        )
+        return int(getattr(page_obj, "total_items", 0))
+    except Exception:
+        return 0
+
+
+def _build_queue_badge(service: _QueueServiceProtocol, project_slug: str | None) -> str:
+    if not project_slug:
+        return "<div style='display:inline-block;padding:6px 10px;border-radius:999px;background:#f3f4f6;color:#374151;font-weight:600;'>Queue: --</div>"
+
+    total = _get_project_detection_count(service, project_slug)
+    return (
+        "<div style='display:inline-block;padding:6px 10px;border-radius:999px;"
+        "background:#e0f2fe;color:#0c4a6e;font-weight:700;'>"
+        f"Queue: {total}"
+        "</div>"
+    )
 
 
 def _build_validation_report(snapshot_reader: _ValidationReadRepositoryProtocol, project_slug: str) -> str:
@@ -205,15 +506,15 @@ def _build_validation_report(snapshot_reader: _ValidationReadRepositoryProtocol,
         counts[status_value] = counts.get(status_value, 0) + 1
 
     parts = [
-        f"Projeto: {project_slug}",
-        f"Eventos append-only: {len(events)}",
-        f"Deteccoes com estado atual: {len(snapshot)}",
+        f"Project: {project_slug}",
+        f"Append-only events: {len(events)}",
+        f"Detections with current state: {len(snapshot)}",
     ]
     if counts:
         summary = ", ".join(f"{key}={value}" for key, value in sorted(counts.items()))
-        parts.append(f"Status atual: {summary}")
+        parts.append(f"Current status: {summary}")
     else:
-        parts.append("Status atual: sem validacoes")
+        parts.append("Current status: no validations")
     return " | ".join(parts)
 
 
@@ -226,14 +527,14 @@ def _extract_audio_id(rows: object, selected_index: int) -> str:
         normalized_rows = [list(item) for item in rows] if rows else []
 
     if not normalized_rows:
-        raise ValueError("Nenhuma deteccao carregada na tabela")
+        raise ValueError("No detections loaded in table")
     if selected_index < 0 or selected_index >= len(normalized_rows):
-        raise ValueError("Selecione uma deteccao valida na tabela")
+        raise ValueError("Select a valid detection row in table")
 
     value = normalized_rows[selected_index][1]
     audio_id = str(value).strip()
     if not audio_id:
-        raise ValueError("audio_id invalido na deteccao selecionada")
+        raise ValueError("Invalid audio_id in selected detection")
     return audio_id
 
 
@@ -246,14 +547,14 @@ def _extract_detection_key(rows: object, selected_index: int) -> str:
         normalized_rows = [list(item) for item in rows] if rows else []
 
     if not normalized_rows:
-        raise ValueError("Nenhuma deteccao carregada na tabela")
+        raise ValueError("No detections loaded in table")
     if selected_index < 0 or selected_index >= len(normalized_rows):
-        raise ValueError("Selecione uma deteccao valida na tabela")
+        raise ValueError("Select a valid detection row in table")
 
     value = normalized_rows[selected_index][0]
     detection_key = str(value).strip()
     if not detection_key:
-        raise ValueError("detection_key invalido na deteccao selecionada")
+        raise ValueError("Invalid detection_key in selected detection")
     return detection_key
 
 
@@ -280,9 +581,9 @@ def _extract_expected_version(rows: object, selected_index: int) -> int:
         normalized_rows = [list(item) for item in rows] if rows else []
 
     if not normalized_rows:
-        raise ValueError("Nenhuma deteccao carregada na tabela")
+        raise ValueError("No detections loaded in table")
     if selected_index < 0 or selected_index >= len(normalized_rows):
-        raise ValueError("Selecione uma deteccao valida na tabela")
+        raise ValueError("Select a valid detection row in table")
 
     value = normalized_rows[selected_index][7]
     return int(value)
@@ -297,25 +598,25 @@ def _fetch_selected_audio(
 ) -> tuple[str | None, str, str]:
     repo = dataset_repo.strip()
     if not repo:
-        return None, "", "Informe dataset repo no formato owner/repo"
+        return None, "", "Provide dataset repo in owner/repo format. Example: org/dataset-name"
 
     try:
         audio_id = _extract_audio_id(rows=rows, selected_index=selected_index)
         result = audio_service.fetch(dataset_repo=repo, audio_id=audio_id)
-        status = f"Audio carregado ({result.source}) para audio_id={audio_id}"
+        status = f"Audio loaded ({result.source}) for audio_id={audio_id}"
         return result.local_path, result.cache_key, status
     except Exception as exc:
         if previous_cache_key:
-            return None, previous_cache_key, f"Falha ao carregar audio: {exc}"
-        return None, "", f"Falha ao carregar audio: {exc}"
+            return None, previous_cache_key, f"Failed to load audio: {exc}"
+        return None, "", f"Failed to load audio: {exc}"
 
 
 def _cleanup_selected_audio(audio_service: _AudioServiceProtocol, cache_key: str) -> tuple[str, str | None]:
     if not cache_key:
-        return "Nenhum audio em cache para limpar", None
+        return "No cached audio to clean", None
 
     audio_service.cleanup_after_validation(cache_key=cache_key)
-    return "Cache de audio limpo apos validacao", None
+    return "Audio cache cleaned after validation", None
 
 
 def _save_selected_validation(
@@ -331,7 +632,7 @@ def _save_selected_validation(
 ) -> tuple[str, str, str | None]:
     validator_name = validator.strip()
     if not validator_name:
-        return "Informe o nome do validador", cache_key, None
+        return "Provide validator name before saving", cache_key, None
 
     try:
         detection_key = _extract_detection_key(rows=rows, selected_index=selected_index)
@@ -346,17 +647,17 @@ def _save_selected_validation(
         )
         if cache_key:
             audio_service.cleanup_after_validation(cache_key=cache_key)
-        return f"Validacao salva: {detection_key} -> {status_value}", "", None
+        return f"Validation saved: {detection_key} -> {status_value}", "", None
     except OptimisticLockError as exc:
         return (
-            "Conflito de concorrencia: esta deteccao foi atualizada por outro validador "
-            f"(detection_key={exc.detection_key}, versao atual={exc.current_version}, esperada={exc.expected_version}). "
-            "Recarregue a tabela.",
+            "Concurrency conflict: this detection was updated by another validator "
+            f"(detection_key={exc.detection_key}, current version={exc.current_version}, expected={exc.expected_version}). "
+            "Refresh the table.",
             cache_key,
             None,
         )
     except Exception as exc:
-        return f"Falha ao salvar validacao: {exc}", cache_key, None
+        return f"Failed to save validation: {exc}", cache_key, None
 
 
 def _save_selected_validation_with_refresh(
@@ -415,7 +716,7 @@ def _save_selected_validation_with_refresh(
     else:
         refreshed_index = 0
 
-    if "Conflito de concorrencia" in save_status:
+    if "Concurrency conflict" in save_status:
         conflict_key = selected_key
         refreshed_rows, page_status, refreshed_page = _page_to_table(
             service=queue_service,
@@ -432,7 +733,7 @@ def _save_selected_validation_with_refresh(
         )
         refreshed_index = _find_detection_row_index(refreshed_rows, selected_key) if selected_key else 0
         pending_status_value = status_value
-        status = f"{save_status} Tabela recarregada para resolver conflito."
+        status = f"{save_status} Table reloaded to resolve conflict."
     else:
         conflict_key = ""
         pending_status_value = ""
@@ -485,7 +786,7 @@ def _reapply_last_conflict_validation_with_refresh(
             show_conflicts_only=show_conflicts_only,
         )
         return (
-            f"Nenhuma validacao pendente para reaplicar | {page_status}",
+            f"No pending validation to reapply | {page_status}",
             cache_key,
             None,
             refreshed_rows,
@@ -539,7 +840,7 @@ def _batch_validate_conflicts(
     """Apply the same validation status to all visible conflicts in the table."""
     validator_name = validator.strip()
     if not validator_name:
-        return "Informe o nome do validador", "", None, [], page
+        return "Provide validator name", "", None, [], page
 
     normalized_rows: list[list[object]]
     if hasattr(rows, "values"):
@@ -548,11 +849,11 @@ def _batch_validate_conflicts(
         normalized_rows = [list(item) for item in rows] if rows else []
 
     if not normalized_rows:
-        return "Nenhuma deteccao com conflito para validar", "", None, [], page
+        return "No conflict detection to validate", "", None, [], page
 
     conflict_rows = [row for row in normalized_rows if str(row[8]) == "CONFLICT"]
     if not conflict_rows:
-        return "Nenhuma deteccao com conflito identificada na tabela", "", None, normalized_rows, page
+        return "No conflict detection identified in table", "", None, normalized_rows, page
 
     success_count = 0
     failure_count = 0
@@ -592,7 +893,7 @@ def _batch_validate_conflicts(
         show_conflicts_only=False,
     )
 
-    summary = f"Processados {len(conflict_rows)} conflitos: {success_count} sucesso, {conflict_count} novos conflitos, {failure_count} falhas"
+    summary = f"Processed {len(conflict_rows)} conflicts: {success_count} success, {conflict_count} new conflicts, {failure_count} failures"
     status = f"{summary} | {page_status}"
 
     return status, "", None, refreshed_rows, refreshed_page
@@ -618,11 +919,11 @@ def _batch_reapply_all_pending(
 ) -> tuple[str, str, str | None, list[list[object]], int]:
     """Reapply all pending validations (stored conflicts) with current version."""
     if not pending_statuses:
-        return "Nenhuma validacao pendente para reaplicar", "", None, [], page
+        return "No pending validation to reapply", "", None, [], page
 
     validator_name = validator.strip()
     if not validator_name:
-        return "Informe o nome do validador", "", None, [], page
+        return "Provide validator name", "", None, [], page
 
     success_count = 0
     conflict_count = 0
@@ -663,7 +964,7 @@ def _batch_reapply_all_pending(
         show_conflicts_only=False,
     )
 
-    summary = f"Reaplicadas {len(pending_statuses)} validacoes: {success_count} sucesso, {conflict_count} novos conflitos, {failure_count} falhas"
+    summary = f"Reapplied {len(pending_statuses)} validations: {success_count} success, {conflict_count} new conflicts, {failure_count} failures"
     status = f"{summary} | {page_status}"
 
     return status, "", None, refreshed_rows, refreshed_page
@@ -678,36 +979,40 @@ def build_demo_app(project_slug: str = "demo-project") -> gr.Blocks:
     Returns:
         Gradio Blocks with validation interface
     """
-    service = _seed_service()
+    runtime_config = RuntimeConfig.from_env()
+    service = _seed_service_for_projects(
+        [project_slug],
+        seed_file_path=runtime_config.detection_seed_path,
+    )
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
-    validation_base_dir = str(Path(tempfile.gettempdir()) / "birdnet-validator-validations")
+    validation_base_dir = runtime_config.validation_base_dir
     validation_repository = AppendOnlyValidationRepository(base_dir=validation_base_dir)
     validation_service = ValidationService(validation_repository)
 
     with gr.Blocks(title="BirdNET-Validator-App") as demo:
         gr.Markdown("# BirdNET-Validator-App")
-        gr.Markdown("Sprint 2: fila paginada + audio sob demanda com cache efemero.")
+        gr.Markdown("Sprint 2: paged queue + on-demand audio with ephemeral cache.")
 
-        dataset_repo = gr.Textbox(label="Dataset repo", value="SEU_USUARIO/birdnet-projeto-dataset")
-
-        with gr.Row():
-            species_filter = gr.Textbox(label="Filtro especie", placeholder="Ex: Cyanocorax cyanopogon")
-            min_confidence = gr.Slider(label="Confianca minima", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
-            show_conflicts_only = gr.Checkbox(label="Mostrar apenas conflitos", value=False)
+        dataset_repo = gr.Textbox(label="Dataset repo", value="YOUR_USER/birdnet-project-dataset")
 
         with gr.Row():
-            validator_filter = gr.Textbox(label="Filtro validador", placeholder="Ex: validator-demo")
+            species_filter = gr.Textbox(label="Species filter", placeholder="Ex: Cyanocorax cyanopogon")
+            min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
+            show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
+
+        with gr.Row():
+            validator_filter = gr.Textbox(label="Validator filter", placeholder="Ex: validator-demo")
             validation_status_filter = gr.Dropdown(
-                label="Filtro status",
+                label="Status filter",
                 choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
                 value="all",
             )
-            updated_after_filter = gr.DateTime(label="Atualizado a partir de", include_time=False, type="string")
+            updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
 
         with gr.Row():
-            prev_btn = gr.Button("Pagina anterior")
-            next_btn = gr.Button("Proxima pagina")
-            refresh_btn = gr.Button("Aplicar filtros")
+            prev_btn = gr.Button("Previous page")
+            next_btn = gr.Button("Next page")
+            refresh_btn = gr.Button("Apply filters")
 
         page_state = gr.State(value=1)
         table = gr.Dataframe(
@@ -723,54 +1028,54 @@ def build_demo_app(project_slug: str = "demo-project") -> gr.Blocks:
                 "conflict_flag",
                 "conflict_severity",
             ],
-            label="Deteccoes",
+            label="Detections",
             interactive=False,
         )
-        selected_index = gr.Number(label="Linha selecionada", value=0, precision=0)
+        selected_index = gr.Number(label="Selected row", value=0, precision=0)
 
         with gr.Row():
-            load_audio_btn = gr.Button("Carregar audio selecionado")
-            clear_audio_btn = gr.Button("Limpar cache apos validacao")
+            load_audio_btn = gr.Button("Load selected audio")
+            clear_audio_btn = gr.Button("Clear cache after validation")
 
         with gr.Row():
-            validator_name = gr.Textbox(label="Validador", value="validator-demo")
-            validation_notes = gr.Textbox(label="Notas", placeholder="Opcional")
+            validator_name = gr.Textbox(label="Validator", value="validator-demo")
+            validation_notes = gr.Textbox(label="Notes", placeholder="Optional")
 
         with gr.Row():
-            approve_btn = gr.Button("Validar positivo")
-            reject_btn = gr.Button("Validar negativo")
-            uncertain_btn = gr.Button("Indeterminado")
-            skip_btn = gr.Button("Pular")
-            reapply_btn = gr.Button("Reaplicar validacao apos conflito")
+            approve_btn = gr.Button("Mark positive")
+            reject_btn = gr.Button("Mark negative")
+            uncertain_btn = gr.Button("Uncertain")
+            skip_btn = gr.Button("Skip")
+            reapply_btn = gr.Button("Reapply validation after conflict")
 
         with gr.Row():
-            batch_approve_conflicts_btn = gr.Button("Aprovar todos os conflitos")
-            batch_reject_conflicts_btn = gr.Button("Rejeitar todos os conflitos")
+            batch_approve_conflicts_btn = gr.Button("Approve all conflicts")
+            batch_reject_conflicts_btn = gr.Button("Reject all conflicts")
 
-        report_btn = gr.Button("Gerar relatorio de validacoes")
+        report_btn = gr.Button("Generate validation report")
 
-        audio_player = gr.Audio(label="Audio sob demanda", type="filepath")
+        audio_player = gr.Audio(label="On-demand audio", type="filepath")
         cache_key_state = gr.State(value="")
         pending_status_state = gr.State(value="")
         conflict_detection_key_state = gr.State(value="")
         status = gr.Textbox(label="Status", interactive=False)
-        report_box = gr.Textbox(label="Relatorio", interactive=False)
+        report_box = gr.Textbox(label="Report", interactive=False)
 
         # Keyboard shortcuts: 1=positive, 2=negative, 3=uncertain, 4=skip, R=reapply
         keyboard_shortcuts_info = gr.HTML(
             value="<div style='font-size: 12px; color: #666; padding: 8px; background-color: #f5f5f5; border-radius: 4px; margin-bottom: 10px;'>"
-            "<strong>Atalhos de teclado:</strong> 1=Positivo | 2=Negativo | 3=Indeterminado | 4=Pular | R=Reaplicar"
+            "<strong>Keyboard shortcuts:</strong> 1=Positive | 2=Negative | 3=Uncertain | 4=Skip | R=Reapply"
             "</div>"
             "<script>"
             "document.addEventListener('keydown', function(event) {"
             "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
             "  const key = event.key.toLowerCase();"
             "  let buttonText = null;"
-            "  if (key === '1') buttonText = 'Validar positivo';"
-            "  else if (key === '2') buttonText = 'Validar negativo';"
-            "  else if (key === '3') buttonText = 'Indeterminado';"
-            "  else if (key === '4') buttonText = 'Pular';"
-            "  else if (key === 'r') buttonText = 'Reaplicar validacao apos conflito';"
+            "  if (key === '1') buttonText = 'Mark positive';"
+            "  else if (key === '2') buttonText = 'Mark negative';"
+            "  else if (key === '3') buttonText = 'Uncertain';"
+            "  else if (key === '4') buttonText = 'Skip';"
+            "  else if (key === 'r') buttonText = 'Reapply validation after conflict';"
             "  if (buttonText) {"
             "    event.preventDefault();"
             "    const buttons = document.querySelectorAll('button');"
@@ -801,6 +1106,7 @@ def build_demo_app(project_slug: str = "demo-project") -> gr.Blocks:
                 page=page,
                 scientific_name=species,
                 min_confidence=confidence,
+                page_size=runtime_config.page_size,
                 validator_filter=validator_filter_value,
                 status_filter=status_filter_value,
                 updated_after=updated_after_value,
@@ -1206,56 +1512,31 @@ def create_app() -> gr.Blocks:
     # Initialize auth service
     auth_service = AuthService(session_ttl_minutes=120)
 
-    # Setup demo users (in production: database/LDAP/OAuth)
-    auth_service.register_user_project_access(
-        "admin_user",
-        {"kenya-2024": Role.admin, "nairobi-2023": Role.admin},
-    )
-    auth_service.register_user_project_access(
-        "validator_demo",
-        {"demo-project": Role.validator, "kenya-2024": Role.validator},
-    )
-    auth_service.register_user_project_access(
-        "validator_other",
-        {"nairobi-2023": Role.validator},
-    )
-
     # Initialize admin panel manager
     admin_manager = AdminPanelManager(auth_service)
 
-    # Register projects
-    admin_manager.register_project(
-        Project(
-            project_slug="kenya-2024",
-            name="Kenya Survey 2024",
-            dataset_repo_id="birdnet/kenya-2024-dataset",
-            active=True,
-        )
+    runtime_config = RuntimeConfig.from_env()
+    bootstrap_warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+    queue_service, seed_warning = _build_detection_repository(
+        [project["project_slug"] for project in admin_manager.list_projects()],
+        seed_file_path=runtime_config.detection_seed_path,
     )
-    admin_manager.register_project(
-        Project(
-            project_slug="nairobi-2023",
-            name="Nairobi Survey 2023",
-            dataset_repo_id="birdnet/nairobi-2023-dataset",
-            active=True,
-        )
-    )
-    admin_manager.register_project(
-        Project(
-            project_slug="demo-project",
-            name="Demo Project",
-            dataset_repo_id="birdnet/demo-dataset",
-            active=True,
-        )
-    )
+    service_ref: dict[str, DetectionQueueService] = {"queue": queue_service}
+    audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
+    validation_repository = AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
+    validation_service = ValidationService(validation_repository)
 
     with gr.Blocks(title="BirdNET-Validator-App - Multi-Project") as wrapper:
-        gr.Markdown("# BirdNET-Validator-App - Sprint 4: Segurança Multi-Projeto")
-        gr.Markdown("**Versão com autenticação, autorização por projeto, e painel admin**")
+        gr.Markdown("# BirdNET-Validator-App - Sprint 4: Multi-Project Security")
+        gr.Markdown("**Version with authentication, project-level authorization, and admin panel**")
+        if bootstrap_warning:
+            gr.Markdown(bootstrap_warning)
 
         # Session state
         session_state = gr.State(value=None)
         selected_project_state = gr.State(value=None)
+        selected_dataset_repo_state = gr.State(value="")
+        seed_warning_state = gr.State(value=seed_warning)
 
         def _project_rows() -> list[list[object]]:
             projects = admin_manager.list_projects()
@@ -1294,35 +1575,35 @@ def create_app() -> gr.Blocks:
 
             # ===== TAB 2: Admin Panel =====
             with gr.Tab("⚙️ Admin", id="admin_tab"):
-                admin_info = gr.Markdown(value="⚠️ Faça login primeiro")
+                admin_info = gr.Markdown(value="⚠️ Login first")
 
                 def create_admin_display(session):
                     """Show admin panel or access denied message."""
                     if session is None:
                         return (
-                            "❌ **Not Logged In** — Please login first in the Login tab.",
+                            "❌ **Not authenticated** — Login first in the **Login** tab.",
                             gr.update(visible=False),
                         )
                     if session.role.value != "admin":
                         return (
-                            "❌ **Access Denied** — Only administrators can access this panel.",
+                            "❌ **Access denied** — Only administrators can access this panel.",
                             gr.update(visible=False),
                         )
                     return (
-                        f"✅ **Admin Panel** — Welcome {session.username}! Click below to manage projects and users.",
+                        f"✅ **Admin Panel** — Welcome, {session.username}. Use the controls below to manage projects and users.",
                         gr.update(visible=True),
                     )
 
                 with gr.Group(visible=False) as admin_controls:
-                    gr.Markdown("#### Projetos Cadastrados")
+                    gr.Markdown("#### Registered Projects")
 
                     with gr.Row():
                         create_project_slug = gr.Textbox(
-                            label="Novo Project Slug",
+                            label="New Project Slug",
                             placeholder="ex: amazonas-2026",
                         )
                         create_project_name = gr.Textbox(
-                            label="Nome do Projeto",
+                            label="Project Name",
                             placeholder="ex: Amazonas Survey 2026",
                         )
                         create_project_repo = gr.Textbox(
@@ -1334,13 +1615,13 @@ def create_app() -> gr.Blocks:
 
                     def create_project(session, slug: str, name: str, repo_id: str):
                         if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Apenas admin pode criar projetos.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                            return "❌ Access denied. Only admin can create projects.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
                         slug = (slug or "").strip()
                         name = (name or "").strip()
                         repo_id = (repo_id or "").strip()
                         if not slug or not name or not repo_id:
-                            return "⚠️ Preencha slug, nome e repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                            return "⚠️ Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
 
                         created = admin_manager.register_project(
                             Project(
@@ -1352,30 +1633,38 @@ def create_app() -> gr.Blocks:
                         )
                         if not created:
                             return (
-                                f"⚠️ Projeto '{slug}' já existe.",
+                                f"⚠️ Project '{slug}' already exists.",
                                 _project_rows(),
                                 gr.update(choices=_project_slugs()),
                                 gr.update(),
                                 gr.update(),
                                 gr.update(),
+                                gr.update(),
                             )
 
+                        refreshed_service, refreshed_warning = _build_detection_repository(
+                            _project_slugs(),
+                            seed_file_path=runtime_config.detection_seed_path,
+                        )
+                        service_ref["queue"] = refreshed_service
+
                         return (
-                            f"✅ Projeto '{slug}' criado com sucesso.",
+                            f"✅ Project '{slug}' created successfully.",
                             _project_rows(),
                             gr.update(choices=_project_slugs(), value=slug),
                             gr.update(value=""),
                             gr.update(value=""),
                             gr.update(value=""),
+                            refreshed_warning,
                         )
 
-                    create_project_btn = gr.Button("➕ Criar Projeto", variant="primary")
+                    create_project_btn = gr.Button("➕ Create Project", variant="primary")
                     projects_table = gr.Dataframe(
                         value=_project_rows(),
                         headers=["project_slug", "name", "dataset_repo_id", "active"],
                         interactive=False,
                     )
-                    refresh_projects_btn = gr.Button("🔄 Atualizar Lista")
+                    refresh_projects_btn = gr.Button("🔄 Refresh List")
 
                     def refresh_projects(session):
                         if session is None or session.role.value != "admin":
@@ -1389,14 +1678,14 @@ def create_app() -> gr.Blocks:
                     )
 
                 with gr.Group(visible=False) as admin_users_controls:
-                    gr.Markdown("#### Assignar Usuário a Projeto")
+                    gr.Markdown("#### Assign User to Project")
                     with gr.Row():
                         admin_username = gr.Textbox(
-                            label="Usuário", placeholder="validator_001"
+                            label="Username", placeholder="validator_001"
                         )
                         admin_project = gr.Dropdown(
                             choices=_project_slugs(),
-                            label="Projeto",
+                            label="Project",
                         )
                         admin_role = gr.Dropdown(
                             choices=["admin", "validator"],
@@ -1408,7 +1697,7 @@ def create_app() -> gr.Blocks:
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Apenas admin pode atribuir usuários.", gr.update(), gr.update(), gr.update()
+                            return "❌ Access denied. Only admin can assign users.", gr.update(), gr.update(), gr.update()
                         success, msg = admin_manager.assign_user_to_project(
                             username, project, role
                         )
@@ -1416,7 +1705,7 @@ def create_app() -> gr.Blocks:
                             return msg, gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update()
 
-                    assign_btn = gr.Button("✅ Assignar", variant="primary")
+                    assign_btn = gr.Button("✅ Assign", variant="primary")
                     assign_btn.click(
                         fn=assign_user,
                         inputs=[session_state, admin_username, admin_project, admin_role],
@@ -1433,6 +1722,7 @@ def create_app() -> gr.Blocks:
                         create_project_slug,
                         create_project_name,
                         create_project_repo,
+                        seed_warning_state,
                     ],
                 )
 
@@ -1449,13 +1739,13 @@ def create_app() -> gr.Blocks:
                 )
 
             # ===== TAB 3: Project Selection =====
-            with gr.Tab("📁 Selecionar Projeto", id="project_tab"):
+            with gr.Tab("📁 Select Project", id="project_tab"):
                 project_info_display = gr.Markdown(
-                    value="⚠️ Faça login primeiro na aba **Login**"
+                    value="⚠️ Login first in the **Login** tab"
                 )
                 project_selector = gr.Dropdown(
                     choices=[],
-                    label="Projeto Autorizado",
+                    label="Authorized Project",
                     interactive=False,
                 )
 
@@ -1464,79 +1754,696 @@ def create_app() -> gr.Blocks:
                     if session is None:
                         return (
                             gr.Dropdown(choices=[], value=None, interactive=False),
-                            "❌ Not logged in. Please login first.",
+                            "❌ Not authenticated. Login first.",
                             None,
+                            "",
                         )
 
                     projects = session.authorized_projects
                     if not projects:
                         return (
                             gr.Dropdown(choices=[], value=None, interactive=False),
-                            "⚠️ **No Projects Assigned**\n\nYou don't have access to any projects yet. Contact an administrator.",
+                            "⚠️ **No projects assigned**\n\nYou do not have access to projects yet. Contact an administrator.",
                             None,
+                            "",
                         )
 
                     selected = projects[0]
                     role = auth_service.get_user_role_for_project(session.username, selected)
                     role_label = role.value.upper() if role else "UNKNOWN"
+                    selected_project = admin_manager.get_project(selected)
+                    dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
                     return (
                         gr.Dropdown(choices=projects, value=selected, interactive=True),
                         f"📁 **Project:** {selected} | **Your Role:** {role_label}",
                         selected,
+                        dataset_repo_id,
                     )
 
                 session_state.change(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_info_display, selected_project_state],
+                    outputs=[project_selector, project_info_display, selected_project_state, selected_dataset_repo_state],
                 )
 
                 def update_selected_project(selected: str, session):
                     """Update state when project is selected."""
                     if session and selected:
-                        return selected
-                    return None
+                        selected_project = admin_manager.get_project(selected)
+                        dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
+                        return selected, dataset_repo_id
+                    return None, ""
 
                 project_selector.change(
                     fn=update_selected_project,
                     inputs=[project_selector, session_state],
-                    outputs=[selected_project_state],
+                    outputs=[selected_project_state, selected_dataset_repo_state],
                 )
 
             # ===== TAB 4: Validation =====
-            with gr.Tab("✓ Validação", id="validation_tab"):
+            with gr.Tab("✓ Validation", id="validation_tab"):
                 validation_status = gr.Markdown(
-                    value="ℹ️ Faça login e selecione um projeto para começar"
+                    value="ℹ️ Login and select a project to start"
+                )
+                queue_badge = gr.HTML(value=_build_queue_badge(service_ref["queue"], None))
+                seed_warning_banner = gr.Markdown(value="", visible=False)
+
+                def render_seed_warning(warning_text: str):
+                    text = (warning_text or "").strip()
+                    if not text:
+                        return gr.update(value="", visible=False)
+                    return gr.update(value=text, visible=True)
+
+                seed_warning_state.change(
+                    fn=render_seed_warning,
+                    inputs=[seed_warning_state],
+                    outputs=[seed_warning_banner],
+                )
+                wrapper.load(
+                    fn=render_seed_warning,
+                    inputs=[seed_warning_state],
+                    outputs=[seed_warning_banner],
                 )
 
-                def get_validation_status(session, selected_project):
+                def get_validation_status(session, selected_project, dataset_repo_id):
                     """Show status message based on login/project state."""
                     if session is None:
-                        return "❌ **Não autenticado** — Faça login na aba **Login** primeiro"
+                        return "❌ **Not authenticated** — Login first in the **Login** tab"
                     if selected_project is None:
-                        return f"⚠️ **Projeto não selecionado** — Selecione um projeto na aba **Selecionar Projeto**"
-                    return f"✅ **Pronto para validar** — Projeto: **{selected_project}** | Usuário: **{session.username}**\n\n(Validação será carregada abaixo)"
+                        return f"⚠️ **Project not selected** — Select a project in the **Select Project** tab"
+                    total_detections = _get_project_detection_count(service_ref["queue"], selected_project)
+                    return (
+                        f"✅ **Ready to validate** — Project: **{selected_project}** | "
+                        f"User: **{session.username}** | Dataset: **{dataset_repo_id or 'not set'}** | "
+                        f"Loaded detections: **{total_detections}**"
+                    )
 
                 session_state.change(
-                    fn=lambda s, p: get_validation_status(s, p),
-                    inputs=[session_state, selected_project_state],
+                    fn=lambda s, p, r: get_validation_status(s, p, r),
+                    inputs=[session_state, selected_project_state, selected_dataset_repo_state],
                     outputs=[validation_status],
+                )
+                session_state.change(
+                    fn=lambda p: _build_queue_badge(service_ref["queue"], p),
+                    inputs=[selected_project_state],
+                    outputs=[queue_badge],
                 )
 
                 selected_project_state.change(
-                    fn=lambda s, p: get_validation_status(s, p),
-                    inputs=[session_state, selected_project_state],
+                    fn=lambda s, p, r: get_validation_status(s, p, r),
+                    inputs=[session_state, selected_project_state, selected_dataset_repo_state],
+                    outputs=[validation_status],
+                )
+                selected_project_state.change(
+                    fn=lambda p: _build_queue_badge(service_ref["queue"], p),
+                    inputs=[selected_project_state],
+                    outputs=[queue_badge],
+                )
+
+                selected_dataset_repo_state.change(
+                    fn=lambda s, p, r: get_validation_status(s, p, r),
+                    inputs=[session_state, selected_project_state, selected_dataset_repo_state],
                     outputs=[validation_status],
                 )
 
-                # Note: In a real implementation, we would load build_demo_app(selected_project) here
-                # For now, we show a placeholder since Gradio tabs don't support dynamic nested Blocks
+                wrapper.load(
+                    fn=lambda p: _build_queue_badge(service_ref["queue"], p),
+                    inputs=[selected_project_state],
+                    outputs=[queue_badge],
+                )
+
                 gr.Markdown("---")
-                validation_placeholder = gr.Textbox(
-                    label="Validação",
-                    value="📋 Interface de validação será carregada aqui para o projeto selecionado",
+                dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
+
+                with gr.Row():
+                    species_filter = gr.Textbox(label="Species filter", placeholder="Ex: Cyanocorax cyanopogon")
+                    min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
+                    show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
+
+                with gr.Row():
+                    validator_filter = gr.Textbox(label="Validator filter", placeholder="Ex: validator-demo")
+                    validation_status_filter = gr.Dropdown(
+                        label="Status filter",
+                        choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
+                        value="all",
+                    )
+                    updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
+
+                with gr.Row():
+                    prev_btn = gr.Button("Previous page")
+                    next_btn = gr.Button("Next page")
+                    refresh_btn = gr.Button("Apply filters")
+
+                page_state = gr.State(value=1)
+                table = gr.Dataframe(
+                    headers=[
+                        "detection_key",
+                        "audio_id",
+                        "scientific_name",
+                        "confidence",
+                        "start_time",
+                        "end_time",
+                        "validation_status",
+                        "version",
+                        "conflict_flag",
+                        "conflict_severity",
+                    ],
+                    label="Detections",
                     interactive=False,
-                    lines=10,
+                )
+                selected_index = gr.Number(label="Selected row", value=0, precision=0)
+
+                with gr.Row():
+                    load_audio_btn = gr.Button("Load selected audio")
+                    clear_audio_btn = gr.Button("Clear cache after validation")
+
+                with gr.Row():
+                    validator_name = gr.Textbox(label="Validator", value="validator-demo")
+                    validation_notes = gr.Textbox(label="Notes", placeholder="Optional")
+
+                with gr.Row():
+                    approve_btn = gr.Button("Mark positive")
+                    reject_btn = gr.Button("Mark negative")
+                    uncertain_btn = gr.Button("Uncertain")
+                    skip_btn = gr.Button("Skip")
+                    reapply_btn = gr.Button("Reapply validation after conflict")
+
+                with gr.Row():
+                    batch_approve_conflicts_btn = gr.Button("Approve all conflicts")
+                    batch_reject_conflicts_btn = gr.Button("Reject all conflicts")
+
+                report_btn = gr.Button("Generate validation report")
+                audio_player = gr.Audio(label="On-demand audio", type="filepath")
+                cache_key_state = gr.State(value="")
+                pending_status_state = gr.State(value="")
+                conflict_detection_key_state = gr.State(value="")
+                status = gr.Textbox(label="Status", interactive=False)
+                report_box = gr.Textbox(label="Report", interactive=False)
+
+                def refresh(
+                    project_slug: str,
+                    page: int,
+                    species: str,
+                    confidence: float,
+                    validator_filter_value: str,
+                    status_filter_value: str,
+                    updated_after_value: object,
+                    only_conflicts: bool,
+                ):
+                    if not project_slug:
+                        return [], "Select a project to load the queue", 1
+                    return _page_to_table(
+                        service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        page=page,
+                        scientific_name=species,
+                        min_confidence=confidence,
+                        page_size=runtime_config.page_size,
+                        validator_filter=validator_filter_value,
+                        status_filter=status_filter_value,
+                        updated_after=updated_after_value,
+                        show_conflicts_only=only_conflicts,
+                    )
+
+                def go_next(
+                    project_slug: str,
+                    page: int,
+                    species: str,
+                    confidence: float,
+                    validator_filter_value: str,
+                    status_filter_value: str,
+                    updated_after_value: object,
+                    only_conflicts: bool,
+                ):
+                    return refresh(
+                        project_slug,
+                        page + 1,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    )
+
+                def go_prev(
+                    project_slug: str,
+                    page: int,
+                    species: str,
+                    confidence: float,
+                    validator_filter_value: str,
+                    status_filter_value: str,
+                    updated_after_value: object,
+                    only_conflicts: bool,
+                ):
+                    return refresh(
+                        project_slug,
+                        max(1, page - 1),
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    )
+
+                def refresh_for_selected_project(project_slug: str):
+                    return refresh(project_slug, 1, "", 0.0, "", "all", "", False)
+
+                def save_for_project(
+                    project_slug: str,
+                    status_value: str,
+                    rows: object,
+                    idx: int,
+                    name: str,
+                    notes: str,
+                    cache_key: str,
+                    page: int,
+                    species: str,
+                    confidence: float,
+                    validator_filter_value: str,
+                    status_filter_value: str,
+                    updated_after_value: object,
+                    only_conflicts: bool,
+                ):
+                    if not project_slug:
+                        return "Select a project before validating", cache_key, None, rows, page, idx, "", ""
+                    return _save_selected_validation_with_refresh(
+                        validation_service=validation_service,
+                        audio_service=audio_service,
+                        queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        rows=rows,
+                        selected_index=int(idx),
+                        status_value=status_value,
+                        validator=name,
+                        notes=notes,
+                        cache_key=cache_key,
+                        page=int(page),
+                        scientific_name=species,
+                        min_confidence=float(confidence),
+                        validator_filter=validator_filter_value,
+                        status_filter=status_filter_value,
+                        updated_after=updated_after_value,
+                        show_conflicts_only=bool(only_conflicts),
+                    )
+
+                def reapply_for_project(
+                    project_slug: str,
+                    rows: object,
+                    idx: int,
+                    pending_status: str,
+                    conflict_key: str,
+                    name: str,
+                    notes: str,
+                    cache_key: str,
+                    page: int,
+                    species: str,
+                    confidence: float,
+                    validator_filter_value: str,
+                    status_filter_value: str,
+                    updated_after_value: object,
+                    only_conflicts: bool,
+                ):
+                    if not project_slug:
+                        return "Select a project before reapplying", cache_key, None, rows, page, idx, pending_status, conflict_key
+                    return _reapply_last_conflict_validation_with_refresh(
+                        validation_service=validation_service,
+                        audio_service=audio_service,
+                        queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        rows=rows,
+                        selected_index=int(idx),
+                        pending_status_value=pending_status,
+                        conflict_detection_key=conflict_key,
+                        validator=name,
+                        notes=notes,
+                        cache_key=cache_key,
+                        page=int(page),
+                        scientific_name=species,
+                        min_confidence=float(confidence),
+                        validator_filter=validator_filter_value,
+                        status_filter=status_filter_value,
+                        updated_after=updated_after_value,
+                        show_conflicts_only=bool(only_conflicts),
+                    )
+
+                def batch_for_project(
+                    project_slug: str,
+                    rows: object,
+                    status_value: str,
+                    name: str,
+                    notes: str,
+                    cache_key: str,
+                    page: int,
+                    species: str,
+                    confidence: float,
+                    validator_filter_value: str,
+                    status_filter_value: str,
+                    updated_after_value: object,
+                ):
+                    if not project_slug:
+                        return "Select a project before validating", cache_key, None, rows, page
+                    return _batch_validate_conflicts(
+                        validation_service=validation_service,
+                        audio_service=audio_service,
+                        queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        rows=rows,
+                        status_value=status_value,
+                        validator=name,
+                        notes=notes,
+                        cache_key=cache_key,
+                        page=int(page),
+                        scientific_name=species,
+                        min_confidence=float(confidence),
+                        validator_filter=validator_filter_value,
+                        status_filter=status_filter_value,
+                        updated_after=updated_after_value,
+                    )
+
+                def build_report_for_project(project_slug: str) -> str:
+                    if not project_slug:
+                        return "Select a project to generate report"
+                    return _build_validation_report(validation_repository, project_slug)
+
+                def on_select(evt: gr.SelectData):
+                    return evt.index[0]
+
+                table.select(fn=on_select, inputs=None, outputs=[selected_index])
+                refresh_btn.click(
+                    fn=refresh,
+                    inputs=[
+                        selected_project_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[table, status, page_state],
+                )
+                next_btn.click(
+                    fn=go_next,
+                    inputs=[
+                        selected_project_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[table, status, page_state],
+                )
+                prev_btn.click(
+                    fn=go_prev,
+                    inputs=[
+                        selected_project_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[table, status, page_state],
+                )
+
+                selected_dataset_repo_state.change(
+                    fn=lambda repo_id: gr.update(value=repo_id),
+                    inputs=[selected_dataset_repo_state],
+                    outputs=[dataset_repo],
+                )
+                selected_project_state.change(
+                    fn=refresh_for_selected_project,
+                    inputs=[selected_project_state],
+                    outputs=[table, status, page_state],
+                )
+
+                load_audio_btn.click(
+                    fn=lambda repo, rows, idx, cache_key: _fetch_selected_audio(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        selected_index=int(idx),
+                        previous_cache_key=cache_key,
+                    ),
+                    inputs=[dataset_repo, table, selected_index, cache_key_state],
+                    outputs=[audio_player, cache_key_state, status],
+                )
+                clear_audio_btn.click(
+                    fn=lambda cache_key: _cleanup_selected_audio(audio_service=audio_service, cache_key=cache_key),
+                    inputs=[cache_key_state],
+                    outputs=[status, audio_player],
+                )
+
+                approve_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                        project_slug,
+                        "positive",
+                        rows,
+                        idx,
+                        name,
+                        notes,
+                        cache_key,
+                        page,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        table,
+                        selected_index,
+                        validator_name,
+                        validation_notes,
+                        cache_key_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                )
+                reject_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                        project_slug,
+                        "negative",
+                        rows,
+                        idx,
+                        name,
+                        notes,
+                        cache_key,
+                        page,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        table,
+                        selected_index,
+                        validator_name,
+                        validation_notes,
+                        cache_key_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                )
+                uncertain_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                        project_slug,
+                        "uncertain",
+                        rows,
+                        idx,
+                        name,
+                        notes,
+                        cache_key,
+                        page,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        table,
+                        selected_index,
+                        validator_name,
+                        validation_notes,
+                        cache_key_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                )
+                skip_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                        project_slug,
+                        "skip",
+                        rows,
+                        idx,
+                        name,
+                        notes,
+                        cache_key,
+                        page,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        table,
+                        selected_index,
+                        validator_name,
+                        validation_notes,
+                        cache_key_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                )
+                reapply_btn.click(
+                    fn=lambda project_slug, rows, idx, pending_status, conflict_key, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: reapply_for_project(
+                        project_slug,
+                        rows,
+                        idx,
+                        pending_status,
+                        conflict_key,
+                        name,
+                        notes,
+                        cache_key,
+                        page,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        table,
+                        selected_index,
+                        pending_status_state,
+                        conflict_detection_key_state,
+                        validator_name,
+                        validation_notes,
+                        cache_key_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
+                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                )
+
+                batch_approve_conflicts_btn.click(
+                    fn=lambda project_slug, rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: batch_for_project(
+                        project_slug,
+                        rows,
+                        "positive",
+                        name,
+                        notes,
+                        cache_key,
+                        page,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        table,
+                        validator_name,
+                        validation_notes,
+                        cache_key_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                    ],
+                    outputs=[status, cache_key_state, audio_player, table, page_state],
+                )
+                batch_reject_conflicts_btn.click(
+                    fn=lambda project_slug, rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: batch_for_project(
+                        project_slug,
+                        rows,
+                        "negative",
+                        name,
+                        notes,
+                        cache_key,
+                        page,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        table,
+                        validator_name,
+                        validation_notes,
+                        cache_key_state,
+                        page_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                    ],
+                    outputs=[status, cache_key_state, audio_player, table, page_state],
+                )
+                report_btn.click(
+                    fn=build_report_for_project,
+                    inputs=[selected_project_state],
+                    outputs=[report_box],
                 )
 
     return wrapper

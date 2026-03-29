@@ -40,6 +40,58 @@ python app.py
 
 Default port is 7860.
 
+Optional runtime configuration:
+
+- `BIRDNET_DETECTIONS_FILE`: path to JSON file with detections grouped by project slug.
+- `BIRDNET_VALIDATIONS_DIR`: custom directory for append-only validation events and snapshot files.
+- `BIRDNET_PAGE_SIZE`: queue page size (default: `25`).
+- `BIRDNET_PROJECTS_FILE`: JSON file with project catalog used at app startup.
+- `BIRDNET_USER_ACCESS_FILE`: JSON file mapping users to project roles (`admin`/`validator`).
+- `BIRDNET_ENABLE_DEMO_BOOTSTRAP`: set to `true` only for local/demo mode to load built-in sample users/projects.
+
+JSON seed format examples:
+
+```json
+{
+	"kenya-2024": [
+		{
+			"detection_key": "0000000000001001",
+			"audio_id": "audio_1001",
+			"scientific_name": "Cyanocorax cyanopogon",
+			"confidence": 0.91,
+			"start_time": 0.0,
+			"end_time": 1.0
+		}
+	]
+}
+```
+
+Projects bootstrap file example (`BIRDNET_PROJECTS_FILE`):
+
+```json
+[
+  {
+    "project_slug": "kenya-2024",
+    "name": "Kenya Survey 2024",
+    "dataset_repo_id": "org/kenya-2024-dataset",
+    "active": true
+  }
+]
+```
+
+User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
+
+```json
+{
+  "admin_user": {
+    "kenya-2024": "admin"
+  },
+  "validator_a": {
+    "kenya-2024": "validator"
+  }
+}
+```
+
 ## Typical Validation Flow
 
 1. Login with a valid user.
@@ -95,7 +147,16 @@ Stop the existing process using that port, or launch after setting a different `
 
 ### Login works but no project appears
 
-Your user likely has no project assignment. Add project access through the admin flow.
+Your user likely has no project assignment. Verify `BIRDNET_PROJECTS_FILE` and `BIRDNET_USER_ACCESS_FILE`, or add project access through the admin flow.
+
+### Seed warning appears in Validation tab
+
+If you see a seed warning banner:
+
+1. Verify `BIRDNET_DETECTIONS_FILE` points to an existing file.
+2. Confirm the file is valid UTF-8 JSON.
+3. Confirm each project maps to a list of detections, or each list item includes `project_slug`.
+4. If needed, unset `BIRDNET_DETECTIONS_FILE` to fall back to default demo detections.
 
 ### Audio does not load for a detection
 
@@ -108,3 +169,11 @@ Check that:
 ### I get conflict messages while validating
 
 This means another validator updated the same detection first. Refresh and reapply your decision on the newest version.
+
+## Recent Updates
+
+- Integrated Validation tab flow in the multi-project app (no placeholder stage).
+- Added project-scoped queue badge (`Queue: N`) and improved queue context feedback.
+- Added seed-file warning banner with actionable remediation guidance in Validation.
+- Standardized all user-facing UI text and feedback messages in English.
+- Updated authentication/session timestamps to timezone-aware UTC handling.

@@ -1,7 +1,7 @@
 """AuthService: User authentication, session management, and project ACL."""
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 import uuid
 
@@ -31,12 +31,12 @@ class Session:
 
     def is_expired(self) -> bool:
         """Check if session has expired."""
-        return datetime.utcnow() > self.expires_at
+        return datetime.now(UTC) > self.expires_at
 
     def update_activity(self, ttl_minutes: int = 120) -> None:
         """Update last activity timestamp and extend expiration."""
-        self.last_activity = datetime.utcnow()
-        self.expires_at = datetime.utcnow() + timedelta(minutes=ttl_minutes)
+        self.last_activity = datetime.now(UTC)
+        self.expires_at = datetime.now(UTC) + timedelta(minutes=ttl_minutes)
 
 
 class AuthService:
@@ -67,6 +67,56 @@ class AuthService:
             is_active=True,
         )
 
+    def list_usernames(self, include_inactive: bool = False) -> List[str]:
+        """List registered usernames.
+
+        Args:
+            include_inactive: Include disabled users when True
+
+        Returns:
+            Sorted list of usernames
+        """
+        usernames = []
+        for username, access in self._user_access.items():
+            if include_inactive or access.is_active:
+                usernames.append(username)
+        return sorted(usernames)
+
+    def upsert_user_project_role(self, username: str, project_slug: str, role: Role) -> None:
+        """Create/update user assignment for a project.
+
+        Args:
+            username: User name
+            project_slug: Project slug
+            role: Role to apply for this project
+        """
+        access = self._user_access.get(username)
+        if access is None:
+            access = UserProjectAccess(username=username, project_slugs={}, is_active=True)
+            self._user_access[username] = access
+
+        access.project_slugs[project_slug] = role
+
+    def remove_user_project_role(self, username: str, project_slug: str) -> bool:
+        """Remove a user assignment from a project.
+
+        Args:
+            username: User name
+            project_slug: Project slug
+
+        Returns:
+            True when assignment existed and was removed
+        """
+        access = self._user_access.get(username)
+        if access is None:
+            return False
+
+        if project_slug not in access.project_slugs:
+            return False
+
+        del access.project_slugs[project_slug]
+        return True
+
     def login(self, username: str) -> Optional[Session]:
         """Authenticate a user and create a new session.
 
@@ -91,7 +141,7 @@ class AuthService:
                 break
 
         session_id = str(uuid.uuid4())
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         session = Session(
             session_id=session_id,
             username=username,
@@ -182,7 +232,7 @@ class AuthService:
 
     def cleanup_expired_sessions(self) -> None:
         """Remove all expired sessions (maintenance cleanup)."""
-        now = datetime.utcnow()
+        now = datetime.now(UTC)
         expired = [
             sid for sid, session in self._sessions.items() if session.is_expired()
         ]

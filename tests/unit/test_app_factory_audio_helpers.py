@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+import json
 
 import pandas as pd
 
@@ -17,7 +18,18 @@ from src.ui.app_factory import (
     _reapply_last_conflict_validation_with_refresh,
     _batch_validate_conflicts,
     create_app,
+    _load_seed_detections,
+    _validate_seed_file,
+    _build_detection_repository,
+    _get_project_detection_count,
+    _build_queue_badge,
+    _load_projects_from_file,
+    _load_user_access_from_file,
+    _bootstrap_auth_and_projects,
 )
+from src.auth.auth_service import AuthService
+from src.config.runtime_config import RuntimeConfig
+from src.ui.admin_panel import AdminPanelManager
 
 
 @dataclass
@@ -120,6 +132,9 @@ class FakeSnapshotReader:
 
 
 class FakeQueueService:
+    def __init__(self) -> None:
+        self.last_kwargs: dict[str, object] = {}
+
     class _Page:
         def __init__(self) -> None:
             self.page = 1
@@ -153,7 +168,7 @@ class FakeQueueService:
             ]
 
     def get_page(self, **kwargs: object) -> "FakeQueueService._Page":
-        _ = kwargs
+        self.last_kwargs = kwargs
         return FakeQueueService._Page()
 
 
@@ -181,7 +196,7 @@ def test_fetch_selected_audio_success() -> None:
 
     assert path == "/tmp/audio_03.wav"
     assert cache_key == "key:audio_03"
-    assert "Audio carregado" in status
+    assert "Audio loaded" in status
 
 
 def test_extract_detection_key_from_rows() -> None:
@@ -203,7 +218,7 @@ def test_fetch_selected_audio_validates_repo() -> None:
 
     assert path is None
     assert cache_key == ""
-    assert "Informe dataset repo" in status
+    assert "Provide dataset repo" in status
 
 
 def test_cleanup_selected_audio() -> None:
@@ -211,7 +226,7 @@ def test_cleanup_selected_audio() -> None:
 
     status, player_value = _cleanup_selected_audio(service, "key:audio_03")
 
-    assert "Cache de audio limpo" in status
+    assert "Audio cache cleaned" in status
     assert player_value is None
     assert service.cleaned == ["key:audio_03"]
 
@@ -233,7 +248,7 @@ def test_save_selected_validation_saves_and_cleans_audio_cache() -> None:
         cache_key="cache:audio_11",
     )
 
-    assert "Validacao salva" in status
+    assert "Validation saved" in status
     assert cache_key == ""
     assert audio_path is None
     assert len(validation_service.calls) == 1
@@ -259,7 +274,7 @@ def test_save_selected_validation_returns_conflict_message() -> None:
         cache_key="cache:audio_11",
     )
 
-    assert "Conflito de concorrencia" in status
+    assert "Concurrency conflict" in status
     assert cache_key == "cache:audio_11"
     assert audio_path is None
 
@@ -267,30 +282,32 @@ def test_save_selected_validation_returns_conflict_message() -> None:
 def test_build_validation_report() -> None:
     report = _build_validation_report(FakeSnapshotReader(), "demo-project")
 
-    assert "Projeto: demo-project" in report
-    assert "Eventos append-only: 2" in report
-    assert "Deteccoes com estado atual: 2" in report
+    assert "Project: demo-project" in report
+    assert "Append-only events: 2" in report
+    assert "Detections with current state: 2" in report
     assert "positive=1" in report
     assert "negative=1" in report
 
 
 def test_page_to_table_includes_validation_status() -> None:
+    queue = FakeQueueService()
     rows, status, page = _page_to_table(
-        service=FakeQueueService(),
+        service=queue,
         snapshot_reader=FakeSnapshotReader(),
-        project_slug="demo-project",
+        project_slug="kenya-2024",
         page=1,
         scientific_name="",
         min_confidence=0.0,
     )
 
     assert page == 1
-    assert "Pagina 1/1" in status
+    assert "Page 1/1" in status
     assert rows[0][0] == "dkey_01"
     assert rows[0][6] == "positive"
     assert rows[0][7] == 2
     assert rows[0][8] == ""
     assert rows[0][9] == ""
+    assert queue.last_kwargs["project_slug"] == "kenya-2024"
 
 
 def test_page_to_table_marks_conflict_row() -> None:
@@ -320,7 +337,7 @@ def test_page_to_table_conflicts_only_filter_hides_non_conflicts() -> None:
     )
 
     assert rows == []
-    assert "Apenas conflitos: 0 item(ns)" in status
+    assert "Conflicts only: 0 item(ns)" in status
 
 
 def test_page_to_table_conflicts_only_filter_keeps_conflict_rows() -> None:
@@ -337,7 +354,7 @@ def test_page_to_table_conflicts_only_filter_keeps_conflict_rows() -> None:
 
     assert len(rows) == 1
     assert rows[0][8] == "CONFLICT"
-    assert "Apenas conflitos: 1 item(ns)" in status
+    assert "Conflicts only: 1 item(ns)" in status
 
 
 def test_page_to_table_filters_by_validator() -> None:
@@ -433,7 +450,7 @@ def test_save_selected_validation_with_refresh_success() -> None:
         show_conflicts_only=False,
     )
 
-    assert "Validacao salva" in status
+    assert "Validation saved" in status
     assert cache_key == ""
     assert audio_path is None
     assert refreshed_page == 1
@@ -469,8 +486,8 @@ def test_save_selected_validation_with_refresh_conflict() -> None:
         show_conflicts_only=False,
     )
 
-    assert "Conflito de concorrencia" in status
-    assert "Tabela recarregada" in status
+    assert "Concurrency conflict" in status
+    assert "Table reloaded" in status
     assert cache_key == "cache:audio_11"
     assert audio_path is None
     assert refreshed_page == 1
@@ -509,7 +526,7 @@ def test_reapply_last_conflict_validation_with_refresh() -> None:
         show_conflicts_only=False,
     )
 
-    assert "Validacao salva" in status
+    assert "Validation saved" in status
     assert cache_key == ""
     assert audio_path is None
     assert refreshed_page == 1
@@ -546,7 +563,7 @@ def test_reapply_last_conflict_without_pending_status() -> None:
         show_conflicts_only=False,
     )
 
-    assert "Nenhuma validacao pendente" in status
+    assert "No pending validation" in status
     assert pending_status == ""
     assert conflict_key == ""
 
@@ -588,8 +605,8 @@ def test_batch_validate_conflicts_all_success() -> None:
         updated_after="",
     )
 
-    assert "Processados 2 conflitos" in status
-    assert "2 sucesso" in status
+    assert "Processed 2 conflicts" in status
+    assert "2 success" in status
     assert cache_key == ""
     assert refreshed_page == 1
     assert len(validation_service.calls) == 2
@@ -622,5 +639,190 @@ def test_batch_validate_conflicts_no_conflicts() -> None:
         updated_after="",
     )
 
-    assert "Nenhuma deteccao com conflito" in status
+    assert "No conflict detection" in status
     assert len(validation_service.calls) == 0
+
+
+def test_load_seed_detections_from_json_dict(tmp_path: Path) -> None:
+    payload = {
+        "kenya-2024": [
+            {
+                "detection_key": "0000000000001001",
+                "audio_id": "audio_1001",
+                "scientific_name": "Cyanocorax cyanopogon",
+                "confidence": 0.91,
+                "start_time": 0.0,
+                "end_time": 1.0,
+            }
+        ]
+    }
+    seed_file = tmp_path / "detections.json"
+    seed_file.write_text(json.dumps(payload), encoding="utf-8")
+
+    result = _load_seed_detections(str(seed_file))
+
+    assert "kenya-2024" in result
+    assert len(result["kenya-2024"]) == 1
+    assert result["kenya-2024"][0].audio_id == "audio_1001"
+
+
+def test_validate_seed_file_warns_for_invalid_shape(tmp_path: Path) -> None:
+    seed_file = tmp_path / "detections-invalid.json"
+    seed_file.write_text(json.dumps({"kenya-2024": {"wrong": True}}), encoding="utf-8")
+
+    warning = _validate_seed_file(str(seed_file))
+
+    assert "Invalid" in warning
+
+
+def test_validate_seed_file_warns_when_file_missing(tmp_path: Path) -> None:
+    missing_path = tmp_path / "missing-seed.json"
+
+    warning = _validate_seed_file(str(missing_path))
+
+    assert "not found" in warning
+    assert "BIRDNET_DETECTIONS_FILE" in warning
+
+
+def test_build_detection_repository_includes_new_project_defaults() -> None:
+    queue, warning = _build_detection_repository(["brand-new-project"], seed_file_path=None)
+    page = queue.get_page(project_slug="brand-new-project", page=1, page_size=10)
+
+    assert warning == ""
+    assert page.project_slug == "brand-new-project"
+    assert len(page.items) == 4
+
+
+def test_get_project_detection_count_reads_total_items() -> None:
+    queue = FakeQueueService()
+
+    total = _get_project_detection_count(queue, "kenya-2024")
+
+    assert total == 2
+
+
+def test_get_project_detection_count_handles_service_error() -> None:
+    class BrokenQueueService:
+        def get_page(self, **kwargs: object):
+            _ = kwargs
+            raise RuntimeError("boom")
+
+    total = _get_project_detection_count(BrokenQueueService(), "kenya-2024")
+
+    assert total == 0
+
+
+def test_build_queue_badge_without_project() -> None:
+    badge = _build_queue_badge(FakeQueueService(), None)
+
+    assert "Queue: --" in badge
+
+
+def test_build_queue_badge_with_project() -> None:
+    badge = _build_queue_badge(FakeQueueService(), "kenya-2024")
+
+    assert "Queue: 2" in badge
+
+
+def test_fetch_selected_audio_repo_hint() -> None:
+    service = FakeAudioService()
+    rows = [["k1", "audio_03", "sp", 0.9, 0.0, 1.0]]
+
+    _, _, status = _fetch_selected_audio(
+        audio_service=service,
+        dataset_repo="",
+        rows=rows,
+        selected_index=0,
+        previous_cache_key="",
+    )
+
+    assert "owner/repo" in status
+    assert "Example" in status
+
+
+def test_load_projects_from_file_reads_valid_payload(tmp_path: Path) -> None:
+    payload = [
+        {
+            "project_slug": "project-a",
+            "name": "Project A",
+            "dataset_repo_id": "org/project-a",
+            "active": True,
+        }
+    ]
+    path = tmp_path / "projects.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    projects = _load_projects_from_file(str(path))
+
+    assert len(projects) == 1
+    assert projects[0].project_slug == "project-a"
+
+
+def test_load_user_access_from_file_reads_valid_payload(tmp_path: Path) -> None:
+    payload = {
+        "validator_a": {"project-a": "validator"},
+        "admin_a": {"project-a": "admin", "project-b": "admin"},
+    }
+    path = tmp_path / "access.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    access = _load_user_access_from_file(str(path))
+
+    assert access["validator_a"]["project-a"].value == "validator"
+    assert access["admin_a"]["project-b"].value == "admin"
+
+
+def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text(
+        json.dumps(
+            [
+                {
+                    "project_slug": "project-a",
+                    "name": "Project A",
+                    "dataset_repo_id": "org/project-a",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text(
+        json.dumps({"validator_a": {"project-a": "validator"}}),
+        encoding="utf-8",
+    )
+
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        page_size=25,
+        projects_file_path=str(projects_file),
+        user_access_file_path=str(users_file),
+        enable_demo_bootstrap=False,
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service)
+
+    warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+
+    assert warning == ""
+    assert auth_service.login("validator_a") is not None
+    assert any(p["project_slug"] == "project-a" for p in admin_manager.list_projects())
+
+
+def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -> None:
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        enable_demo_bootstrap=False,
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service)
+
+    warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+
+    assert "Production bootstrap incomplete" in warning

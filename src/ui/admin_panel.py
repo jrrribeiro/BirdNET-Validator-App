@@ -19,7 +19,6 @@ class AdminPanelManager:
         """
         self.auth_service = auth_service
         self._projects: dict[str, Project] = {}  # project_slug -> Project
-        self._user_project_assignments: dict[str, dict[str, str]] = {}  # username -> {project_slug -> role}
 
     def register_project(self, project: Project) -> bool:
         """Register a new project (idempotent).
@@ -73,7 +72,7 @@ class AdminPanelManager:
             List of dicts with username and role
         """
         result = []
-        for username in self.auth_service._user_access.keys():
+        for username in self.auth_service.list_usernames(include_inactive=True):
             role = self.auth_service.get_user_role_for_project(username, project_slug)
             if role is not None:
                 result.append({"username": username, "role": role.value})
@@ -99,12 +98,7 @@ class AdminPanelManager:
         if role not in ["admin", "validator"]:
             return False, f"Invalid role: {role}"
 
-        # Get or create user's project access
-        if username not in self.auth_service._user_access:
-            self.auth_service.register_user_project_access(username, {})
-
-        access = self.auth_service._user_access[username]
-        access.project_slugs[project_slug] = Role(role)
+        self.auth_service.upsert_user_project_role(username, project_slug, Role(role))
 
         return True, f"✅ Assigned {username} to {project_slug} as {role}"
 
@@ -118,14 +112,14 @@ class AdminPanelManager:
         Returns:
             Tuple of (success, message)
         """
-        if username not in self.auth_service._user_access:
+        if username not in self.auth_service.list_usernames(include_inactive=True):
             return False, f"User '{username}' not found"
 
-        access = self.auth_service._user_access[username]
-        if project_slug not in access.project_slugs:
+        role = self.auth_service.get_user_role_for_project(username, project_slug)
+        if role is None:
             return False, f"User '{username}' is not assigned to project '{project_slug}'"
 
-        del access.project_slugs[project_slug]
+        _ = self.auth_service.remove_user_project_role(username, project_slug)
         return True, f"✅ Removed {username} from {project_slug}"
 
     def toggleproject_active(self, project_slug: str, active: bool) -> Tuple[bool, str]:
@@ -191,9 +185,6 @@ def create_admin_panel(admin_manager: AdminPanelManager, current_session: Sessio
                         )
 
                 project_message = gr.Markdown()
-
-                # TODO: Implement create project button
-                # create_project_button = gr.Button("Create Project", variant="primary")
 
                 # Projects list
                 with gr.Row():
