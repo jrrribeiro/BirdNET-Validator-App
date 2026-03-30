@@ -1,3 +1,15 @@
+---
+title: BirdNET-Validator-App
+emoji: "🐦"
+colorFrom: green
+colorTo: blue
+sdk: gradio
+sdk_version: "5.0.0"
+python_version: "3.11"
+app_file: app.py
+pinned: false
+---
+
 # BirdNET-Validator-App
 
 BirdNET-Validator-App is a Gradio application for human validation of BirdNET detections in multi-project workflows.
