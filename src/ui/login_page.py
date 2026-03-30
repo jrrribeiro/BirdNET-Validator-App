@@ -26,6 +26,12 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Blocks, gr.Textbox,
             placeholder="Enter your username",
             lines=1,
         )
+        hf_token_input = gr.Textbox(
+            label="Hugging Face Token (recommended)",
+            placeholder="hf_xxx...",
+            type="password",
+            lines=1,
+        )
 
         error_message = gr.Markdown()
 
@@ -37,7 +43,7 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Blocks, gr.Textbox,
             visible=False,
         )
 
-        def perform_login(username: str) -> Tuple[str, str]:
+        def perform_login(username: str, hf_token: str) -> Tuple[str, str]:
             """Attempt login and return session ID or error message.
 
             Args:
@@ -46,8 +52,14 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Blocks, gr.Textbox,
             Returns:
                 Tuple of (session_id, error_message)
             """
+            if hf_token and hf_token.strip():
+                session, message = auth_service.login_with_hf_token(hf_token)
+                if session is None:
+                    return "", message
+                return session.session_id, message
+
             if not username or not username.strip():
-                return "", "❌ Please enter a username"
+                return "", "❌ Please enter a username or provide a Hugging Face token"
 
             username = username.strip()
             session = auth_service.login(username)
@@ -59,7 +71,7 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Blocks, gr.Textbox,
 
         login_button.click(
             fn=perform_login,
-            inputs=[username_input],
+            inputs=[username_input, hf_token_input],
             outputs=[session_output, error_message],
         )
 

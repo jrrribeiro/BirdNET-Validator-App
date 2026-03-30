@@ -249,6 +249,102 @@ class TestAuthService:
         auth_service.logout(session_admin.session_id)
         assert auth_service.get_session(session_validator.session_id) is not None
 
+    def test_invite_accept_flow_grants_access(self, auth_service):
+        auth_service.register_user_project_access("owner", {"proj-1": Role.admin})
+
+        ok, _ = auth_service.create_project_invite(
+            username="validator_new",
+            project_slug="proj-1",
+            role=Role.validator,
+            invited_by="owner",
+        )
+        assert ok is True
+
+        pending = auth_service.list_pending_invites("validator_new")
+        assert len(pending) == 1
+        assert pending[0].project_slug == "proj-1"
+
+        accepted, _ = auth_service.accept_project_invite("validator_new", "proj-1")
+        assert accepted is True
+        assert auth_service.get_user_role_for_project("validator_new", "proj-1") == Role.validator
+        assert auth_service.list_pending_invites("validator_new") == []
+
+    def test_invited_user_can_login_before_accepting(self, auth_service):
+        ok, _ = auth_service.create_project_invite(
+            username="pending_user",
+            project_slug="proj-1",
+            role=Role.validator,
+            invited_by="owner",
+        )
+        assert ok is True
+
+        session = auth_service.login_internal("pending_user")
+        assert session is not None
+        assert session.username == "pending_user"
+        assert session.authorized_projects == []
+
+    def test_reject_invite_removes_pending(self, auth_service):
+        ok, _ = auth_service.create_project_invite(
+            username="pending_user",
+            project_slug="proj-1",
+            role=Role.validator,
+            invited_by="owner",
+        )
+        assert ok is True
+
+        rejected, _ = auth_service.reject_project_invite("pending_user", "proj-1")
+        assert rejected is True
+        assert auth_service.list_pending_invites("pending_user") == []
+
+    def test_accept_all_project_invites(self, auth_service):
+        ok1, _ = auth_service.create_project_invite(
+            username="pending_user",
+            project_slug="proj-1",
+            role=Role.validator,
+            invited_by="owner",
+        )
+        ok2, _ = auth_service.create_project_invite(
+            username="pending_user",
+            project_slug="proj-2",
+            role=Role.admin,
+            invited_by="owner",
+        )
+        assert ok1 and ok2
+
+        accepted, failed, _ = auth_service.accept_all_project_invites("pending_user")
+        assert accepted == 2
+        assert failed == 0
+        assert auth_service.get_user_role_for_project("pending_user", "proj-1") == Role.validator
+        assert auth_service.get_user_role_for_project("pending_user", "proj-2") == Role.admin
+
+    def test_revoke_project_invite(self, auth_service):
+        ok, _ = auth_service.create_project_invite(
+            username="pending_user",
+            project_slug="proj-1",
+            role=Role.validator,
+            invited_by="owner",
+        )
+        assert ok is True
+
+        revoked, _ = auth_service.revoke_project_invite("pending_user", "proj-1")
+        assert revoked is True
+        assert auth_service.list_pending_invites("pending_user") == []
+
+    def test_expired_invite_is_pruned(self):
+        service = AuthService(session_ttl_minutes=120, invite_ttl_hours=1)
+        ok, _ = service.create_project_invite(
+            username="pending_user",
+            project_slug="proj-1",
+            role=Role.validator,
+            invited_by="owner",
+        )
+        assert ok is True
+
+        invite = service.list_pending_invites("pending_user")[0]
+        invite.expires_at = datetime.now(UTC) - timedelta(seconds=1)
+
+        assert service.list_pending_invites("pending_user") == []
+
 
 class TestUserProjectAccess:
     """Test UserProjectAccess model."""

@@ -19,6 +19,9 @@ class Project(BaseModel):
     project_slug: str = Field(min_length=3)
     name: str = Field(min_length=1)
     dataset_repo_id: str = Field(min_length=3)
+    visibility: str = Field(default="collaborative", pattern="^(private|collaborative)$")
+    owner_username: Optional[str] = None
+    dataset_token: Optional[str] = None
     active: bool = True
 
 

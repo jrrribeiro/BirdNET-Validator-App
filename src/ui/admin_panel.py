@@ -46,6 +46,9 @@ class AdminPanelManager:
                 "project_slug": p.project_slug,
                 "name": p.name,
                 "dataset_repo_id": p.dataset_repo_id,
+                "visibility": p.visibility,
+                "owner_username": p.owner_username,
+                "dataset_token_set": bool((p.dataset_token or "").strip()),
                 "active": p.active,
             }
             for p in self._projects.values()
@@ -98,9 +101,57 @@ class AdminPanelManager:
         if role not in ["admin", "validator"]:
             return False, f"Invalid role: {role}"
 
+        project = self._projects[project_slug]
+        if project.visibility == "private" and project.owner_username and username != project.owner_username:
+            return False, "Private projects only allow the owner"
+
         self.auth_service.upsert_user_project_role(username, project_slug, Role(role))
 
         return True, f"✅ Assigned {username} to {project_slug} as {role}"
+
+    def invite_user_to_project(
+        self,
+        invited_by: str,
+        username: str,
+        project_slug: str,
+        role: str,
+    ) -> Tuple[bool, str]:
+        if project_slug not in self._projects:
+            return False, f"Project '{project_slug}' not found"
+
+        if role not in ["admin", "validator"]:
+            return False, f"Invalid role: {role}"
+
+        project = self._projects[project_slug]
+        if project.visibility == "private":
+            return False, "Private projects do not accept collaborators"
+
+        return self.auth_service.create_project_invite(
+            username=username,
+            project_slug=project_slug,
+            role=Role(role),
+            invited_by=invited_by,
+        )
+
+    def list_pending_invites(self, project_slug: str | None = None) -> List[dict]:
+        invites = self.auth_service.list_all_pending_invites()
+        rows: list[dict] = []
+        for invite in invites:
+            if project_slug and invite.project_slug != project_slug:
+                continue
+            rows.append(
+                {
+                    "username": invite.username,
+                    "project_slug": invite.project_slug,
+                    "role": invite.role.value,
+                    "invited_by": invite.invited_by,
+                    "expires_at": invite.expires_at.isoformat(),
+                }
+            )
+        return rows
+
+    def revoke_invite(self, username: str, project_slug: str) -> Tuple[bool, str]:
+        return self.auth_service.revoke_project_invite(username=username, project_slug=project_slug)
 
     def remove_user_from_project(self, username: str, project_slug: str) -> Tuple[bool, str]:
         """Remove a user's access to a project.

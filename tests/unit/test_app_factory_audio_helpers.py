@@ -799,6 +799,8 @@ def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp
         page_size=25,
         projects_file_path=str(projects_file),
         user_access_file_path=str(users_file),
+        invites_file_path=None,
+        invite_ttl_hours=72,
         enable_demo_bootstrap=False,
     )
     auth_service = AuthService()
@@ -818,6 +820,8 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
         page_size=25,
         projects_file_path=None,
         user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
         enable_demo_bootstrap=False,
     )
     auth_service = AuthService()

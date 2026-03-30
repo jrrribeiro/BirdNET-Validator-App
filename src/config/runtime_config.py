@@ -11,6 +11,8 @@ class RuntimeConfig:
     page_size: int
     projects_file_path: str | None
     user_access_file_path: str | None
+    invites_file_path: str | None
+    invite_ttl_hours: int
     enable_demo_bootstrap: bool
 
     @classmethod
@@ -34,6 +36,16 @@ class RuntimeConfig:
 
         projects_file_path = (os.getenv("BIRDNET_PROJECTS_FILE") or "").strip() or None
         user_access_file_path = (os.getenv("BIRDNET_USER_ACCESS_FILE") or "").strip() or None
+        invites_file_path = (os.getenv("BIRDNET_INVITES_FILE") or "").strip() or None
+        raw_invite_ttl_hours = (os.getenv("BIRDNET_INVITE_TTL_HOURS") or "").strip()
+        invite_ttl_hours = 72
+        if raw_invite_ttl_hours:
+            try:
+                parsed = int(raw_invite_ttl_hours)
+                if parsed > 0:
+                    invite_ttl_hours = parsed
+            except ValueError:
+                invite_ttl_hours = 72
 
         raw_enable_demo_bootstrap = (os.getenv("BIRDNET_ENABLE_DEMO_BOOTSTRAP") or "").strip().lower()
         enable_demo_bootstrap = raw_enable_demo_bootstrap in {"1", "true", "yes", "on"}
@@ -44,5 +56,7 @@ class RuntimeConfig:
             page_size=page_size,
             projects_file_path=projects_file_path,
             user_access_file_path=user_access_file_path,
+            invites_file_path=invites_file_path,
+            invite_ttl_hours=invite_ttl_hours,
             enable_demo_bootstrap=enable_demo_bootstrap,
         )

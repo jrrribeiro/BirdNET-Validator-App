@@ -35,6 +35,7 @@ class _AudioServiceProtocol(Protocol):
         dataset_repo: str,
         audio_id: str,
         allow_demo_fallback: bool = False,
+        hf_token: str | None = None,
     ) -> _AudioFetchResultProtocol: ...
 
     def cleanup_after_validation(self, cache_key: str) -> None: ...
@@ -310,6 +311,9 @@ def _load_projects_from_file(projects_file_path: str | None) -> list[Project]:
                     project_slug=str(row.get("project_slug", "")).strip(),
                     name=str(row.get("name", "")).strip(),
                     dataset_repo_id=str(row.get("dataset_repo_id", "")).strip(),
+                    visibility=str(row.get("visibility", "collaborative")).strip() or "collaborative",
+                    owner_username=(str(row.get("owner_username", "")).strip() or None),
+                    dataset_token=(str(row.get("dataset_token", "")).strip() or None),
                     active=bool(row.get("active", True)),
                 )
             )
@@ -344,14 +348,78 @@ def _load_user_access_from_file(user_access_file_path: str | None) -> dict[str, 
             if role_text not in {"admin", "validator"}:
                 continue
             normalized_roles[str(project_slug)] = Role(role_text)
-        if normalized_roles:
-            result[str(username)] = normalized_roles
+        result[str(username)] = normalized_roles
     return result
 
 
-def _bootstrap_auth_and_projects(auth_service: AuthService, admin_manager: AdminPanelManager, runtime_config: RuntimeConfig) -> str:
-    projects = _load_projects_from_file(runtime_config.projects_file_path)
-    user_access = _load_user_access_from_file(runtime_config.user_access_file_path)
+def _load_pending_invites_from_file(invites_file_path: str | None) -> dict[str, dict[str, dict[str, str]]]:
+    if not invites_file_path:
+        return {}
+
+    path = Path(invites_file_path)
+    if not path.exists():
+        return {}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+    return payload if isinstance(payload, dict) else {}
+
+
+def _resolve_bootstrap_file_paths(runtime_config: RuntimeConfig) -> tuple[Path, Path, Path]:
+    bootstrap_dir = Path(runtime_config.validation_base_dir) / "bootstrap"
+    projects_path = Path(runtime_config.projects_file_path) if runtime_config.projects_file_path else (bootstrap_dir / "projects.json")
+    user_access_path = Path(runtime_config.user_access_file_path) if runtime_config.user_access_file_path else (bootstrap_dir / "user_access.json")
+    invites_path = Path(runtime_config.invites_file_path) if runtime_config.invites_file_path else (bootstrap_dir / "invites.json")
+    return projects_path, user_access_path, invites_path
+
+
+def _persist_bootstrap_state(
+    projects_path: Path,
+    user_access_path: Path,
+    invites_path: Path,
+    admin_manager: AdminPanelManager,
+    auth_service: AuthService,
+) -> None:
+    projects_path.parent.mkdir(parents=True, exist_ok=True)
+    user_access_path.parent.mkdir(parents=True, exist_ok=True)
+    invites_path.parent.mkdir(parents=True, exist_ok=True)
+
+    project_rows = admin_manager.list_projects()
+    projects_payload = [
+        {
+            "project_slug": str(project.get("project_slug", "")).strip(),
+            "name": str(project.get("name", "")).strip(),
+            "dataset_repo_id": str(project.get("dataset_repo_id", "")).strip(),
+            "visibility": str(project.get("visibility", "collaborative")).strip() or "collaborative",
+            "owner_username": str(project.get("owner_username", "")).strip() or None,
+            "dataset_token": str(project.get("dataset_token", "")).strip() or None,
+            "active": bool(project.get("active", True)),
+        }
+        for project in project_rows
+    ]
+    projects_path.write_text(json.dumps(projects_payload, indent=2), encoding="utf-8")
+
+    access_payload = auth_service.export_user_access_map(include_inactive=True)
+    user_access_path.write_text(json.dumps(access_payload, indent=2), encoding="utf-8")
+
+    invites_payload = auth_service.export_pending_invites_map()
+    invites_path.write_text(json.dumps(invites_payload, indent=2), encoding="utf-8")
+
+
+def _bootstrap_auth_and_projects(
+    auth_service: AuthService,
+    admin_manager: AdminPanelManager,
+    runtime_config: RuntimeConfig,
+    projects_file_path: str | None = None,
+    user_access_file_path: str | None = None,
+    invites_file_path: str | None = None,
+) -> str:
+    projects = _load_projects_from_file(projects_file_path or runtime_config.projects_file_path)
+    user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
+    pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
 
     used_demo_fallback = False
     if not projects and runtime_config.enable_demo_bootstrap:
@@ -368,16 +436,18 @@ def _bootstrap_auth_and_projects(auth_service: AuthService, admin_manager: Admin
     for username, access in user_access.items():
         auth_service.register_user_project_access(username, access)
 
+    auth_service.load_pending_invites_map(pending_invites)
+
     if used_demo_fallback:
         return (
             "⚠️ Demo bootstrap enabled via BIRDNET_ENABLE_DEMO_BOOTSTRAP. "
             "Use BIRDNET_PROJECTS_FILE and BIRDNET_USER_ACCESS_FILE for production auth/project setup."
         )
 
-    if not projects or not user_access:
+    if not projects:
         return (
-            "⚠️ Production bootstrap incomplete. Configure BIRDNET_PROJECTS_FILE and "
-            "BIRDNET_USER_ACCESS_FILE (or enable demo bootstrap for local testing)."
+            "⚠️ Production bootstrap incomplete. Create your first project in Admin, or configure "
+            "BIRDNET_PROJECTS_FILE and BIRDNET_USER_ACCESS_FILE (or enable demo bootstrap for local testing)."
         )
 
     return ""
@@ -607,6 +677,7 @@ def _fetch_selected_audio(
     selected_index: int,
     previous_cache_key: str,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[str | None, str, str]:
     repo = dataset_repo.strip()
     if not repo:
@@ -619,6 +690,7 @@ def _fetch_selected_audio(
                 dataset_repo=repo,
                 audio_id=audio_id,
                 allow_demo_fallback=allow_demo_fallback,
+                hf_token=hf_token,
             )
         except TypeError:
             # Backward compatibility for fake/mocked services used in tests.
@@ -733,6 +805,7 @@ def _fetch_selected_audio_with_spectrogram(
     selected_index: int,
     previous_cache_key: str,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[str | None, str, str, str | None]:
     audio_path, cache_key, status = _fetch_selected_audio(
         audio_service=audio_service,
@@ -741,6 +814,7 @@ def _fetch_selected_audio_with_spectrogram(
         selected_index=selected_index,
         previous_cache_key=previous_cache_key,
         allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
     )
     spectrogram_path = _build_spectrogram_image(audio_path)
     if audio_path and spectrogram_path is None:
@@ -778,6 +852,7 @@ def _autofetch_first_row(
     rows: object,
     cache_key: str,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[int, str | None, str, str, str | None]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
@@ -790,6 +865,7 @@ def _autofetch_first_row(
         selected_index=0,
         previous_cache_key=cache_key,
         allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
     )
     return 0, audio_path, updated_cache_key, status, spectrogram_path
 
@@ -801,6 +877,7 @@ def _select_and_fetch_audio(
     cache_key: str,
     evt: gr.SelectData,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[int, str | None, str, str, str | None]:
     if isinstance(evt.index, tuple):
         selected_index = int(evt.index[0])
@@ -816,6 +893,7 @@ def _select_and_fetch_audio(
         selected_index=selected_index,
         previous_cache_key=cache_key,
         allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
     )
     return selected_index, audio_path, updated_cache_key, status, spectrogram_path
 
@@ -882,6 +960,7 @@ def _fetch_selected_audio_with_title(
     selected_index: int,
     previous_cache_key: str,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[str | None, str, str, str | None, str]:
     audio_path, cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
@@ -890,6 +969,7 @@ def _fetch_selected_audio_with_title(
         selected_index=selected_index,
         previous_cache_key=previous_cache_key,
         allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
     )
     return audio_path, cache_key, status, spectrogram_path, _spectrogram_title(audio_path)
 
@@ -901,6 +981,7 @@ def _select_and_fetch_audio_with_title(
     cache_key: str,
     evt: gr.SelectData,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[int, str | None, str, str, str | None, str]:
     selected_index, audio_path, updated_cache_key, status, spectrogram_path = _select_and_fetch_audio(
         audio_service=audio_service,
@@ -909,6 +990,7 @@ def _select_and_fetch_audio_with_title(
         cache_key=cache_key,
         evt=evt,
         allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
     )
     return (
         selected_index,
@@ -926,6 +1008,7 @@ def _autofetch_first_row_with_title(
     rows: object,
     cache_key: str,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[int, str | None, str, str, str | None, str]:
     selected_index, audio_path, updated_cache_key, status, spectrogram_path = _autofetch_first_row(
         audio_service=audio_service,
@@ -933,6 +1016,7 @@ def _autofetch_first_row_with_title(
         rows=rows,
         cache_key=cache_key,
         allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
     )
     return (
         selected_index,
@@ -951,6 +1035,7 @@ def _advance_to_next_row_with_title(
     selected_index: int,
     cache_key: str,
     allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
 ) -> tuple[int, str | None, str, str, str | None, str]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
@@ -964,6 +1049,7 @@ def _advance_to_next_row_with_title(
         selected_index=safe_index,
         previous_cache_key=cache_key,
         allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
     )
     return safe_index, audio_path, updated_cache_key, status, spectrogram_path, _spectrogram_title(audio_path)
 
@@ -1870,14 +1956,26 @@ def create_app() -> gr.Blocks:
     Returns:
         Gradio Blocks with full auth-integrated app
     """
+    runtime_config = RuntimeConfig.from_env()
+
     # Initialize auth service
-    auth_service = AuthService(session_ttl_minutes=120)
+    auth_service = AuthService(
+        session_ttl_minutes=120,
+        invite_ttl_hours=runtime_config.invite_ttl_hours,
+    )
 
     # Initialize admin panel manager
     admin_manager = AdminPanelManager(auth_service)
 
-    runtime_config = RuntimeConfig.from_env()
-    bootstrap_warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+    projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
+    bootstrap_warning = _bootstrap_auth_and_projects(
+        auth_service,
+        admin_manager,
+        runtime_config,
+        projects_file_path=str(projects_file_path),
+        user_access_file_path=str(user_access_file_path),
+        invites_file_path=str(invites_file_path),
+    )
     queue_service, seed_warning = _build_detection_repository(
         [project["project_slug"] for project in admin_manager.list_projects()],
         seed_file_path=runtime_config.detection_seed_path,
@@ -1906,6 +2004,9 @@ def create_app() -> gr.Blocks:
                     p["project_slug"],
                     p["name"],
                     p["dataset_repo_id"],
+                    p.get("visibility", "collaborative"),
+                    p.get("owner_username", ""),
+                    "yes" if bool(p.get("dataset_token_set", False)) else "no",
                     "yes" if bool(p["active"]) else "no",
                 ]
                 for p in projects
@@ -1913,6 +2014,19 @@ def create_app() -> gr.Blocks:
 
         def _project_slugs() -> list[str]:
             return [p["project_slug"] for p in admin_manager.list_projects()]
+
+        def _persist_admin_state() -> tuple[bool, str]:
+            try:
+                _persist_bootstrap_state(
+                    projects_path=projects_file_path,
+                    user_access_path=user_access_file_path,
+                    invites_path=invites_file_path,
+                    admin_manager=admin_manager,
+                    auth_service=auth_service,
+                )
+                return True, ""
+            except Exception as exc:
+                return False, str(exc)
 
         with gr.Tabs():
             # ===== TAB 1: Login =====
@@ -1971,24 +2085,41 @@ def create_app() -> gr.Blocks:
                             label="HF Dataset Repo ID",
                             placeholder="ex: birdnet/amazonas-2026-dataset",
                         )
+                        create_project_visibility = gr.Dropdown(
+                            label="Visibility",
+                            choices=["private", "collaborative"],
+                            value="collaborative",
+                        )
+                        create_project_token = gr.Textbox(
+                            label="Project HF Token (optional)",
+                            placeholder="hf_xxx...",
+                            type="password",
+                        )
 
                     create_project_message = gr.Markdown()
 
-                    def create_project(session, slug: str, name: str, repo_id: str):
+                    def create_project(session, slug: str, name: str, repo_id: str, visibility: str, project_token: str):
                         if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Only admin can create projects.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                            return "❌ Access denied. Only admin can create projects.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
 
                         slug = (slug or "").strip()
                         name = (name or "").strip()
                         repo_id = (repo_id or "").strip()
+                        visibility_value = (visibility or "collaborative").strip().lower()
+                        project_token_value = (project_token or "").strip() or None
                         if not slug or not name or not repo_id:
-                            return "⚠️ Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update()
+                            return "⚠️ Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
+                        if visibility_value not in {"private", "collaborative"}:
+                            return "⚠️ Visibility must be private or collaborative.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
 
                         created = admin_manager.register_project(
                             Project(
                                 project_slug=slug,
                                 name=name,
                                 dataset_repo_id=repo_id,
+                                visibility=visibility_value,
+                                owner_username=session.username,
+                                dataset_token=project_token_value,
                                 active=True,
                             )
                         )
@@ -2001,28 +2132,49 @@ def create_app() -> gr.Blocks:
                                 gr.update(),
                                 gr.update(),
                                 gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
                             )
+
+                        # Project creator is always admin of the project.
+                        auth_service.upsert_user_project_role(session.username, slug, Role.admin)
+                        persisted, persist_error = _persist_admin_state()
 
                         refreshed_service, refreshed_warning = _build_detection_repository(
                             _project_slugs(),
                             seed_file_path=runtime_config.detection_seed_path,
                         )
                         service_ref["queue"] = refreshed_service
+                        refreshed_session = auth_service.refresh_session_authorizations(session.session_id) or session
 
                         return (
-                            f"✅ Project '{slug}' created successfully.",
+                            (
+                                f"✅ Project '{slug}' created successfully."
+                                if persisted
+                                else f"✅ Project '{slug}' created, but could not persist bootstrap files: {persist_error}"
+                            ),
                             _project_rows(),
                             gr.update(choices=_project_slugs(), value=slug),
                             gr.update(value=""),
                             gr.update(value=""),
                             gr.update(value=""),
+                            gr.update(value="collaborative"),
+                            gr.update(value=""),
+                            gr.update(choices=_project_slugs(), value=slug),
+                            gr.update(choices=_project_slugs(), value=slug),
+                            gr.update(choices=["all", *_project_slugs()], value="all"),
                             refreshed_warning,
+                            refreshed_session,
                         )
 
                     create_project_btn = gr.Button("➕ Create Project", variant="primary")
                     projects_table = gr.Dataframe(
                         value=_project_rows(),
-                        headers=["project_slug", "name", "dataset_repo_id", "active"],
+                        headers=["project_slug", "name", "dataset_repo_id", "visibility", "owner_username", "dataset_token_set", "active"],
                         interactive=False,
                     )
                     refresh_projects_btn = gr.Button("🔄 Refresh List")
@@ -2036,6 +2188,50 @@ def create_app() -> gr.Blocks:
                         fn=refresh_projects,
                         inputs=[session_state],
                         outputs=[projects_table],
+                    )
+
+                    gr.Markdown("#### Project Token Management")
+                    with gr.Row():
+                        token_project_select = gr.Dropdown(
+                            choices=_project_slugs(),
+                            label="Project",
+                        )
+                        token_new_value = gr.Textbox(
+                            label="New token",
+                            placeholder="hf_xxx...",
+                            type="password",
+                        )
+                        token_clear_checkbox = gr.Checkbox(label="Clear token", value=False)
+                    token_update_message = gr.Markdown()
+                    token_update_btn = gr.Button("Update Project Token")
+
+                    def update_project_token(session, project_slug: str, new_token: str, clear_token: bool):
+                        if session is None or session.role.value != "admin":
+                            return "❌ Access denied. Only admin can update project tokens.", gr.update(), gr.update()
+                        project = admin_manager.get_project(project_slug)
+                        if project is None:
+                            return "⚠️ Select a valid project.", gr.update(), gr.update()
+
+                        if bool(clear_token):
+                            project.dataset_token = None
+                            message = f"✅ Project token cleared for {project_slug}"
+                        else:
+                            candidate = (new_token or "").strip()
+                            if not candidate:
+                                return "⚠️ Provide a token or select clear token.", gr.update(), gr.update()
+                            project.dataset_token = candidate
+                            message = f"✅ Project token updated for {project_slug}"
+
+                        persisted, persist_error = _persist_admin_state()
+                        if not persisted:
+                            message = f"{message} | ⚠️ Persistence failed: {persist_error}"
+
+                        return message, gr.update(value=""), _project_rows()
+
+                    token_update_btn.click(
+                        fn=update_project_token,
+                        inputs=[session_state, token_project_select, token_new_value, token_clear_checkbox],
+                        outputs=[token_update_message, token_new_value, projects_table],
                     )
 
                 with gr.Group(visible=False) as admin_users_controls:
@@ -2055,6 +2251,7 @@ def create_app() -> gr.Blocks:
                         )
 
                     admin_message = gr.Markdown()
+                    invite_btn = gr.Button("✉️ Invite")
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None or session.role.value != "admin":
@@ -2063,7 +2260,9 @@ def create_app() -> gr.Blocks:
                             username, project, role
                         )
                         if success:
-                            return msg, gr.update(value=""), gr.update(value=None), gr.update(value="validator")
+                            persisted, persist_error = _persist_admin_state()
+                            final_message = msg if persisted else f"{msg} | ⚠️ Persistence failed: {persist_error}"
+                            return final_message, gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update()
 
                     assign_btn = gr.Button("✅ Assign", variant="primary")
@@ -2073,9 +2272,117 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_message, admin_username, admin_project, admin_role],
                     )
 
+                    def invite_user(session, username: str, project: str, role: str):
+                        if session is None or session.role.value != "admin":
+                            return "❌ Access denied. Only admin can invite users.", gr.update(), gr.update(), gr.update()
+                        success, msg = admin_manager.invite_user_to_project(
+                            invited_by=session.username,
+                            username=username,
+                            project_slug=project,
+                            role=role,
+                        )
+                        if success:
+                            persisted, persist_error = _persist_admin_state()
+                            final_message = msg if persisted else f"{msg} | ⚠️ Persistence failed: {persist_error}"
+                            return final_message, gr.update(value=""), gr.update(value=None), gr.update(value="validator")
+                        return msg, gr.update(), gr.update(), gr.update()
+
+                    invite_btn.click(
+                        fn=invite_user,
+                        inputs=[session_state, admin_username, admin_project, admin_role],
+                        outputs=[admin_message, admin_username, admin_project, admin_role],
+                    )
+
+                    gr.Markdown("#### Pending Invites")
+                    with gr.Row():
+                        pending_invites_filter_project = gr.Dropdown(
+                            choices=["all", *_project_slugs()],
+                            value="all",
+                            label="Filter by project",
+                        )
+                        pending_invite_username = gr.Textbox(label="Invite username", placeholder="validator_001")
+                        pending_invite_project = gr.Dropdown(choices=_project_slugs(), label="Invite project")
+                    pending_invites_table = gr.Dataframe(
+                        value=[],
+                        headers=["username", "project_slug", "role", "invited_by", "expires_at", "expires_in"],
+                        interactive=False,
+                    )
+                    pending_invites_message = gr.Markdown()
+                    with gr.Row():
+                        refresh_pending_invites_btn = gr.Button("Refresh Pending Invites")
+                        revoke_invite_btn = gr.Button("Revoke Invite")
+
+                    def _pending_invites_rows(project_filter: str):
+                        def _remaining_from_iso(iso_value: str) -> str:
+                            raw = str(iso_value or "").strip()
+                            if not raw:
+                                return "unknown"
+                            try:
+                                expires_at = datetime.fromisoformat(raw)
+                            except Exception:
+                                return "unknown"
+                            if expires_at.tzinfo is None:
+                                now = datetime.now()
+                            else:
+                                now = datetime.now(expires_at.tzinfo)
+                            remaining_seconds = int((expires_at - now).total_seconds())
+                            if remaining_seconds <= 0:
+                                return "expired"
+                            days = remaining_seconds // 86400
+                            hours = (remaining_seconds % 86400) // 3600
+                            minutes = (remaining_seconds % 3600) // 60
+                            if days > 0:
+                                return f"{days}d {hours}h"
+                            if hours > 0:
+                                return f"{hours}h {minutes}m"
+                            return f"{minutes}m"
+
+                        selected = (project_filter or "all").strip().lower()
+                        project = None if selected == "all" else project_filter
+                        invites = admin_manager.list_pending_invites(project_slug=project)
+                        return [
+                            [
+                                row.get("username", ""),
+                                row.get("project_slug", ""),
+                                row.get("role", ""),
+                                row.get("invited_by", ""),
+                                row.get("expires_at", ""),
+                                _remaining_from_iso(str(row.get("expires_at", ""))),
+                            ]
+                            for row in invites
+                        ]
+
+                    refresh_pending_invites_btn.click(
+                        fn=_pending_invites_rows,
+                        inputs=[pending_invites_filter_project],
+                        outputs=[pending_invites_table],
+                    )
+
+                    def revoke_invite(session, username: str, project_slug: str, project_filter: str):
+                        if session is None or session.role.value != "admin":
+                            return "❌ Access denied. Only admin can revoke invites.", _pending_invites_rows(project_filter)
+                        success, msg = admin_manager.revoke_invite(username=username, project_slug=project_slug)
+                        if success:
+                            persisted, persist_error = _persist_admin_state()
+                            if not persisted:
+                                msg = f"{msg} | ⚠️ Persistence failed: {persist_error}"
+                        return msg, _pending_invites_rows(project_filter)
+
+                    revoke_invite_btn.click(
+                        fn=revoke_invite,
+                        inputs=[session_state, pending_invite_username, pending_invite_project, pending_invites_filter_project],
+                        outputs=[pending_invites_message, pending_invites_table],
+                    )
+
+                    pending_invites_filter_project.change(
+                        fn=_pending_invites_rows,
+                        inputs=[pending_invites_filter_project],
+                        outputs=[pending_invites_table],
+                    )
+
                 create_project_btn.click(
                     fn=create_project,
-                    inputs=[session_state, create_project_slug, create_project_name, create_project_repo],
+                    inputs=[session_state, create_project_slug, create_project_name, create_project_repo, create_project_visibility, create_project_token],
                     outputs=[
                         create_project_message,
                         projects_table,
@@ -2083,7 +2390,13 @@ def create_app() -> gr.Blocks:
                         create_project_slug,
                         create_project_name,
                         create_project_repo,
+                        create_project_visibility,
+                        create_project_token,
+                        token_project_select,
+                        pending_invite_project,
+                        pending_invites_filter_project,
                         seed_warning_state,
+                        session_state,
                     ],
                 )
 
@@ -2109,6 +2422,13 @@ def create_app() -> gr.Blocks:
                     label="Authorized Project",
                     interactive=False,
                 )
+                invitations_info = gr.Markdown(value="")
+                invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
+                with gr.Row():
+                    refresh_invites_btn = gr.Button("Refresh Invites")
+                    accept_invite_btn = gr.Button("Accept Invite", variant="primary")
+                    accept_all_invites_btn = gr.Button("Accept All")
+                    reject_invite_btn = gr.Button("Reject Invite")
 
                 def update_project_selector(session):
                     """Update project dropdown when user logs in."""
@@ -2141,10 +2461,145 @@ def create_app() -> gr.Blocks:
                         dataset_repo_id,
                     )
 
+                def _format_invite_option(invite) -> str:
+                    return f"{invite.project_slug}|{invite.role.value}|{invite.invited_by}|{invite.expires_at.isoformat()}"
+
+                def _format_invite_remaining(expires_at: datetime) -> str:
+                    now = datetime.now(expires_at.tzinfo) if expires_at.tzinfo else datetime.utcnow()
+                    delta = expires_at - now
+                    remaining_seconds = int(delta.total_seconds())
+                    if remaining_seconds <= 0:
+                        return "expired"
+
+                    days = remaining_seconds // 86400
+                    hours = (remaining_seconds % 86400) // 3600
+                    minutes = (remaining_seconds % 3600) // 60
+
+                    if days > 0:
+                        return f"{days}d {hours}h"
+                    if hours > 0:
+                        return f"{hours}h {minutes}m"
+                    return f"{minutes}m"
+
+                def _build_invite_label(invite) -> str:
+                    remaining = _format_invite_remaining(invite.expires_at)
+                    return (
+                        f"{invite.project_slug} ({invite.role.value})"
+                        f" - invited by {invite.invited_by}"
+                        f" - expires in {remaining}"
+                    )
+
+                def _build_invites_ui(session):
+                    if session is None:
+                        return gr.update(value="", visible=False), gr.update(choices=[], value=None, interactive=False)
+                    invites = auth_service.list_pending_invites(session.username)
+                    if not invites:
+                        return gr.update(value="No pending invites", visible=True), gr.update(choices=[], value=None, interactive=False)
+                    encoded = [_format_invite_option(item) for item in invites]
+                    labeled_choices = [(_build_invite_label(invite), encoded_value) for invite, encoded_value in zip(invites, encoded)]
+                    return (
+                        gr.update(value=f"Pending invites: {len(labeled_choices)}", visible=True),
+                        gr.update(choices=labeled_choices, value=encoded[0], interactive=True),
+                    )
+
+                def _parse_invite_option(raw_option: str) -> tuple[str, str, str]:
+                    """Compatibility parser: supports old and new encoded invite strings."""
+                    value = str(raw_option or "").strip()
+                    parts = value.split("|")
+                    if len(parts) < 3:
+                        return "", "", ""
+                    return parts[0].strip(), parts[1].strip(), parts[2].strip()
+
+                def _accept_invite(session, selected_option: str):
+                    if session is None:
+                        return "❌ Login first", session
+                    project_slug, _, _ = _parse_invite_option(selected_option)
+                    if not project_slug:
+                        return "⚠️ Select an invite", session
+                    success, message = auth_service.accept_project_invite(session.username, project_slug)
+                    refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
+                    if success:
+                        _persist_admin_state()
+                    return message, refreshed
+
+                def _reject_invite(session, selected_option: str):
+                    if session is None:
+                        return "❌ Login first", session
+                    project_slug, _, _ = _parse_invite_option(selected_option)
+                    if not project_slug:
+                        return "⚠️ Select an invite", session
+                    success, message = auth_service.reject_project_invite(session.username, project_slug)
+                    refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
+                    if success:
+                        _persist_admin_state()
+                    return message, refreshed
+
+                def _accept_all_invites(session):
+                    if session is None:
+                        return "❌ Login first", session
+                    accepted, failed, message = auth_service.accept_all_project_invites(session.username)
+                    refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
+                    if accepted > 0:
+                        _persist_admin_state()
+                    detail = f"{message}"
+                    if failed:
+                        detail = f"{detail} | failed={failed}"
+                    return detail, refreshed
+
                 session_state.change(
                     fn=update_project_selector,
                     inputs=[session_state],
                     outputs=[project_selector, project_info_display, selected_project_state, selected_dataset_repo_state],
+                )
+
+                session_state.change(
+                    fn=_build_invites_ui,
+                    inputs=[session_state],
+                    outputs=[invitations_info, invite_selector],
+                )
+
+                refresh_invites_btn.click(
+                    fn=_build_invites_ui,
+                    inputs=[session_state],
+                    outputs=[invitations_info, invite_selector],
+                )
+
+                accept_invite_btn.click(
+                    fn=_accept_invite,
+                    inputs=[session_state, invite_selector],
+                    outputs=[project_info_display, session_state],
+                ).then(
+                    fn=update_project_selector,
+                    inputs=[session_state],
+                    outputs=[project_selector, project_info_display, selected_project_state, selected_dataset_repo_state],
+                ).then(
+                    fn=_build_invites_ui,
+                    inputs=[session_state],
+                    outputs=[invitations_info, invite_selector],
+                )
+
+                accept_all_invites_btn.click(
+                    fn=_accept_all_invites,
+                    inputs=[session_state],
+                    outputs=[project_info_display, session_state],
+                ).then(
+                    fn=update_project_selector,
+                    inputs=[session_state],
+                    outputs=[project_selector, project_info_display, selected_project_state, selected_dataset_repo_state],
+                ).then(
+                    fn=_build_invites_ui,
+                    inputs=[session_state],
+                    outputs=[invitations_info, invite_selector],
+                )
+
+                reject_invite_btn.click(
+                    fn=_reject_invite,
+                    inputs=[session_state, invite_selector],
+                    outputs=[project_info_display, session_state],
+                ).then(
+                    fn=_build_invites_ui,
+                    inputs=[session_state],
+                    outputs=[invitations_info, invite_selector],
                 )
 
                 def update_selected_project(selected: str, session):
@@ -2351,6 +2806,19 @@ def create_app() -> gr.Blocks:
                 pending_status_state = gr.State(value="")
                 conflict_detection_key_state = gr.State(value="")
                 report_box = gr.Textbox(label="Report", interactive=False)
+
+                def _session_hf_token(session) -> str | None:
+                    if session is None:
+                        return None
+                    return getattr(session, "hf_token", None)
+
+                def _project_fetch_token(project_slug: str, session) -> str | None:
+                    project = admin_manager.get_project(project_slug) if project_slug else None
+                    if project is not None:
+                        project_token = (project.dataset_token or "").strip()
+                        if project_token:
+                            return project_token
+                    return _session_hf_token(session)
 
                 def refresh(
                     project_slug: str,
@@ -2615,7 +3083,7 @@ def create_app() -> gr.Blocks:
                     updated_map[project_slug] = sorted(project_favs)
                     return f"Deteccao {detection_key} {action}", updated_map
 
-                def on_table_select(repo: str, rows: object, cache_key: str, evt: gr.SelectData):
+                def on_table_select(project_slug: str, repo: str, rows: object, cache_key: str, session, evt: gr.SelectData):
                     return _select_and_fetch_audio_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
@@ -2623,6 +3091,7 @@ def create_app() -> gr.Blocks:
                         cache_key=cache_key,
                         evt=evt,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     )
 
                 refresh_event = refresh_btn.click(
@@ -2705,33 +3174,35 @@ def create_app() -> gr.Blocks:
                     inputs=[table],
                     outputs=[validation_summary_cards],
                 ).then(
-                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                    fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
 
                 table.select(
                     fn=on_table_select,
-                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
 
                 load_audio_btn.click(
-                    fn=lambda repo, rows, idx, cache_key: _fetch_selected_audio_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _fetch_selected_audio_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         previous_cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
                 clear_audio_btn.click(
@@ -2749,14 +3220,15 @@ def create_app() -> gr.Blocks:
                     inputs=[table],
                     outputs=[validation_summary_cards],
                 ).then(
-                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                    fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
                 next_event.then(
@@ -2764,14 +3236,15 @@ def create_app() -> gr.Blocks:
                     inputs=[table],
                     outputs=[validation_summary_cards],
                 ).then(
-                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                    fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
                 prev_event.then(
@@ -2779,14 +3252,15 @@ def create_app() -> gr.Blocks:
                     inputs=[table],
                     outputs=[validation_summary_cards],
                 ).then(
-                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                    fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
 
@@ -3046,56 +3520,66 @@ def create_app() -> gr.Blocks:
                 )
 
                 approve_event.then(
-                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
 
                 reject_event.then(
-                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
 
                 uncertain_event.then(
-                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
 
                 skip_event.then(
-                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
                         allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+
+                session_state.change(
+                    fn=lambda s: gr.update(value=(s.username if s is not None else "")),
+                    inputs=[session_state],
+                    outputs=[validator_name],
+                )
 
                 reapply_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
                 batch_approve_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
