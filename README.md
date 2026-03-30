@@ -133,6 +133,42 @@ Yes. The validation flow uses optimistic concurrency checks to detect and handle
 
 Yes. The project is designed for Gradio deployment on Hugging Face Spaces.
 
+## Deploy on Hugging Face Spaces
+
+1. Create a new Space with:
+- SDK: `Gradio`
+- Python: `3.11`
+
+2. Push this repository to the Space.
+
+3. Configure Variables/Secrets in the Space settings.
+
+Required for production bootstrap:
+- `BIRDNET_PROJECTS_FILE` (example: `docs/spaces/projects.sample.json`)
+- `BIRDNET_USER_ACCESS_FILE` (example: `docs/spaces/user_access.sample.json`)
+
+Optional runtime settings:
+- `BIRDNET_DETECTIONS_FILE` (seed detections JSON)
+- `BIRDNET_VALIDATIONS_DIR` (default uses temp directory)
+- `BIRDNET_PAGE_SIZE` (default `25`)
+- `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
+
+4. For first smoke test only, you may temporarily set:
+- `BIRDNET_ENABLE_DEMO_BOOTSTRAP=true`
+
+Then log in with one of the demo users:
+- `admin_user`
+- `demo_user`
+- `validator_demo`
+
+5. After validation, switch to production bootstrap:
+- Set `BIRDNET_ENABLE_DEMO_BOOTSTRAP=false`
+- Provide real `BIRDNET_PROJECTS_FILE` and `BIRDNET_USER_ACCESS_FILE`
+
+Notes:
+- The app entrypoint reads `PORT` automatically in Spaces.
+- Keep user/project bootstrap files private if they contain sensitive assignments.
+
 ## Troubleshooting
 
 ### The app does not start locally
