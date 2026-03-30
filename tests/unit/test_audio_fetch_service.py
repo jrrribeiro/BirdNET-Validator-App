@@ -55,6 +55,29 @@ def test_fetch_without_extension_tries_supported_extensions(tmp_path: Path, monk
     assert any(path.endswith(".mp3") for path in attempts)
 
 
+def test_fetch_uses_demo_fallback_when_remote_audio_is_missing(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake_download(*, repo_id: str, repo_type: str, filename: str) -> str:
+        _ = repo_id
+        _ = repo_type
+        _ = filename
+        raise RuntimeError("not found")
+
+    monkeypatch.setattr("src.services.audio_fetch_service.hf_hub_download", fake_download)
+
+    cache = EphemeralCacheManager(cache_dir=str(tmp_path / "cache"), ttl_seconds=60, max_files=10)
+    service = AudioFetchService(cache)
+
+    result = service.fetch(
+        dataset_repo="org/project-dataset",
+        audio_id="missing_demo_audio_001",
+        allow_demo_fallback=True,
+    )
+
+    assert result.source == "demo-fallback"
+    assert Path(result.local_path).exists()
+    assert Path(result.local_path).suffix.lower() == ".wav"
+
+
 def test_cleanup_after_validation_removes_cached_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     remote_file = tmp_path / "remote.wav"
     remote_file.write_bytes(b"audio-bytes")

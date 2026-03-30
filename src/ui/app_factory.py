@@ -1,9 +1,14 @@
 import gradio as gr
 import hashlib
 import json
+import tempfile
+import wave
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
+
+import numpy as np
+from PIL import Image
 
 from src.config.runtime_config import RuntimeConfig
 from src.cache.ephemeral_cache_manager import EphemeralCacheManager
@@ -25,7 +30,12 @@ class _AudioFetchResultProtocol(Protocol):
 
 
 class _AudioServiceProtocol(Protocol):
-    def fetch(self, dataset_repo: str, audio_id: str) -> _AudioFetchResultProtocol: ...
+    def fetch(
+        self,
+        dataset_repo: str,
+        audio_id: str,
+        allow_demo_fallback: bool = False,
+    ) -> _AudioFetchResultProtocol: ...
 
     def cleanup_after_validation(self, cache_key: str) -> None: ...
 
@@ -267,6 +277,7 @@ def _default_projects() -> list[Project]:
 
 def _default_user_access() -> dict[str, dict[str, Role]]:
     return {
+        "demo_user": {"demo-project": Role.validator, "birds-local": Role.validator},
         "admin_user": {"kenya-2024": Role.admin, "nairobi-2023": Role.admin},
         "validator_demo": {"demo-project": Role.validator, "kenya-2024": Role.validator},
         "validator_other": {"nairobi-2023": Role.validator},
@@ -595,6 +606,7 @@ def _fetch_selected_audio(
     rows: object,
     selected_index: int,
     previous_cache_key: str,
+    allow_demo_fallback: bool = False,
 ) -> tuple[str | None, str, str]:
     repo = dataset_repo.strip()
     if not repo:
@@ -602,13 +614,358 @@ def _fetch_selected_audio(
 
     try:
         audio_id = _extract_audio_id(rows=rows, selected_index=selected_index)
-        result = audio_service.fetch(dataset_repo=repo, audio_id=audio_id)
+        try:
+            result = audio_service.fetch(
+                dataset_repo=repo,
+                audio_id=audio_id,
+                allow_demo_fallback=allow_demo_fallback,
+            )
+        except TypeError:
+            # Backward compatibility for fake/mocked services used in tests.
+            result = audio_service.fetch(dataset_repo=repo, audio_id=audio_id)
         status = f"Audio loaded ({result.source}) for audio_id={audio_id}"
         return result.local_path, result.cache_key, status
     except Exception as exc:
         if previous_cache_key:
             return None, previous_cache_key, f"Failed to load audio: {exc}"
         return None, "", f"Failed to load audio: {exc}"
+
+
+def _load_pcm_wave(audio_path: Path) -> tuple[int, np.ndarray]:
+    with wave.open(str(audio_path), "rb") as wav_file:
+        sample_rate = wav_file.getframerate()
+        channels = wav_file.getnchannels()
+        sample_width = wav_file.getsampwidth()
+        frame_count = wav_file.getnframes()
+        raw = wav_file.readframes(frame_count)
+
+    if sample_width == 1:
+        audio = np.frombuffer(raw, dtype=np.uint8).astype(np.float32)
+        audio = (audio - 128.0) / 128.0
+    elif sample_width == 2:
+        audio = np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0
+    elif sample_width == 4:
+        audio = np.frombuffer(raw, dtype=np.int32).astype(np.float32) / 2147483648.0
+    else:
+        raise ValueError(f"Unsupported PCM width: {sample_width}")
+
+    if channels > 1:
+        audio = audio.reshape(-1, channels).mean(axis=1)
+
+    return sample_rate, audio
+
+
+def _magma_like_colormap(normalized: np.ndarray) -> np.ndarray:
+    # Lightweight gradient for spectrogram rendering (dark -> orange -> yellow).
+    anchors = np.array(
+        [
+            [0, 0, 4],
+            [28, 16, 68],
+            [79, 18, 123],
+            [129, 37, 129],
+            [181, 54, 122],
+            [229, 80, 100],
+            [251, 135, 97],
+            [254, 194, 135],
+            [252, 253, 191],
+        ],
+        dtype=np.float32,
+    )
+    indices = np.clip((normalized * (len(anchors) - 1)).astype(np.float32), 0, len(anchors) - 1)
+    lower = np.floor(indices).astype(np.int32)
+    upper = np.clip(lower + 1, 0, len(anchors) - 1)
+    blend = (indices - lower)[..., np.newaxis]
+    rgb = anchors[lower] * (1.0 - blend) + anchors[upper] * blend
+    return rgb.astype(np.uint8)
+
+
+def _build_spectrogram_image(audio_path: str | None) -> str | None:
+    if not audio_path:
+        return None
+
+    source_path = Path(audio_path)
+    if not source_path.exists() or source_path.suffix.lower() != ".wav":
+        return None
+
+    try:
+        _, samples = _load_pcm_wave(source_path)
+    except Exception:
+        return None
+
+    if samples.size < 1024:
+        return None
+
+    window_size = 512
+    hop_size = 128
+    frame_count = 1 + max(0, (len(samples) - window_size) // hop_size)
+    if frame_count <= 0:
+        return None
+
+    frames = np.lib.stride_tricks.sliding_window_view(samples, window_shape=window_size)[::hop_size]
+    if frames.size == 0:
+        return None
+
+    window = np.hanning(window_size).astype(np.float32)
+    spectrum = np.abs(np.fft.rfft(frames * window, axis=1))
+    spectrum = np.maximum(spectrum, 1e-9)
+    db = 20.0 * np.log10(spectrum)
+    db = db.T
+    low = float(np.percentile(db, 5))
+    high = float(np.percentile(db, 99))
+    if high <= low:
+        return None
+
+    normalized = np.clip((db - low) / (high - low), 0.0, 1.0)
+    rgb = _magma_like_colormap(normalized)
+    rgb = np.flipud(rgb)
+
+    image = Image.fromarray(rgb, mode="RGB").resize((900, 320), resample=Image.Resampling.BICUBIC)
+    cache_name = hashlib.sha1(f"{audio_path}:{source_path.stat().st_mtime_ns}".encode("utf-8")).hexdigest()[:16]
+    output_path = Path(tempfile.gettempdir()) / f"birdnet_validator_spec_{cache_name}.png"
+    image.save(output_path)
+    return str(output_path)
+
+
+def _fetch_selected_audio_with_spectrogram(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    selected_index: int,
+    previous_cache_key: str,
+    allow_demo_fallback: bool = False,
+) -> tuple[str | None, str, str, str | None]:
+    audio_path, cache_key, status = _fetch_selected_audio(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=rows,
+        selected_index=selected_index,
+        previous_cache_key=previous_cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+    )
+    spectrogram_path = _build_spectrogram_image(audio_path)
+    if audio_path and spectrogram_path is None:
+        status = f"{status} | Spectrogram unavailable (requires WAV)."
+    return audio_path, cache_key, status, spectrogram_path
+
+
+def _build_validation_summary_cards(rows: object) -> str:
+    if hasattr(rows, "values"):
+        normalized_rows = [list(item) for item in rows.values.tolist()]
+    else:
+        normalized_rows = [list(item) for item in rows] if rows else []
+    total = len(normalized_rows)
+    positive = 0
+    negative = 0
+    for row in normalized_rows:
+        status_value = str(row[6]).strip().lower() if len(row) > 6 else ""
+        if status_value == "positive":
+            positive += 1
+        elif status_value == "negative":
+            negative += 1
+
+    return (
+        "<div style='display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:12px;margin:4px 0 12px 0;'>"
+        f"<div style='padding:10px 14px;border-radius:10px;background:#ececec;'><div style='font-size:12px;color:#555;'>Total</div><div style='font-size:24px;font-weight:700;color:#222;'>{total}</div></div>"
+        f"<div style='padding:10px 14px;border-radius:10px;background:#e7f4ea;'><div style='font-size:12px;color:#3f6c49;'>Positivo</div><div style='font-size:24px;font-weight:700;color:#215d2f;'>{positive}</div></div>"
+        f"<div style='padding:10px 14px;border-radius:10px;background:#fdeaea;'><div style='font-size:12px;color:#7b3a3a;'>Negativo</div><div style='font-size:24px;font-weight:700;color:#6f1f1f;'>{negative}</div></div>"
+        "</div>"
+    )
+
+
+def _autofetch_first_row(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    cache_key: str,
+    allow_demo_fallback: bool = False,
+) -> tuple[int, str | None, str, str, str | None]:
+    normalized_rows = _normalize_rows(rows)
+    if not normalized_rows:
+        return 0, None, "", "No detections available to auto-load audio", None
+
+    audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=normalized_rows,
+        selected_index=0,
+        previous_cache_key=cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+    )
+    return 0, audio_path, updated_cache_key, status, spectrogram_path
+
+
+def _select_and_fetch_audio(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    cache_key: str,
+    evt: gr.SelectData,
+    allow_demo_fallback: bool = False,
+) -> tuple[int, str | None, str, str, str | None]:
+    if isinstance(evt.index, tuple):
+        selected_index = int(evt.index[0])
+    elif isinstance(evt.index, int):
+        selected_index = int(evt.index)
+    else:
+        selected_index = 0
+
+    audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=rows,
+        selected_index=selected_index,
+        previous_cache_key=cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+    )
+    return selected_index, audio_path, updated_cache_key, status, spectrogram_path
+
+
+def _normalize_rows(rows: object) -> list[list[object]]:
+    if hasattr(rows, "values"):
+        return [list(item) for item in rows.values.tolist()]
+    return [list(item) for item in rows] if rows else []
+
+
+def _spectrogram_title(audio_path: str | None) -> str:
+    if not audio_path:
+        return "### Espectrograma"
+    return f"### Espectrograma - {Path(audio_path).name}"
+
+
+def _paginate_rows(rows: list[list[object]], page: int, page_size: int) -> tuple[list[list[object]], int, int]:
+    total_items = len(rows)
+    total_pages = max(1, ((total_items - 1) // page_size) + 1) if total_items else 1
+    safe_page = max(1, min(page, total_pages))
+    start = (safe_page - 1) * page_size
+    end = start + page_size
+    return rows[start:end], safe_page, total_pages
+
+
+def _extract_species_options_from_queue(
+    queue_service: _QueueServiceProtocol,
+    project_slug: str,
+    page_size: int,
+) -> list[str]:
+    if not project_slug:
+        return []
+
+    species_set: set[str] = set()
+    page = 1
+    while True:
+        page_result = queue_service.get_page(
+            project_slug=project_slug,
+            page=page,
+            page_size=page_size,
+            scientific_name=None,
+            min_confidence=None,
+            max_confidence=None,
+        )
+        for item in page_result.items:
+            name = str(item.scientific_name).strip()
+            if name:
+                species_set.add(name)
+        if not page_result.has_next:
+            break
+        page += 1
+
+    return sorted(species_set)
+
+
+def _sort_rows_by_confidence_desc(rows: list[list[object]]) -> list[list[object]]:
+    return sorted(rows, key=lambda row: float(row[3]) if len(row) > 3 else 0.0, reverse=True)
+
+
+def _fetch_selected_audio_with_title(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    selected_index: int,
+    previous_cache_key: str,
+    allow_demo_fallback: bool = False,
+) -> tuple[str | None, str, str, str | None, str]:
+    audio_path, cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=rows,
+        selected_index=selected_index,
+        previous_cache_key=previous_cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+    )
+    return audio_path, cache_key, status, spectrogram_path, _spectrogram_title(audio_path)
+
+
+def _select_and_fetch_audio_with_title(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    cache_key: str,
+    evt: gr.SelectData,
+    allow_demo_fallback: bool = False,
+) -> tuple[int, str | None, str, str, str | None, str]:
+    selected_index, audio_path, updated_cache_key, status, spectrogram_path = _select_and_fetch_audio(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=rows,
+        cache_key=cache_key,
+        evt=evt,
+        allow_demo_fallback=allow_demo_fallback,
+    )
+    return (
+        selected_index,
+        audio_path,
+        updated_cache_key,
+        status,
+        spectrogram_path,
+        _spectrogram_title(audio_path),
+    )
+
+
+def _autofetch_first_row_with_title(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    cache_key: str,
+    allow_demo_fallback: bool = False,
+) -> tuple[int, str | None, str, str, str | None, str]:
+    selected_index, audio_path, updated_cache_key, status, spectrogram_path = _autofetch_first_row(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=rows,
+        cache_key=cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+    )
+    return (
+        selected_index,
+        audio_path,
+        updated_cache_key,
+        status,
+        spectrogram_path,
+        _spectrogram_title(audio_path),
+    )
+
+
+def _advance_to_next_row_with_title(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    selected_index: int,
+    cache_key: str,
+    allow_demo_fallback: bool = False,
+) -> tuple[int, str | None, str, str, str | None, str]:
+    normalized_rows = _normalize_rows(rows)
+    if not normalized_rows:
+        return 0, None, cache_key, "No detections available", None, _spectrogram_title(None)
+
+    safe_index = max(0, min(int(selected_index) + 1, len(normalized_rows) - 1))
+    audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=normalized_rows,
+        selected_index=safe_index,
+        previous_cache_key=cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+    )
+    return safe_index, audio_path, updated_cache_key, status, spectrogram_path, _spectrogram_title(audio_path)
 
 
 def _cleanup_selected_audio(audio_service: _AudioServiceProtocol, cache_key: str) -> tuple[str, str | None]:
@@ -629,6 +986,7 @@ def _save_selected_validation(
     validator: str,
     notes: str,
     cache_key: str,
+    corrected_species: str | None = None,
 ) -> tuple[str, str, str | None]:
     validator_name = validator.strip()
     if not validator_name:
@@ -643,6 +1001,7 @@ def _save_selected_validation(
             status=status_value,
             validator=validator_name,
             notes=notes.strip(),
+            corrected_species=(corrected_species or "").strip() or None,
             expected_version=expected_version,
         )
         if cache_key:
@@ -679,6 +1038,7 @@ def _save_selected_validation_with_refresh(
     status_filter: str,
     updated_after: object,
     show_conflicts_only: bool,
+    corrected_species: str | None = None,
 ) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
     selected_key = ""
     try:
@@ -696,6 +1056,7 @@ def _save_selected_validation_with_refresh(
         validator=validator,
         notes=notes,
         cache_key=cache_key,
+        corrected_species=corrected_species,
     )
 
     refreshed_rows, page_status, refreshed_page = _page_to_table(
@@ -1803,9 +2164,10 @@ def create_app() -> gr.Blocks:
             # ===== TAB 4: Validation =====
             with gr.Tab("✓ Validation", id="validation_tab"):
                 validation_status = gr.Markdown(
-                    value="ℹ️ Login and select a project to start"
+                    value="",
+                    visible=False,
                 )
-                queue_badge = gr.HTML(value=_build_queue_badge(service_ref["queue"], None))
+                queue_badge = gr.HTML(value="", visible=False)
                 seed_warning_banner = gr.Markdown(value="", visible=False)
 
                 def render_seed_warning(warning_text: str):
@@ -1873,71 +2235,121 @@ def create_app() -> gr.Blocks:
                 )
 
                 gr.Markdown("---")
-                dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
-
-                with gr.Row():
-                    species_filter = gr.Textbox(label="Species filter", placeholder="Ex: Cyanocorax cyanopogon")
-                    min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
-                    show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
-
-                with gr.Row():
-                    validator_filter = gr.Textbox(label="Validator filter", placeholder="Ex: validator-demo")
-                    validation_status_filter = gr.Dropdown(
-                        label="Status filter",
-                        choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
-                        value="all",
-                    )
-                    updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
-
-                with gr.Row():
-                    prev_btn = gr.Button("Previous page")
-                    next_btn = gr.Button("Next page")
-                    refresh_btn = gr.Button("Apply filters")
-
                 page_state = gr.State(value=1)
-                table = gr.Dataframe(
-                    headers=[
-                        "detection_key",
-                        "audio_id",
-                        "scientific_name",
-                        "confidence",
-                        "start_time",
-                        "end_time",
-                        "validation_status",
-                        "version",
-                        "conflict_flag",
-                        "conflict_severity",
-                    ],
-                    label="Detections",
-                    interactive=False,
-                )
-                selected_index = gr.Number(label="Selected row", value=0, precision=0)
+                project_species_state = gr.State(value=[])
+                custom_corrected_species_state = gr.State(value={})
+                favorite_detection_state = gr.State(value={})
 
-                with gr.Row():
-                    load_audio_btn = gr.Button("Load selected audio")
-                    clear_audio_btn = gr.Button("Clear cache after validation")
+                with gr.Row(equal_height=False):
+                    with gr.Column(scale=8):
+                        validation_summary_cards = gr.HTML(value=_build_validation_summary_cards([]))
 
-                with gr.Row():
-                    validator_name = gr.Textbox(label="Validator", value="validator-demo")
-                    validation_notes = gr.Textbox(label="Notes", placeholder="Optional")
+                        spectrogram_title = gr.Markdown("### Espectrograma")
+                        spectrogram_image = gr.Image(
+                            label="",
+                            type="filepath",
+                            interactive=False,
+                            height=330,
+                        )
+                        audio_player = gr.Audio(label="Audio selecionado", type="filepath", autoplay=True)
 
-                with gr.Row():
-                    approve_btn = gr.Button("Mark positive")
-                    reject_btn = gr.Button("Mark negative")
-                    uncertain_btn = gr.Button("Uncertain")
-                    skip_btn = gr.Button("Skip")
-                    reapply_btn = gr.Button("Reapply validation after conflict")
+                        with gr.Row():
+                            approve_btn = gr.Button("Up - Positive", variant="primary")
+                            reject_btn = gr.Button("Down - Negative")
+                            uncertain_btn = gr.Button("Uncertain")
+                            skip_btn = gr.Button("Skip")
+                            favorite_btn = gr.Button("★ Favorite")
 
-                with gr.Row():
-                    batch_approve_conflicts_btn = gr.Button("Approve all conflicts")
-                    batch_reject_conflicts_btn = gr.Button("Reject all conflicts")
+                        corrected_species_input = gr.Dropdown(
+                            label="Especie corrigida",
+                            choices=["Ruido", "Indeterminado"],
+                            allow_custom_value=True,
+                            filterable=True,
+                            value=None,
+                        )
 
-                report_btn = gr.Button("Generate validation report")
-                audio_player = gr.Audio(label="On-demand audio", type="filepath")
+                        table = gr.Dataframe(
+                            headers=[
+                                "detection_key",
+                                "audio_id",
+                                "scientific_name",
+                                "confidence",
+                                "start_time",
+                                "end_time",
+                                "validation_status",
+                                "version",
+                                "conflict_flag",
+                                "conflict_severity",
+                            ],
+                            label="Detections",
+                            interactive=False,
+                        )
+                        selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
+                        status = gr.Textbox(label="Status", interactive=False)
+
+                    with gr.Column(scale=4):
+                        dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
+                        species_filter = gr.Dropdown(
+                            label="Especie para validar",
+                            choices=[],
+                            value=None,
+                            interactive=False,
+                        )
+
+                        gr.Markdown("#### Navegacao")
+                        with gr.Row():
+                            prev_btn = gr.Button("Prev")
+                            next_btn = gr.Button("Next")
+                            refresh_btn = gr.Button("Apply")
+
+                        gr.Markdown("#### Filtros")
+                        min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
+                        validator_filter = gr.Textbox(label="Validator filter", placeholder="Ex: validator-demo")
+                        validation_status_filter = gr.Dropdown(
+                            label="Status filter",
+                            choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
+                            value="all",
+                        )
+                        updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
+                        show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
+
+                        gr.Markdown("#### Acoes")
+                        validator_name = gr.Textbox(label="Validator", value="validator-demo")
+                        validation_notes = gr.Textbox(label="Notes", placeholder="Opcional", lines=4)
+                        load_audio_btn = gr.Button("Load selected audio")
+                        clear_audio_btn = gr.Button("Clear cached audio")
+                        reapply_btn = gr.Button("Reapply validation after conflict")
+                        batch_approve_conflicts_btn = gr.Button("Approve all conflicts")
+                        batch_reject_conflicts_btn = gr.Button("Reject all conflicts")
+                        report_btn = gr.Button("Generate validation report")
+
+                        keyboard_shortcuts_info = gr.HTML(
+                            value="<div style='font-size:12px;color:#333;padding:8px 10px;background:#f5f5f5;border-radius:6px;margin-bottom:8px;'>"
+                            "<strong>Shortcuts:</strong> ArrowUp=Positive | ArrowDown=Negative | 1=Positive | 2=Negative | 3=Uncertain | 4=Skip | R=Reapply"
+                            "</div>"
+                            "<script>"
+                            "document.addEventListener('keydown', function(event) {"
+                            "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
+                            "  const key = event.key;"
+                            "  let buttonText = null;"
+                            "  if (key === 'ArrowUp' || key === '1') buttonText = 'Up - Positive';"
+                            "  else if (key === 'ArrowDown' || key === '2') buttonText = 'Down - Negative';"
+                            "  else if (key === '3') buttonText = 'Uncertain';"
+                            "  else if (key === '4') buttonText = 'Skip';"
+                            "  else if (key.toLowerCase() === 'r') buttonText = 'Reapply validation after conflict';"
+                            "  if (!buttonText) return;"
+                            "  event.preventDefault();"
+                            "  const buttons = document.querySelectorAll('button');"
+                            "  for (const btn of buttons) {"
+                            "    if ((btn.textContent || '').includes(buttonText)) { btn.click(); break; }"
+                            "  }"
+                            "});"
+                            "</script>"
+                        )
+
                 cache_key_state = gr.State(value="")
                 pending_status_state = gr.State(value="")
                 conflict_detection_key_state = gr.State(value="")
-                status = gr.Textbox(label="Status", interactive=False)
                 report_box = gr.Textbox(label="Report", interactive=False)
 
                 def refresh(
@@ -1951,13 +2363,17 @@ def create_app() -> gr.Blocks:
                     only_conflicts: bool,
                 ):
                     if not project_slug:
-                        return [], "Select a project to load the queue", 1
-                    return _page_to_table(
+                        return [], "", 1
+                    species_name = (species or "").strip()
+                    if not species_name:
+                        return [], "Selecione uma especie para iniciar a validacao", 1
+
+                    rows, status_text, updated_page = _page_to_table(
                         service=service_ref["queue"],
                         snapshot_reader=validation_repository,
                         project_slug=project_slug,
                         page=page,
-                        scientific_name=species,
+                        scientific_name=species_name,
                         min_confidence=confidence,
                         page_size=runtime_config.page_size,
                         validator_filter=validator_filter_value,
@@ -1965,6 +2381,8 @@ def create_app() -> gr.Blocks:
                         updated_after=updated_after_value,
                         show_conflicts_only=only_conflicts,
                     )
+                    rows = _sort_rows_by_confidence_desc(rows)
+                    return rows, status_text, updated_page
 
                 def go_next(
                     project_slug: str,
@@ -2009,7 +2427,27 @@ def create_app() -> gr.Blocks:
                     )
 
                 def refresh_for_selected_project(project_slug: str):
-                    return refresh(project_slug, 1, "", 0.0, "", "all", "", False)
+                    if not project_slug:
+                        return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None), _build_validation_summary_cards([]), gr.update(choices=["Ruido", "Indeterminado"], value=None), []
+
+                    species_options = _extract_species_options_from_queue(
+                        queue_service=service_ref["queue"],
+                        project_slug=project_slug,
+                        page_size=max(32, runtime_config.page_size),
+                    )
+                    corrected_choices = species_options + ["Ruido", "Indeterminado"]
+                    return (
+                        gr.update(choices=species_options, value=None, interactive=True),
+                        [],
+                        "Selecione uma especie para iniciar a validacao",
+                        1,
+                        None,
+                        None,
+                        _spectrogram_title(None),
+                        _build_validation_summary_cards([]),
+                        gr.update(choices=corrected_choices, value=None),
+                        species_options,
+                    )
 
                 def save_for_project(
                     project_slug: str,
@@ -2018,6 +2456,7 @@ def create_app() -> gr.Blocks:
                     idx: int,
                     name: str,
                     notes: str,
+                    corrected_species_value: str | None,
                     cache_key: str,
                     page: int,
                     species: str,
@@ -2040,6 +2479,7 @@ def create_app() -> gr.Blocks:
                         status_value=status_value,
                         validator=name,
                         notes=notes,
+                        corrected_species=corrected_species_value,
                         cache_key=cache_key,
                         page=int(page),
                         scientific_name=species,
@@ -2131,11 +2571,61 @@ def create_app() -> gr.Blocks:
                         return "Select a project to generate report"
                     return _build_validation_report(validation_repository, project_slug)
 
-                def on_select(evt: gr.SelectData):
-                    return evt.index[0]
+                def save_corrected_species_option(
+                    project_slug: str,
+                    corrected_value: str | None,
+                    detected_species: list[str],
+                    custom_by_project: dict[str, list[str]],
+                ):
+                    base_choices = list(dict.fromkeys([*detected_species, "Ruido", "Indeterminado"]))
+                    value = (corrected_value or "").strip()
 
-                table.select(fn=on_select, inputs=None, outputs=[selected_index])
-                refresh_btn.click(
+                    if not project_slug:
+                        return gr.update(choices=base_choices, value=value or None), custom_by_project
+
+                    updated = {k: list(v) for k, v in (custom_by_project or {}).items()}
+                    custom_values = updated.get(project_slug, [])
+                    if value and value not in base_choices and value not in custom_values:
+                        custom_values.append(value)
+                        updated[project_slug] = custom_values
+
+                    final_choices = list(dict.fromkeys([*base_choices, *updated.get(project_slug, [])]))
+                    return gr.update(choices=final_choices, value=value or None), updated
+
+                def toggle_favorite_detection(
+                    project_slug: str,
+                    rows: object,
+                    idx: int,
+                    favorite_map: dict[str, list[str]],
+                ):
+                    normalized_rows = _normalize_rows(rows)
+                    if not project_slug or not normalized_rows:
+                        return "Nenhuma deteccao selecionada para favoritar", favorite_map
+
+                    safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
+                    detection_key = str(normalized_rows[safe_idx][0]).strip()
+                    updated_map = {k: list(v) for k, v in (favorite_map or {}).items()}
+                    project_favs = set(updated_map.get(project_slug, []))
+                    if detection_key in project_favs:
+                        project_favs.remove(detection_key)
+                        action = "removida dos favoritos"
+                    else:
+                        project_favs.add(detection_key)
+                        action = "adicionada aos favoritos"
+                    updated_map[project_slug] = sorted(project_favs)
+                    return f"Deteccao {detection_key} {action}", updated_map
+
+                def on_table_select(repo: str, rows: object, cache_key: str, evt: gr.SelectData):
+                    return _select_and_fetch_audio_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        cache_key=cache_key,
+                        evt=evt,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    )
+
+                refresh_event = refresh_btn.click(
                     fn=refresh,
                     inputs=[
                         selected_project_state,
@@ -2149,7 +2639,7 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[table, status, page_state],
                 )
-                next_btn.click(
+                next_event = next_btn.click(
                     fn=go_next,
                     inputs=[
                         selected_project_state,
@@ -2163,7 +2653,7 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[table, status, page_state],
                 )
-                prev_btn.click(
+                prev_event = prev_btn.click(
                     fn=go_prev,
                     inputs=[
                         selected_project_state,
@@ -2183,37 +2673,144 @@ def create_app() -> gr.Blocks:
                     inputs=[selected_dataset_repo_state],
                     outputs=[dataset_repo],
                 )
-                selected_project_state.change(
+                project_change_event = selected_project_state.change(
                     fn=refresh_for_selected_project,
                     inputs=[selected_project_state],
+                    outputs=[species_filter, table, status, page_state, audio_player, spectrogram_image, spectrogram_title, validation_summary_cards, corrected_species_input, project_species_state],
+                )
+
+                species_filter.change(
+                    fn=lambda project_slug, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: refresh(
+                        project_slug,
+                        1,
+                        species,
+                        confidence,
+                        validator_filter_value,
+                        status_filter_value,
+                        updated_after_value,
+                        only_conflicts,
+                    ),
+                    inputs=[
+                        selected_project_state,
+                        species_filter,
+                        min_confidence,
+                        validator_filter,
+                        validation_status_filter,
+                        updated_after_filter,
+                        show_conflicts_only,
+                    ],
                     outputs=[table, status, page_state],
+                ).then(
+                    fn=lambda rows: _build_validation_summary_cards(rows),
+                    inputs=[table],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                )
+
+                table.select(
+                    fn=on_table_select,
+                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
 
                 load_audio_btn.click(
-                    fn=lambda repo, rows, idx, cache_key: _fetch_selected_audio(
+                    fn=lambda repo, rows, idx, cache_key: _fetch_selected_audio_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         previous_cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
                     ),
-                    inputs=[dataset_repo, table, selected_index, cache_key_state],
-                    outputs=[audio_player, cache_key_state, status],
+                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    outputs=[audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
                 clear_audio_btn.click(
-                    fn=lambda cache_key: _cleanup_selected_audio(audio_service=audio_service, cache_key=cache_key),
+                    fn=lambda cache_key: (*_cleanup_selected_audio(audio_service=audio_service, cache_key=cache_key), None),
                     inputs=[cache_key_state],
-                    outputs=[status, audio_player],
+                    outputs=[status, audio_player, spectrogram_image],
+                ).then(
+                    fn=lambda: _spectrogram_title(None),
+                    inputs=None,
+                    outputs=[spectrogram_title],
                 )
 
-                approve_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                refresh_event.then(
+                    fn=lambda rows: _build_validation_summary_cards(rows),
+                    inputs=[table],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                )
+                next_event.then(
+                    fn=lambda rows: _build_validation_summary_cards(rows),
+                    inputs=[table],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                )
+                prev_event.then(
+                    fn=lambda rows: _build_validation_summary_cards(rows),
+                    inputs=[table],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=lambda repo, rows, cache_key: _autofetch_first_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                )
+
+                favorite_btn.click(
+                    fn=toggle_favorite_detection,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[status, favorite_detection_state],
+                )
+
+                corrected_species_input.change(
+                    fn=save_corrected_species_option,
+                    inputs=[selected_project_state, corrected_species_input, project_species_state, custom_corrected_species_state],
+                    outputs=[corrected_species_input, custom_corrected_species_state],
+                )
+
+                approve_event = approve_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "positive",
                         rows,
                         idx,
                         name,
                         notes,
+                        corrected_species_value,
                         cache_key,
                         page,
                         species,
@@ -2229,6 +2826,7 @@ def create_app() -> gr.Blocks:
                         selected_index,
                         validator_name,
                         validation_notes,
+                        corrected_species_input,
                         cache_key_state,
                         page_state,
                         species_filter,
@@ -2240,14 +2838,15 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
-                reject_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                reject_event = reject_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "negative",
                         rows,
                         idx,
                         name,
                         notes,
+                        corrected_species_value,
                         cache_key,
                         page,
                         species,
@@ -2263,6 +2862,7 @@ def create_app() -> gr.Blocks:
                         selected_index,
                         validator_name,
                         validation_notes,
+                        corrected_species_input,
                         cache_key_state,
                         page_state,
                         species_filter,
@@ -2274,14 +2874,15 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
-                uncertain_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                uncertain_event = uncertain_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "uncertain",
                         rows,
                         idx,
                         name,
                         notes,
+                        corrected_species_value,
                         cache_key,
                         page,
                         species,
@@ -2297,6 +2898,7 @@ def create_app() -> gr.Blocks:
                         selected_index,
                         validator_name,
                         validation_notes,
+                        corrected_species_input,
                         cache_key_state,
                         page_state,
                         species_filter,
@@ -2308,14 +2910,15 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
-                skip_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                skip_event = skip_btn.click(
+                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "skip",
                         rows,
                         idx,
                         name,
                         notes,
+                        corrected_species_value,
                         cache_key,
                         page,
                         species,
@@ -2331,6 +2934,7 @@ def create_app() -> gr.Blocks:
                         selected_index,
                         validator_name,
                         validation_notes,
+                        corrected_species_input,
                         cache_key_state,
                         page_state,
                         species_filter,
@@ -2342,7 +2946,7 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
-                reapply_btn.click(
+                reapply_event = reapply_btn.click(
                     fn=lambda project_slug, rows, idx, pending_status, conflict_key, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: reapply_for_project(
                         project_slug,
                         rows,
@@ -2380,7 +2984,7 @@ def create_app() -> gr.Blocks:
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
 
-                batch_approve_conflicts_btn.click(
+                batch_approve_event = batch_approve_conflicts_btn.click(
                     fn=lambda project_slug, rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: batch_for_project(
                         project_slug,
                         rows,
@@ -2410,7 +3014,7 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[status, cache_key_state, audio_player, table, page_state],
                 )
-                batch_reject_conflicts_btn.click(
+                batch_reject_event = batch_reject_conflicts_btn.click(
                     fn=lambda project_slug, rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: batch_for_project(
                         project_slug,
                         rows,
@@ -2440,6 +3044,62 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[status, cache_key_state, audio_player, table, page_state],
                 )
+
+                approve_event.then(
+                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        selected_index=int(idx),
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+
+                reject_event.then(
+                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        selected_index=int(idx),
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+
+                uncertain_event.then(
+                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        selected_index=int(idx),
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+
+                skip_event.then(
+                    fn=lambda repo, rows, idx, cache_key: _advance_to_next_row_with_title(
+                        audio_service=audio_service,
+                        dataset_repo=repo,
+                        rows=rows,
+                        selected_index=int(idx),
+                        cache_key=cache_key,
+                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                    ),
+                    inputs=[selected_dataset_repo_state, table, selected_index, cache_key_state],
+                    outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+
+                reapply_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                batch_approve_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                batch_reject_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
                 report_btn.click(
                     fn=build_report_for_project,
                     inputs=[selected_project_state],

@@ -1,5 +1,9 @@
 from dataclasses import dataclass
+import io
+import math
 from pathlib import Path
+import struct
+import wave
 
 from huggingface_hub import hf_hub_download
 
@@ -20,13 +24,27 @@ class AudioFetchService:
     def __init__(self, cache_manager: EphemeralCacheManager) -> None:
         self._cache = cache_manager
 
-    def fetch(self, dataset_repo: str, audio_id: str) -> AudioFetchResult:
+    def fetch(self, dataset_repo: str, audio_id: str, allow_demo_fallback: bool = False) -> AudioFetchResult:
         cache_key = f"{dataset_repo}:{audio_id}"
         cached_path = self._cache.get(cache_key)
         if cached_path:
             return AudioFetchResult(cache_key=cache_key, local_path=str(cached_path), source="cache")
 
-        target_filename, downloaded_path = self._resolve_remote_filename(dataset_repo=dataset_repo, audio_id=audio_id)
+        if allow_demo_fallback and self._is_seeded_demo_audio_id(audio_id):
+            fallback_bytes = self._build_demo_fallback_wav(audio_id=audio_id)
+            local_path = self._cache.put_bytes(cache_key, fallback_bytes, suffix=".wav")
+            return AudioFetchResult(cache_key=cache_key, local_path=str(local_path), source="demo-fallback")
+
+        try:
+            target_filename, downloaded_path = self._resolve_remote_filename(dataset_repo=dataset_repo, audio_id=audio_id)
+        except FileNotFoundError:
+            if not allow_demo_fallback:
+                raise
+
+            fallback_bytes = self._build_demo_fallback_wav(audio_id=audio_id)
+            local_path = self._cache.put_bytes(cache_key, fallback_bytes, suffix=".wav")
+            return AudioFetchResult(cache_key=cache_key, local_path=str(local_path), source="demo-fallback")
+
         if downloaded_path is None:
             downloaded = hf_hub_download(repo_id=dataset_repo, repo_type="dataset", filename=target_filename)
             downloaded_path = Path(downloaded)
@@ -81,3 +99,35 @@ class AudioFetchService:
                 continue
 
         raise FileNotFoundError(f"Unable to locate audio file for audio_id: {audio_id}")
+
+    def _build_demo_fallback_wav(self, audio_id: str, duration_seconds: float = 4.0, sample_rate: int = 16000) -> bytes:
+        """Generate a short deterministic tone when demo audio files are missing."""
+        frame_count = max(1, int(duration_seconds * sample_rate))
+
+        # Derive deterministic frequencies from audio_id so each fallback sounds distinct.
+        seed = sum(ord(ch) for ch in audio_id) % 200
+        f1 = 440.0 + float(seed)
+        f2 = f1 + 180.0
+
+        with io.BytesIO() as buffer:
+            with wave.open(buffer, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(sample_rate)
+
+                frames = bytearray()
+                for i in range(frame_count):
+                    t = i / float(sample_rate)
+                    # Blend two sines and apply light envelope to avoid clicks.
+                    env = min(1.0, i / 400.0, (frame_count - i) / 400.0)
+                    sample = env * (0.55 * math.sin(2.0 * math.pi * f1 * t) + 0.45 * math.sin(2.0 * math.pi * f2 * t))
+                    pcm = int(max(-1.0, min(1.0, sample)) * 32767)
+                    frames.extend(struct.pack("<h", pcm))
+
+                wav_file.writeframes(bytes(frames))
+
+            return buffer.getvalue()
+
+    def _is_seeded_demo_audio_id(self, audio_id: str) -> bool:
+        normalized = audio_id.strip().lower()
+        return "_audio_" in normalized and normalized.endswith(("1001", "1002", "1003", "1004"))
