@@ -69,7 +69,13 @@ class TestAuthService:
         session = auth_service.login("admin_user")
 
         assert session is not None
-        assert session.role == Role.admin
+        assert session.username == "admin_user"
+        # No global role anymore; check per-project role instead
+        admin_projects = [
+            proj for proj in session.authorized_projects
+            if auth_service.get_user_role_for_project("admin_user", proj) == Role.admin
+        ]
+        assert len(admin_projects) >= 1  # admin_user has at least 1 admin project
 
     def test_session_expiration(self, auth_service, setup_users):
         """Test that expired sessions are handled."""
