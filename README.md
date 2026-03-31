@@ -113,6 +113,48 @@ User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
 5. Resolve conflicts when concurrent updates occur.
 6. Export or inspect project validation report.
 
+## Project CLI (Bootstrap Utilities)
+
+The repository now includes a basic project bootstrap CLI:
+
+```bash
+python -m src.cli.project_cli --help
+```
+
+Available commands:
+
+- `create-project`: adds a project entry to the projects bootstrap JSON.
+- `init-dataset`: creates the initial local dataset folder structure.
+- `build-index`: builds a confidence-sorted index from `detections.jsonl`.
+- `verify-project`: verifies project config and required local scaffold files.
+
+Example flow:
+
+```bash
+python -m src.cli.project_cli create-project \
+  --projects-file docs/spaces/projects.sample.json \
+  --user-access-file docs/spaces/user_access.sample.json \
+  --slug amazonia-2026 \
+  --name "Amazonia 2026" \
+  --dataset-repo-id birdnet/amazonia-2026 \
+  --owner admin_user
+
+python -m src.cli.project_cli init-dataset \
+  --dataset-root data/projects \
+  --slug amazonia-2026 \
+  --dataset-repo-id birdnet/amazonia-2026 \
+  --name "Amazonia 2026"
+
+python -m src.cli.project_cli build-index \
+  --dataset-root data/projects \
+  --slug amazonia-2026
+
+python -m src.cli.project_cli verify-project \
+  --projects-file docs/spaces/projects.sample.json \
+  --dataset-root data/projects \
+  --slug amazonia-2026
+```
+
 ## Repository Structure
 
 - `app.py`: validator app entrypoint
