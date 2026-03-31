@@ -4,6 +4,7 @@ from pathlib import Path
 import json
 
 import pandas as pd
+import pytest
 
 from src.ui.app_factory import (
     _build_validation_report,
