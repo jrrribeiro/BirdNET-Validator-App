@@ -29,6 +29,7 @@ from src.ui.app_factory import (
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
+from src.domain.models import Detection, Project
 from src.ui.admin_panel import AdminPanelManager
 
 
@@ -830,3 +831,111 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
 
     assert "Production bootstrap incomplete" in warning
+
+
+def test_load_dataset_detections_for_project_reads_jsonl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from src.ui import app_factory as module
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            return ["detections.jsonl"]
+
+    metadata_file = tmp_path / "detections.jsonl"
+    metadata_file.write_text(
+        "\n".join(
+            [
+                json.dumps(
+                    {
+                        "project_slug": "project-a",
+                        "audio_id": "audio_0001",
+                        "scientific_name": "Species A",
+                        "confidence": 0.92,
+                        "start_time": 1.0,
+                        "end_time": 2.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "project_slug": "project-a",
+                        "audio_id": "audio_0002",
+                        "scientific_name": "Species B",
+                        "confidence": 0.81,
+                        "start_time": 2.0,
+                        "end_time": 3.0,
+                    }
+                ),
+                json.dumps(
+                    {
+                        "project_slug": "project-other",
+                        "audio_id": "audio_9999",
+                        "scientific_name": "Other",
+                        "confidence": 0.5,
+                        "start_time": 0.0,
+                        "end_time": 1.0,
+                    }
+                ),
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+    monkeypatch.setattr(module, "hf_hub_download", lambda **kwargs: str(metadata_file))
+
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/project-a",
+        active=True,
+    )
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert warning == ""
+    assert len(detections) == 2
+    assert {item.scientific_name for item in detections} == {"Species A", "Species B"}
+
+
+def test_build_detection_repository_prefers_dataset_rows(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import app_factory as module
+
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/project-a",
+        active=True,
+    )
+
+    monkeypatch.setattr(
+        module,
+        "_load_dataset_detections_for_project",
+        lambda project_obj: (
+            [
+                Detection(
+                    detection_key="0000000000002222",
+                    audio_id="audio_dataset_1",
+                    scientific_name="Dataset Species",
+                    confidence=0.95,
+                    start_time=0.0,
+                    end_time=1.0,
+                )
+            ],
+            "",
+        ),
+    )
+
+    queue, warning = _build_detection_repository(
+        ["project-a"],
+        seed_file_path=None,
+        project_map={"project-a": project},
+        allow_demo_defaults=False,
+    )
+    page = queue.get_page(project_slug="project-a", page=1, page_size=10)
+
+    assert warning == ""
+    assert len(page.items) == 1
+    assert page.items[0].scientific_name == "Dataset Species"

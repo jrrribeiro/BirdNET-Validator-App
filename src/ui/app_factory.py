@@ -1,4 +1,5 @@
 import gradio as gr
+import csv
 import hashlib
 import json
 import tempfile
@@ -8,6 +9,7 @@ from pathlib import Path
 from typing import Protocol
 
 import numpy as np
+from huggingface_hub import HfApi, hf_hub_download
 from PIL import Image
 
 from src.config.runtime_config import RuntimeConfig
@@ -73,31 +75,296 @@ class _QueueServiceProtocol(Protocol):
 
 
 def _seed_service() -> DetectionQueueService:
-    return _seed_service_for_projects(["demo-project"])
+    return _seed_service_for_projects(["demo-project"])[0]
+
+
+def _candidate_metadata_files(project_slug: str) -> list[str]:
+    return [
+        f"{project_slug}/detections.jsonl",
+        f"{project_slug}/detections.json",
+        f"{project_slug}/detections.csv",
+        f"{project_slug}/segments.jsonl",
+        f"{project_slug}/segments.json",
+        f"{project_slug}/segments.csv",
+        "detections.jsonl",
+        "detections.json",
+        "detections.csv",
+        "segments.jsonl",
+        "segments.json",
+        "segments.csv",
+        "metadata/detections.jsonl",
+        "metadata/detections.json",
+        "metadata/detections.csv",
+        "metadata/segments.jsonl",
+        "metadata/segments.json",
+        "metadata/segments.csv",
+        "validation/detections.jsonl",
+        "validation/detections.json",
+        "validation/detections.csv",
+    ]
+
+
+def _pick_row_value(raw: dict[str, object], keys: list[str]) -> str:
+    for key in keys:
+        value = raw.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return ""
+
+
+def _to_float(value: object, default: float) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return default
+
+
+def _normalize_audio_id(audio_value: str) -> str:
+    normalized = audio_value.strip().replace("\\", "/")
+    if normalized.startswith("audio/"):
+        normalized = normalized[len("audio/") :]
+    return normalized
+
+
+def _build_detection_from_row(raw: dict[str, object], row_index: int, project_slug: str) -> Detection | None:
+    row_project = _pick_row_value(raw, ["project_slug", "project", "project_id"])
+    if row_project and row_project != project_slug:
+        return None
+
+    audio_id = _normalize_audio_id(
+        _pick_row_value(
+            raw,
+            [
+                "audio_id",
+                "audio_file",
+                "audio_path",
+                "segment_path",
+                "file",
+                "filepath",
+                "path",
+                "filename",
+            ],
+        )
+    )
+    if not audio_id:
+        return None
+
+    scientific_name = _pick_row_value(
+        raw,
+        [
+            "scientific_name",
+            "species",
+            "species_name",
+            "predicted_species",
+            "label",
+            "taxon",
+        ],
+    )
+    if not scientific_name:
+        scientific_name = "Unknown species"
+
+    confidence = _to_float(
+        raw.get("confidence", raw.get("score", raw.get("probability", raw.get("prediction_confidence", 1.0)))),
+        1.0,
+    )
+    confidence = max(0.0, min(1.0, confidence))
+
+    start_time = _to_float(
+        raw.get("start_time", raw.get("start", raw.get("begin", raw.get("offset", raw.get("segment_start", 0.0))))),
+        0.0,
+    )
+    end_time = _to_float(
+        raw.get("end_time", raw.get("end", raw.get("stop", raw.get("segment_end", 0.0)))),
+        0.0,
+    )
+    if end_time <= 0.0:
+        duration = _to_float(raw.get("duration", 0.0), 0.0)
+        if duration > 0.0:
+            end_time = start_time + duration
+    if end_time <= start_time:
+        end_time = start_time + 1.0
+
+    detection_key = _pick_row_value(raw, ["detection_key", "segment_id", "id", "uid", "key"])
+    if not detection_key:
+        stable = f"{project_slug}|{audio_id}|{scientific_name}|{start_time:.3f}|{end_time:.3f}|{row_index}"
+        detection_key = hashlib.sha1(stable.encode("utf-8")).hexdigest()[:16]
+
+    try:
+        return Detection(
+            detection_key=detection_key,
+            audio_id=audio_id,
+            scientific_name=scientific_name,
+            confidence=confidence,
+            start_time=start_time,
+            end_time=end_time,
+        )
+    except Exception:
+        return None
+
+
+def _parse_detection_metadata_payload(payload: object, project_slug: str) -> list[Detection]:
+    rows: list[dict[str, object]] = []
+    if isinstance(payload, list):
+        rows = [item for item in payload if isinstance(item, dict)]
+    elif isinstance(payload, dict):
+        project_rows = payload.get(project_slug)
+        if isinstance(project_rows, list):
+            rows = [item for item in project_rows if isinstance(item, dict)]
+        else:
+            for key in ["detections", "segments", "items", "rows"]:
+                candidate = payload.get(key)
+                if isinstance(candidate, list):
+                    rows = [item for item in candidate if isinstance(item, dict)]
+                    break
+
+    parsed: list[Detection] = []
+    seen_keys: set[str] = set()
+    for index, row in enumerate(rows):
+        detection = _build_detection_from_row(row, index, project_slug)
+        if detection is None:
+            continue
+        if detection.detection_key in seen_keys:
+            continue
+        seen_keys.add(detection.detection_key)
+        parsed.append(detection)
+    return parsed
+
+
+def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detection], str]:
+    dataset_repo = project.dataset_repo_id.strip()
+    if not dataset_repo:
+        return [], ""
+
+    token = (project.dataset_token or "").strip() or None
+    try:
+        api = HfApi(token=token)
+        repo_files = api.list_repo_files(repo_id=dataset_repo, repo_type="dataset")
+    except Exception as exc:
+        return [], f"⚠️ Could not list files for dataset {dataset_repo}: {exc}"
+
+    if not repo_files:
+        return [], f"⚠️ Dataset {dataset_repo} has no files."
+
+    preferred = _candidate_metadata_files(project.project_slug)
+    selected_file = next((name for name in preferred if name in repo_files), "")
+    if not selected_file:
+        metadata_candidates = []
+        for name in repo_files:
+            lowered = name.lower()
+            if lowered.startswith("audio/"):
+                continue
+            if not lowered.endswith((".json", ".jsonl", ".csv")):
+                continue
+            if "detection" in lowered or "segment" in lowered:
+                metadata_candidates.append(name)
+        if metadata_candidates:
+            selected_file = sorted(metadata_candidates, key=lambda value: (len(value), value))[0]
+
+    if not selected_file:
+        return [], (
+            f"⚠️ Dataset {dataset_repo} has no detection metadata file for project {project.project_slug}. "
+            "Expected names like detections.jsonl / segments.csv (top-level, metadata/, or <project_slug>/)."
+        )
+
+    try:
+        if token:
+            downloaded_path = hf_hub_download(
+                repo_id=dataset_repo,
+                repo_type="dataset",
+                filename=selected_file,
+                token=token,
+            )
+        else:
+            downloaded_path = hf_hub_download(
+                repo_id=dataset_repo,
+                repo_type="dataset",
+                filename=selected_file,
+            )
+    except Exception as exc:
+        return [], f"⚠️ Failed to download {selected_file} from {dataset_repo}: {exc}"
+
+    metadata_path = Path(downloaded_path)
+    try:
+        if metadata_path.suffix.lower() == ".jsonl":
+            rows = []
+            for line in metadata_path.read_text(encoding="utf-8").splitlines():
+                text = line.strip()
+                if not text:
+                    continue
+                value = json.loads(text)
+                if isinstance(value, dict):
+                    rows.append(value)
+            parsed = _parse_detection_metadata_payload(rows, project.project_slug)
+        elif metadata_path.suffix.lower() == ".csv":
+            with metadata_path.open("r", encoding="utf-8", newline="") as file_handle:
+                parsed = _parse_detection_metadata_payload(list(csv.DictReader(file_handle)), project.project_slug)
+        else:
+            payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+            parsed = _parse_detection_metadata_payload(payload, project.project_slug)
+    except Exception as exc:
+        return [], f"⚠️ Failed to parse detection metadata {selected_file} from {dataset_repo}: {exc}"
+
+    if not parsed:
+        return [], (
+            f"⚠️ Metadata file {selected_file} from {dataset_repo} has no valid detections for project {project.project_slug}."
+        )
+
+    return parsed, ""
 
 
 def _seed_service_for_projects(
     project_slugs: list[str],
     seed_file_path: str | None = None,
-) -> DetectionQueueService:
+    project_map: dict[str, Project] | None = None,
+    allow_demo_defaults: bool = True,
+) -> tuple[DetectionQueueService, list[str]]:
     repo = InMemoryDetectionRepository()
     detected_by_project = _load_seed_detections(seed_file_path)
+    warnings: list[str] = []
 
     for project_slug in project_slugs:
+        project = (project_map or {}).get(project_slug)
+        dataset_items: list[Detection] = []
+        if project is not None and project.active:
+            dataset_items, dataset_warning = _load_dataset_detections_for_project(project)
+            if dataset_warning:
+                warnings.append(dataset_warning)
+
         seeded_items = detected_by_project.get(project_slug, [])
-        items = seeded_items or _default_demo_detections(project_slug)
+        if dataset_items:
+            items = dataset_items
+        elif seeded_items:
+            items = seeded_items
+        elif allow_demo_defaults:
+            items = _default_demo_detections(project_slug)
+        else:
+            items = []
         items = sorted(items, key=lambda item: item.detection_key)
         repo.seed(project_slug, items)
 
-    return DetectionQueueService(repo)
+    return DetectionQueueService(repo), warnings
 
 
 def _build_detection_repository(
     project_slugs: list[str],
     seed_file_path: str | None,
+    project_map: dict[str, Project] | None = None,
+    allow_demo_defaults: bool = True,
 ) -> tuple[DetectionQueueService, str]:
     warning = _validate_seed_file(seed_file_path)
-    return _seed_service_for_projects(project_slugs, seed_file_path=seed_file_path), warning
+    service, dataset_warnings = _seed_service_for_projects(
+        project_slugs,
+        seed_file_path=seed_file_path,
+        project_map=project_map,
+        allow_demo_defaults=allow_demo_defaults,
+    )
+
+    warnings = [item for item in [warning, *dataset_warnings] if item.strip()]
+    joined_warning = "\n\n".join(dict.fromkeys(warnings))
+    return service, joined_warning
 
 
 def _validate_seed_file(seed_file_path: str | None) -> str:
@@ -1976,9 +2243,23 @@ def create_app() -> gr.Blocks:
         user_access_file_path=str(user_access_file_path),
         invites_file_path=str(invites_file_path),
     )
+
+    def _current_project_map() -> dict[str, Project]:
+        project_map: dict[str, Project] = {}
+        for row in admin_manager.list_projects():
+            slug = str(row.get("project_slug", "")).strip()
+            if not slug:
+                continue
+            project = admin_manager.get_project(slug)
+            if project is not None:
+                project_map[slug] = project
+        return project_map
+
     queue_service, seed_warning = _build_detection_repository(
         [project["project_slug"] for project in admin_manager.list_projects()],
         seed_file_path=runtime_config.detection_seed_path,
+        project_map=_current_project_map(),
+        allow_demo_defaults=runtime_config.enable_demo_bootstrap,
     )
     service_ref: dict[str, DetectionQueueService] = {"queue": queue_service}
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
@@ -2014,6 +2295,14 @@ def create_app() -> gr.Blocks:
 
         def _project_slugs() -> list[str]:
             return [p["project_slug"] for p in admin_manager.list_projects()]
+
+        def _project_map() -> dict[str, Project]:
+            result: dict[str, Project] = {}
+            for slug in _project_slugs():
+                project = admin_manager.get_project(slug)
+                if project is not None:
+                    result[slug] = project
+            return result
 
         def _persist_admin_state() -> tuple[bool, str]:
             try:
@@ -2147,6 +2436,8 @@ def create_app() -> gr.Blocks:
                         refreshed_service, refreshed_warning = _build_detection_repository(
                             _project_slugs(),
                             seed_file_path=runtime_config.detection_seed_path,
+                            project_map=_project_map(),
+                            allow_demo_defaults=runtime_config.enable_demo_bootstrap,
                         )
                         service_ref["queue"] = refreshed_service
                         refreshed_session = auth_service.refresh_session_authorizations(session.session_id) or session
@@ -2225,6 +2516,16 @@ def create_app() -> gr.Blocks:
                         persisted, persist_error = _persist_admin_state()
                         if not persisted:
                             message = f"{message} | ⚠️ Persistence failed: {persist_error}"
+
+                        refreshed_service, refreshed_warning = _build_detection_repository(
+                            _project_slugs(),
+                            seed_file_path=runtime_config.detection_seed_path,
+                            project_map=_project_map(),
+                            allow_demo_defaults=runtime_config.enable_demo_bootstrap,
+                        )
+                        service_ref["queue"] = refreshed_service
+                        if refreshed_warning:
+                            message = f"{message} | {refreshed_warning}"
 
                         return message, gr.update(value=""), _project_rows()
 
