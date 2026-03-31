@@ -984,3 +984,66 @@ def test_parse_segment_filename_hint_reads_time_and_confidence() -> None:
     assert start == 12.0
     assert end == 15.0
     assert conf == 0.85
+
+
+def test_build_detection_from_row_prefers_segment_path_for_audio_id() -> None:
+    from src.ui import app_factory as module
+
+    row = {
+        "project_slug": "project-a",
+        "segment_path_in_repo": "audio/segments/species_a/example.wav",
+        "audio_id": "source_stem_only",
+        "scientific_name": "Species A",
+        "confidence": 0.77,
+        "start_time": 0.0,
+        "end_time": 3.0,
+    }
+
+    detection = module._build_detection_from_row(row, 0, "project-a")
+
+    assert detection is not None
+    assert detection.audio_id == "segments/species_a/example.wav"
+
+
+def test_load_dataset_detections_for_project_uses_parquet_shards_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import app_factory as module
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            return ["manifest.json", "index/shards/shard-00000.parquet"]
+
+    expected = [
+        Detection(
+            detection_key="0000000000003333",
+            audio_id="segments/species_a/example.wav",
+            scientific_name="Species A",
+            confidence=0.9,
+            start_time=0.0,
+            end_time=3.0,
+        )
+    ]
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+    monkeypatch.setattr(
+        module,
+        "_load_detections_from_parquet_shards",
+        lambda project, dataset_repo, token, repo_files: (expected, ""),
+    )
+
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/project-a",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert warning == ""
+    assert len(detections) == 1
+    assert detections[0].scientific_name == "Species A"

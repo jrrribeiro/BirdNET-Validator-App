@@ -139,6 +139,8 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
         _pick_row_value(
             raw,
             [
+                "segment_path_in_repo",
+                "segment_relpath",
                 "audio_id",
                 "audio_file",
                 "audio_path",
@@ -249,6 +251,15 @@ def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detecti
     if not repo_files:
         return [], f"⚠️ Dataset {dataset_repo} has no files."
 
+    shard_detections, shard_warning = _load_detections_from_parquet_shards(
+        project=project,
+        dataset_repo=dataset_repo,
+        token=token,
+        repo_files=repo_files,
+    )
+    if shard_detections:
+        return shard_detections, shard_warning
+
     preferred = _candidate_metadata_files(project.project_slug)
     selected_file = next((name for name in preferred if name in repo_files), "")
     if not selected_file:
@@ -320,6 +331,90 @@ def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detecti
             f"⚠️ Metadata file {selected_file} from {dataset_repo} has no valid detections for project {project.project_slug}."
         )
 
+    return parsed, ""
+
+
+def _resolve_shard_paths_from_repo_files(repo_files: list[str]) -> list[str]:
+    return sorted(
+        {
+            file_path
+            for file_path in repo_files
+            if str(file_path).lower().startswith("index/shards/") and str(file_path).lower().endswith(".parquet")
+        }
+    )
+
+
+def _load_detections_from_parquet_shards(
+    project: Project,
+    dataset_repo: str,
+    token: str | None,
+    repo_files: list[str],
+) -> tuple[list[Detection], str]:
+    shard_paths = _resolve_shard_paths_from_repo_files(repo_files)
+
+    if "manifest.json" in repo_files:
+        try:
+            if token:
+                manifest_path = hf_hub_download(
+                    repo_id=dataset_repo,
+                    repo_type="dataset",
+                    filename="manifest.json",
+                    token=token,
+                )
+            else:
+                manifest_path = hf_hub_download(
+                    repo_id=dataset_repo,
+                    repo_type="dataset",
+                    filename="manifest.json",
+                )
+            manifest_payload = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+            manifest_shards = manifest_payload.get("index", {}).get("shards", [])
+            if isinstance(manifest_shards, list):
+                manifest_paths = [
+                    str(item.get("path", "")).strip()
+                    for item in manifest_shards
+                    if isinstance(item, dict)
+                ]
+                manifest_paths = [p for p in manifest_paths if p.lower().endswith(".parquet")]
+                if manifest_paths:
+                    shard_paths = manifest_paths
+        except Exception:
+            pass
+
+    if not shard_paths:
+        return [], ""
+
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except Exception:
+        return [], (
+            f"⚠️ Dataset {dataset_repo} contains parquet index shards, but pandas/pyarrow are unavailable to read them."
+        )
+
+    rows: list[dict[str, object]] = []
+    for shard_path in shard_paths:
+        try:
+            if token:
+                downloaded = hf_hub_download(
+                    repo_id=dataset_repo,
+                    repo_type="dataset",
+                    filename=shard_path,
+                    token=token,
+                )
+            else:
+                downloaded = hf_hub_download(
+                    repo_id=dataset_repo,
+                    repo_type="dataset",
+                    filename=shard_path,
+                )
+            frame = pd.read_parquet(downloaded)
+            rows.extend(frame.to_dict(orient="records"))
+        except Exception:
+            continue
+
+    parsed = _parse_detection_metadata_payload(rows, project.project_slug)
+    if not parsed:
+        return [], f"⚠️ Dataset {dataset_repo} index shards were found but contain no rows for project {project.project_slug}."
     return parsed, ""
 
 
