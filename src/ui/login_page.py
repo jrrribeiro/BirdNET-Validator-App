@@ -67,7 +67,24 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Blocks, gr.Textbox,
             if session is None:
                 return "", f"❌ User '{username}' not found or inactive"
 
-            return session.session_id, f"✅ Welcome, {username}! (Admin)" if session.role.value == "admin" else f"✅ Welcome, {username}! (Validator)"
+            admin_projects = 0
+            validator_projects = 0
+            for project_slug in session.authorized_projects:
+                project_role = auth_service.get_user_role_for_project(username, project_slug)
+                if project_role is None:
+                    continue
+                if project_role.value == "admin":
+                    admin_projects += 1
+                else:
+                    validator_projects += 1
+
+            return (
+                session.session_id,
+                (
+                    f"✅ Welcome, {username}! "
+                    f"Admin in {admin_projects} project(s), validator in {validator_projects} project(s)."
+                ),
+            )
 
         login_button.click(
             fn=perform_login,

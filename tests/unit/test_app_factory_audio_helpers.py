@@ -831,8 +831,7 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
     admin_manager = AdminPanelManager(auth_service)
 
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
-
-    assert "Production bootstrap incomplete" in warning
+    assert warning == ""
 
 
 def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_path: Path) -> None:

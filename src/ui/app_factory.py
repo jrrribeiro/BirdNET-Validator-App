@@ -855,15 +855,6 @@ def _bootstrap_auth_and_projects(
     user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
     pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
 
-    used_demo_fallback = False
-    if not projects and runtime_config.enable_demo_bootstrap:
-        projects = _default_projects()
-        used_demo_fallback = True
-
-    if not user_access and runtime_config.enable_demo_bootstrap:
-        user_access = _default_user_access()
-        used_demo_fallback = True
-
     for project in projects:
         _ = admin_manager.register_project(project)
 
@@ -888,18 +879,8 @@ def _bootstrap_auth_and_projects(
             "Emergency admin access was granted to username 'admin_user'."
         )
 
-    if used_demo_fallback:
-        base_message = (
-            "⚠️ Demo bootstrap enabled via BIRDNET_ENABLE_DEMO_BOOTSTRAP. "
-            "Use BIRDNET_PROJECTS_FILE and BIRDNET_USER_ACCESS_FILE for production auth/project setup."
-        )
-        return f"{base_message}\n\n{emergency_admin_message}" if emergency_admin_message else base_message
-
     if not projects:
-        return (
-            "⚠️ Production bootstrap incomplete. Create your first project in Admin, or configure "
-            "BIRDNET_PROJECTS_FILE and BIRDNET_USER_ACCESS_FILE (or enable demo bootstrap for local testing)."
-        )
+        return ""
 
     return emergency_admin_message
 
@@ -2443,7 +2424,7 @@ def create_app() -> gr.Blocks:
         [project["project_slug"] for project in admin_manager.list_projects()],
         seed_file_path=runtime_config.detection_seed_path,
         project_map=_current_project_map(),
-        allow_demo_defaults=runtime_config.enable_demo_bootstrap,
+        allow_demo_defaults=False,
     )
     service_ref: dict[str, DetectionQueueService] = {"queue": queue_service}
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
@@ -2488,6 +2469,25 @@ def create_app() -> gr.Blocks:
                     result[slug] = project
             return result
 
+        def _admin_projects_for_session(session) -> list[str]:
+            if session is None:
+                return []
+            admin_projects: list[str] = []
+            for project_slug in session.authorized_projects:
+                role = auth_service.get_user_role_for_project(session.username, project_slug)
+                if role == Role.admin:
+                    admin_projects.append(project_slug)
+            return sorted(admin_projects)
+
+        def _is_admin_for_project(session, project_slug: str) -> bool:
+            if session is None:
+                return False
+            slug = (project_slug or "").strip()
+            if not slug:
+                return False
+            role = auth_service.get_user_role_for_project(session.username, slug)
+            return role == Role.admin
+
         def _persist_admin_state() -> tuple[bool, str]:
             try:
                 _persist_bootstrap_state(
@@ -2524,6 +2524,7 @@ def create_app() -> gr.Blocks:
             # ===== TAB 2: Admin Panel =====
             with gr.Tab("⚙️ Admin", id="admin_tab"):
                 admin_info = gr.Markdown(value="⚠️ Login first")
+                admin_scope_info = gr.Markdown(value="")
 
                 def create_admin_display(session):
                     """Show admin panel or access denied message."""
@@ -2532,13 +2533,13 @@ def create_app() -> gr.Blocks:
                             "❌ **Not authenticated** — Login first in the **Login** tab.",
                             gr.update(visible=False),
                         )
-                    if session.role.value != "admin":
-                        return (
-                            "❌ **Access denied** — Only administrators can access this panel.",
-                            gr.update(visible=False),
-                        )
+                    admin_projects = _admin_projects_for_session(session)
                     return (
-                        f"✅ **Admin Panel** — Welcome, {session.username}. Use the controls below to manage projects and users.",
+                        (
+                            f"✅ **Admin Panel** — Welcome, {session.username}. "
+                            f"You are admin in {len(admin_projects)} project(s). "
+                            "You can always create a new project and become its admin."
+                        ),
                         gr.update(visible=True),
                     )
 
@@ -2572,8 +2573,8 @@ def create_app() -> gr.Blocks:
                     create_project_message = gr.Markdown()
 
                     def create_project(session, slug: str, name: str, repo_id: str, visibility: str, project_token: str):
-                        if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Only admin can create projects.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
+                        if session is None:
+                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
 
                         slug = (slug or "").strip()
                         name = (name or "").strip()
@@ -2597,18 +2598,19 @@ def create_app() -> gr.Blocks:
                             )
                         )
                         if not created:
+                            admin_projects = _admin_projects_for_session(session)
                             return (
                                 f"⚠️ Project '{slug}' already exists.",
                                 _project_rows(),
-                                gr.update(choices=_project_slugs()),
+                                gr.update(choices=admin_projects),
                                 gr.update(),
                                 gr.update(),
                                 gr.update(),
                                 gr.update(),
                                 gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
+                                gr.update(choices=admin_projects),
+                                gr.update(choices=admin_projects),
+                                gr.update(choices=["all", *admin_projects], value="all"),
                                 gr.update(),
                                 session,
                             )
@@ -2621,10 +2623,11 @@ def create_app() -> gr.Blocks:
                             _project_slugs(),
                             seed_file_path=runtime_config.detection_seed_path,
                             project_map=_project_map(),
-                            allow_demo_defaults=runtime_config.enable_demo_bootstrap,
+                            allow_demo_defaults=False,
                         )
                         service_ref["queue"] = refreshed_service
                         refreshed_session = auth_service.refresh_session_authorizations(session.session_id) or session
+                        admin_projects = _admin_projects_for_session(refreshed_session)
 
                         return (
                             (
@@ -2633,15 +2636,15 @@ def create_app() -> gr.Blocks:
                                 else f"✅ Project '{slug}' created, but could not persist bootstrap files: {persist_error}"
                             ),
                             _project_rows(),
-                            gr.update(choices=_project_slugs(), value=slug),
+                            gr.update(choices=admin_projects, value=slug),
                             gr.update(value=""),
                             gr.update(value=""),
                             gr.update(value=""),
                             gr.update(value="collaborative"),
                             gr.update(value=""),
-                            gr.update(choices=_project_slugs(), value=slug),
-                            gr.update(choices=_project_slugs(), value=slug),
-                            gr.update(choices=["all", *_project_slugs()], value="all"),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=["all", *admin_projects], value="all"),
                             refreshed_warning,
                             refreshed_session,
                         )
@@ -2654,8 +2657,36 @@ def create_app() -> gr.Blocks:
                     )
                     refresh_projects_btn = gr.Button("🔄 Refresh List")
 
+                    def _render_admin_scope_info(session, selected_admin_project: str):
+                        if session is None:
+                            return ""
+
+                        selected = (selected_admin_project or "").strip()
+                        if not selected:
+                            admin_projects = _admin_projects_for_session(session)
+                            if not admin_projects:
+                                return (
+                                    "ℹ️ You are authenticated, but currently not admin of any existing project. "
+                                    "Create a project to become admin of it."
+                                )
+                            return (
+                                f"ℹ️ Select a project to manage. "
+                                f"You are admin in {len(admin_projects)} project(s): {', '.join(admin_projects)}"
+                            )
+
+                        role = auth_service.get_user_role_for_project(session.username, selected)
+                        role_label = role.value.upper() if role is not None else "NO ACCESS"
+                        if role == Role.admin:
+                            return f"✅ Effective role on project '{selected}': {role_label}"
+                        if role == Role.validator:
+                            return (
+                                f"⚠️ Effective role on project '{selected}': {role_label}. "
+                                "Management actions require ADMIN for this project."
+                            )
+                        return f"❌ You do not have access to project '{selected}'."
+
                     def refresh_projects(session):
-                        if session is None or session.role.value != "admin":
+                        if session is None:
                             return []
                         return _project_rows()
 
@@ -2681,8 +2712,10 @@ def create_app() -> gr.Blocks:
                     token_update_btn = gr.Button("Update Project Token")
 
                     def update_project_token(session, project_slug: str, new_token: str, clear_token: bool):
-                        if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Only admin can update project tokens.", gr.update(), gr.update()
+                        if session is None:
+                            return "❌ Access denied. Login required.", gr.update(), gr.update()
+                        if not _is_admin_for_project(session, project_slug):
+                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update()
                         project = admin_manager.get_project(project_slug)
                         if project is None:
                             return "⚠️ Select a valid project.", gr.update(), gr.update()
@@ -2705,7 +2738,7 @@ def create_app() -> gr.Blocks:
                             _project_slugs(),
                             seed_file_path=runtime_config.detection_seed_path,
                             project_map=_project_map(),
-                            allow_demo_defaults=runtime_config.enable_demo_bootstrap,
+                            allow_demo_defaults=False,
                         )
                         service_ref["queue"] = refreshed_service
                         if refreshed_warning:
@@ -2739,8 +2772,10 @@ def create_app() -> gr.Blocks:
                     invite_btn = gr.Button("✉️ Invite")
 
                     def assign_user(session, username: str, project: str, role: str):
-                        if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Only admin can assign users.", gr.update(), gr.update(), gr.update()
+                        if session is None:
+                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update()
+                        if not _is_admin_for_project(session, project):
+                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update()
                         success, msg = admin_manager.assign_user_to_project(
                             username, project, role
                         )
@@ -2758,8 +2793,10 @@ def create_app() -> gr.Blocks:
                     )
 
                     def invite_user(session, username: str, project: str, role: str):
-                        if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Only admin can invite users.", gr.update(), gr.update(), gr.update()
+                        if session is None:
+                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update()
+                        if not _is_admin_for_project(session, project):
+                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update()
                         success, msg = admin_manager.invite_user_to_project(
                             invited_by=session.username,
                             username=username,
@@ -2787,8 +2824,10 @@ def create_app() -> gr.Blocks:
                         delete_project_btn = gr.Button("🗑️ Delete Project", variant="stop")
 
                     def delete_project(session, project_slug: str):
-                        if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Only admin can delete projects.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                        if session is None:
+                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                        if not _is_admin_for_project(session, project_slug):
+                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
 
                         success, msg = admin_manager.delete_project(project_slug)
                         if not success:
@@ -2802,19 +2841,20 @@ def create_app() -> gr.Blocks:
                             _project_slugs(),
                             seed_file_path=runtime_config.detection_seed_path,
                             project_map=_project_map(),
-                            allow_demo_defaults=runtime_config.enable_demo_bootstrap,
+                            allow_demo_defaults=False,
                         )
                         service_ref["queue"] = refreshed_service
                         refreshed_session = auth_service.refresh_session_authorizations(session.session_id) or session
 
+                        admin_projects = _admin_projects_for_session(refreshed_session)
                         return (
                             msg,
                             _project_rows(),
-                            gr.update(choices=_project_slugs(), value=None),
-                            gr.update(choices=_project_slugs(), value=None),
+                            gr.update(choices=admin_projects, value=None),
+                            gr.update(choices=admin_projects, value=None),
                             refreshed_session,
                             refreshed_warning,
-                            gr.update(value=""),
+                            gr.update(choices=admin_projects, value=None),
                         )
 
                     delete_project_btn.click(
@@ -2850,7 +2890,7 @@ def create_app() -> gr.Blocks:
                         refresh_pending_invites_btn = gr.Button("Refresh Pending Invites")
                         revoke_invite_btn = gr.Button("Revoke Invite")
 
-                    def _pending_invites_rows(project_filter: str):
+                    def _pending_invites_rows(project_filter: str, session):
                         def _remaining_from_iso(iso_value: str) -> str:
                             raw = str(iso_value or "").strip()
                             if not raw:
@@ -2877,6 +2917,10 @@ def create_app() -> gr.Blocks:
 
                         selected = (project_filter or "all").strip().lower()
                         project = None if selected == "all" else project_filter
+                        if project is not None and not _is_admin_for_project(session, project):
+                            return []
+
+                        admin_scope = set(_admin_projects_for_session(session))
                         invites = admin_manager.list_pending_invites(project_slug=project)
                         return [
                             [
@@ -2888,23 +2932,26 @@ def create_app() -> gr.Blocks:
                                 _remaining_from_iso(str(row.get("expires_at", ""))),
                             ]
                             for row in invites
+                            if str(row.get("project_slug", "")) in admin_scope
                         ]
 
                     refresh_pending_invites_btn.click(
                         fn=_pending_invites_rows,
-                        inputs=[pending_invites_filter_project],
+                        inputs=[pending_invites_filter_project, session_state],
                         outputs=[pending_invites_table],
                     )
 
                     def revoke_invite(session, username: str, project_slug: str, project_filter: str):
-                        if session is None or session.role.value != "admin":
-                            return "❌ Access denied. Only admin can revoke invites.", _pending_invites_rows(project_filter)
+                        if session is None:
+                            return "❌ Access denied. Login required.", _pending_invites_rows(project_filter, session)
+                        if not _is_admin_for_project(session, project_slug):
+                            return "❌ Access denied. You must be admin of the selected project.", _pending_invites_rows(project_filter, session)
                         success, msg = admin_manager.revoke_invite(username=username, project_slug=project_slug)
                         if success:
                             persisted, persist_error = _persist_admin_state()
                             if not persisted:
                                 msg = f"{msg} | ⚠️ Persistence failed: {persist_error}"
-                        return msg, _pending_invites_rows(project_filter)
+                        return msg, _pending_invites_rows(project_filter, session)
 
                     revoke_invite_btn.click(
                         fn=revoke_invite,
@@ -2914,7 +2961,7 @@ def create_app() -> gr.Blocks:
 
                     pending_invites_filter_project.change(
                         fn=_pending_invites_rows,
-                        inputs=[pending_invites_filter_project],
+                        inputs=[pending_invites_filter_project, session_state],
                         outputs=[pending_invites_table],
                     )
 
@@ -2945,9 +2992,33 @@ def create_app() -> gr.Blocks:
                 )
 
                 session_state.change(
-                    fn=lambda s: gr.update(visible=bool(s is not None and s.role.value == "admin")),
+                    fn=_render_admin_scope_info,
+                    inputs=[session_state, admin_project],
+                    outputs=[admin_scope_info],
+                )
+
+                session_state.change(
+                    fn=lambda s: gr.update(visible=bool(s is not None)),
                     inputs=[session_state],
                     outputs=[admin_users_controls],
+                )
+
+                session_state.change(
+                    fn=lambda s: (
+                        gr.update(choices=_admin_projects_for_session(s), value=None),
+                        gr.update(choices=_admin_projects_for_session(s), value=None),
+                        gr.update(choices=_admin_projects_for_session(s), value=None),
+                        gr.update(choices=["all", *_admin_projects_for_session(s)], value="all"),
+                        [],
+                    ),
+                    inputs=[session_state],
+                    outputs=[admin_project, token_project_select, pending_invite_project, pending_invites_filter_project, pending_invites_table],
+                )
+
+                admin_project.change(
+                    fn=_render_admin_scope_info,
+                    inputs=[session_state, admin_project],
+                    outputs=[admin_scope_info],
                 )
 
             # ===== TAB 3: Project Selection =====
@@ -2982,7 +3053,14 @@ def create_app() -> gr.Blocks:
                     if not projects:
                         return (
                             gr.Dropdown(choices=[], value=None, interactive=False),
-                            "⚠️ **No projects assigned**\n\nYou do not have access to projects yet. Contact an administrator.",
+                            (
+                                "ℹ️ **Nenhum projeto disponível ainda**\n\n"
+                                "Para começar:\n"
+                                "1. Vá para a aba **Admin**.\n"
+                                "2. Preencha **New Project Slug**, **Project Name** e **HF Dataset Repo ID**.\n"
+                                "3. Clique em **Create Project**.\n"
+                                "4. Volte para **Select Project** e selecione o projeto criado."
+                            ),
                             None,
                             "",
                         )
@@ -3628,7 +3706,7 @@ def create_app() -> gr.Blocks:
                         rows=rows,
                         cache_key=cache_key,
                         evt=evt,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     )
 
@@ -3717,7 +3795,7 @@ def create_app() -> gr.Blocks:
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
@@ -3737,7 +3815,7 @@ def create_app() -> gr.Blocks:
                         rows=rows,
                         selected_index=int(idx),
                         previous_cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
@@ -3763,7 +3841,7 @@ def create_app() -> gr.Blocks:
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
@@ -3779,7 +3857,7 @@ def create_app() -> gr.Blocks:
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
@@ -3795,7 +3873,7 @@ def create_app() -> gr.Blocks:
                         dataset_repo=repo,
                         rows=rows,
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
@@ -4064,7 +4142,7 @@ def create_app() -> gr.Blocks:
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
@@ -4078,7 +4156,7 @@ def create_app() -> gr.Blocks:
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
@@ -4092,7 +4170,7 @@ def create_app() -> gr.Blocks:
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
@@ -4106,7 +4184,7 @@ def create_app() -> gr.Blocks:
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
-                        allow_demo_fallback=runtime_config.enable_demo_bootstrap,
+                        allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
