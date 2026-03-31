@@ -939,3 +939,48 @@ def test_build_detection_repository_prefers_dataset_rows(monkeypatch: pytest.Mon
     assert warning == ""
     assert len(page.items) == 1
     assert page.items[0].scientific_name == "Dataset Species"
+
+
+def test_load_dataset_detections_for_project_falls_back_to_audiofolder_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import app_factory as module
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            return [
+                "audio/segments/Accipiter_striatus/Catim_20250221_060600_0.0-3.0s_85%.wav",
+                "audio/segments/Aegolius_harrisii/Aiuab_20260123_182900_9.0-12.0s_68%.wav",
+            ]
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+
+    project = Project(
+        project_slug="teste7",
+        name="Teste 7",
+        dataset_repo_id="jrrribeiro/teste7",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert warning == ""
+    assert len(detections) == 2
+    assert {item.scientific_name for item in detections} == {"Accipiter striatus", "Aegolius harrisii"}
+    assert {item.audio_id for item in detections} == {
+        "segments/Accipiter_striatus/Catim_20250221_060600_0.0-3.0s_85%.wav",
+        "segments/Aegolius_harrisii/Aiuab_20260123_182900_9.0-12.0s_68%.wav",
+    }
+
+
+def test_parse_segment_filename_hint_reads_time_and_confidence() -> None:
+    from src.ui import app_factory as module
+
+    start, end, conf = module._parse_segment_filename_hint("any_12.0-15.0s_85%.wav")
+
+    assert start == 12.0
+    assert end == 15.0
+    assert conf == 0.85

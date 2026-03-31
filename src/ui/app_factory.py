@@ -2,6 +2,7 @@ import gradio as gr
 import csv
 import hashlib
 import json
+import re
 import tempfile
 import wave
 from datetime import date, datetime
@@ -264,9 +265,13 @@ def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detecti
             selected_file = sorted(metadata_candidates, key=lambda value: (len(value), value))[0]
 
     if not selected_file:
+        parsed_from_paths = _build_detections_from_audio_paths(project, repo_files)
+        if parsed_from_paths:
+            return parsed_from_paths, ""
         return [], (
             f"⚠️ Dataset {dataset_repo} has no detection metadata file for project {project.project_slug}. "
-            "Expected names like detections.jsonl / segments.csv (top-level, metadata/, or <project_slug>/)."
+            "Expected names like detections.jsonl / segments.csv (top-level, metadata/, or <project_slug>/), "
+            "or audio files under audio/segments/<species>/..."
         )
 
     try:
@@ -308,11 +313,78 @@ def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detecti
         return [], f"⚠️ Failed to parse detection metadata {selected_file} from {dataset_repo}: {exc}"
 
     if not parsed:
+        parsed_from_paths = _build_detections_from_audio_paths(project, repo_files)
+        if parsed_from_paths:
+            return parsed_from_paths, ""
         return [], (
             f"⚠️ Metadata file {selected_file} from {dataset_repo} has no valid detections for project {project.project_slug}."
         )
 
     return parsed, ""
+
+
+def _parse_segment_filename_hint(filename: str) -> tuple[float, float, float]:
+    # Common uploader pattern: ..._12.0-15.0s_85%.wav
+    segment_match = re.search(r"_(\d+(?:\.\d+)?)\-(\d+(?:\.\d+)?)s_(\d+(?:\.\d+)?)%", filename)
+    if segment_match:
+        start_time = float(segment_match.group(1))
+        end_time = float(segment_match.group(2))
+        confidence = float(segment_match.group(3)) / 100.0
+        return start_time, end_time, max(0.0, min(1.0, confidence))
+
+    # Fallback pattern without confidence: ..._12.0-15.0s
+    basic_match = re.search(r"_(\d+(?:\.\d+)?)\-(\d+(?:\.\d+)?)s", filename)
+    if basic_match:
+        return float(basic_match.group(1)), float(basic_match.group(2)), 0.5
+
+    return 0.0, 1.0, 0.5
+
+
+def _build_detections_from_audio_paths(project: Project, repo_files: list[str]) -> list[Detection]:
+    detections: list[Detection] = []
+    seen_keys: set[str] = set()
+
+    for file_path in repo_files:
+        normalized = str(file_path).replace("\\", "/").strip()
+        lower = normalized.lower()
+        if not lower.startswith("audio/"):
+            continue
+        if not lower.endswith((".wav", ".mp3", ".flac", ".ogg", ".m4a")):
+            continue
+
+        relative_audio_id = normalized[len("audio/") :]
+        parts = relative_audio_id.split("/")
+        if len(parts) < 2:
+            continue
+
+        if parts[0].lower() == "segments" and len(parts) >= 3:
+            scientific_name = parts[1].replace("_", " ").strip() or "Unknown species"
+        else:
+            scientific_name = parts[-2].replace("_", " ").strip() or "Unknown species"
+
+        filename = parts[-1]
+        start_time, end_time, confidence = _parse_segment_filename_hint(filename)
+        stable = f"{project.project_slug}|{relative_audio_id}|{scientific_name}|{start_time:.3f}|{end_time:.3f}"
+        detection_key = hashlib.sha1(stable.encode("utf-8")).hexdigest()[:16]
+        if detection_key in seen_keys:
+            continue
+
+        try:
+            detections.append(
+                Detection(
+                    detection_key=detection_key,
+                    audio_id=relative_audio_id,
+                    scientific_name=scientific_name,
+                    confidence=confidence,
+                    start_time=start_time,
+                    end_time=end_time,
+                )
+            )
+            seen_keys.add(detection_key)
+        except Exception:
+            continue
+
+    return detections
 
 
 def _seed_service_for_projects(
