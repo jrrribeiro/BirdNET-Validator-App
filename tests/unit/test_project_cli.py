@@ -285,3 +285,64 @@ def test_verify_project_rejects_invalid_projects_schema(tmp_path: Path, capsys: 
     captured = capsys.readouterr()
     assert exit_code == 1
     assert "Expected list" in captured.out
+
+
+def test_verify_project_dry_run_returns_ok_with_findings(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text(
+        json.dumps(
+            [
+                {
+                    "project_slug": "p6",
+                    "name": "Project 6",
+                    "dataset_repo_id": "org/p6",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "verify-project",
+            "--projects-file",
+            str(projects_file),
+            "--dataset-root",
+            str(tmp_path / "datasets"),
+            "--slug",
+            "p6",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 0
+    assert "DRY-RUN" in captured.out
+    assert "missing path" in captured.out
+
+
+def test_verify_project_dry_run_still_validates_schema(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text("{bad-json", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "verify-project",
+            "--projects-file",
+            str(projects_file),
+            "--dataset-root",
+            str(tmp_path / "datasets"),
+            "--slug",
+            "p6",
+            "--dry-run",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Invalid JSON" in captured.out

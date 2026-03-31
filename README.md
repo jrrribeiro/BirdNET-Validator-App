@@ -127,6 +127,7 @@ Available commands:
 - `init-dataset`: creates the initial local dataset folder structure.
 - `build-index`: builds a confidence-sorted index from `detections.jsonl`.
 - `verify-project`: verifies project config and required local scaffold files.
+  - Use `--dry-run` to print findings without failing the command exit code.
 
 Example flow:
 
@@ -153,6 +154,12 @@ python -m src.cli.project_cli verify-project \
   --projects-file docs/spaces/projects.sample.json \
   --dataset-root data/projects \
   --slug amazonia-2026
+
+python -m src.cli.project_cli verify-project \
+  --projects-file docs/spaces/projects.sample.json \
+  --dataset-root data/projects \
+  --slug amazonia-2026 \
+  --dry-run
 ```
 
 ## Repository Structure

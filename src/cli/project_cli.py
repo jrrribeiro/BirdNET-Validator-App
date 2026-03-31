@@ -242,17 +242,16 @@ def cmd_verify_project(args: argparse.Namespace) -> int:
     projects_file = Path(args.projects_file)
     projects = _as_project_list(_load_json(projects_file, []), projects_file)
 
+    findings: list[str] = []
+
     if not _project_exists(projects, args.slug):
-        print(f"ERROR: project '{args.slug}' not found in {projects_file}")
-        return EXIT_VALIDATION_ERROR
+        findings.append(f"project '{args.slug}' not found in {projects_file}")
 
     project_root = Path(args.dataset_root) / args.slug
-    missing: list[str] = []
-
     for dirname in DEFAULT_DATASET_DIRS:
         expected = project_root / dirname
         if not expected.exists():
-            missing.append(str(expected))
+            findings.append(f"missing path: {expected}")
 
     required_files = [
         project_root / "detections" / "detections.jsonl",
@@ -261,12 +260,18 @@ def cmd_verify_project(args: argparse.Namespace) -> int:
     ]
     for required in required_files:
         if not required.exists():
-            missing.append(str(required))
+            findings.append(f"missing path: {required}")
 
-    if missing:
-        print("ERROR: project verification failed; missing paths:")
-        for item in missing:
+    if findings:
+        if args.dry_run:
+            print("DRY-RUN: project verification found issues:")
+        else:
+            print("ERROR: project verification failed:")
+        for item in findings:
             print(f" - {item}")
+        if args.dry_run:
+            print("DRY-RUN: completed without failing exit code")
+            return EXIT_OK
         return EXIT_VALIDATION_ERROR
 
     print(f"OK: project '{args.slug}' verified")
@@ -305,6 +310,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify_project.add_argument("--projects-file", required=True)
     verify_project.add_argument("--dataset-root", required=True)
     verify_project.add_argument("--slug", required=True)
+    verify_project.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Print verification findings without returning a failure exit code",
+    )
     verify_project.set_defaults(func=cmd_verify_project)
 
     return parser
