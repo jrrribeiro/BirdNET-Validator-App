@@ -507,3 +507,51 @@ class AuthService:
                 self._pending_invites[str(username)] = user_invites
 
         self._prune_expired_invites()
+
+    def revoke_all_invites_for_project(self, project_slug: str) -> int:
+        """Remove all pending invites for a project.
+
+        Returns:
+            Number of revoked invites
+        """
+        self._prune_expired_invites()
+        revoked = 0
+        empty_users: list[str] = []
+        for username, invites_by_project in self._pending_invites.items():
+            if project_slug in invites_by_project:
+                del invites_by_project[project_slug]
+                revoked += 1
+            if not invites_by_project:
+                empty_users.append(username)
+
+        for username in empty_users:
+            self._pending_invites.pop(username, None)
+
+        return revoked
+
+    def remove_project_from_all_users(self, project_slug: str) -> int:
+        """Remove a project assignment from all users and refresh active sessions.
+
+        Returns:
+            Number of user assignments removed
+        """
+        removed = 0
+        for access in self._user_access.values():
+            if project_slug in access.project_slugs:
+                del access.project_slugs[project_slug]
+                removed += 1
+
+        for session in self._sessions.values():
+            if project_slug in session.authorized_projects:
+                session.authorized_projects = [slug for slug in session.authorized_projects if slug != project_slug]
+
+                access = self._user_access.get(session.username)
+                if access is None or not access.is_active:
+                    continue
+                session.role = (
+                    Role.admin
+                    if any(role == Role.admin for role in access.project_slugs.values())
+                    else Role.validator
+                )
+
+        return removed

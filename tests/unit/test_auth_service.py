@@ -345,6 +345,39 @@ class TestAuthService:
 
         assert service.list_pending_invites("pending_user") == []
 
+    def test_remove_project_from_all_users_updates_acl_and_session(self, auth_service):
+        auth_service.register_user_project_access(
+            "admin_user",
+            {"proj-a": Role.admin, "proj-b": Role.admin},
+        )
+        auth_service.register_user_project_access(
+            "validator_user",
+            {"proj-a": Role.validator},
+        )
+        admin_session = auth_service.login("admin_user")
+        validator_session = auth_service.login("validator_user")
+
+        removed = auth_service.remove_project_from_all_users("proj-a")
+
+        assert removed == 2
+        assert auth_service.get_user_role_for_project("admin_user", "proj-a") is None
+        assert auth_service.get_user_role_for_project("validator_user", "proj-a") is None
+        assert auth_service.get_user_role_for_project("admin_user", "proj-b") == Role.admin
+        assert admin_session is not None and "proj-a" not in admin_session.authorized_projects
+        assert validator_session is not None and "proj-a" not in validator_session.authorized_projects
+
+    def test_revoke_all_invites_for_project(self, auth_service):
+        auth_service.create_project_invite("u1", "proj-a", Role.validator, "owner")
+        auth_service.create_project_invite("u2", "proj-a", Role.validator, "owner")
+        auth_service.create_project_invite("u3", "proj-b", Role.validator, "owner")
+
+        revoked = auth_service.revoke_all_invites_for_project("proj-a")
+
+        assert revoked == 2
+        assert auth_service.list_pending_invites("u1") == []
+        assert auth_service.list_pending_invites("u2") == []
+        assert len(auth_service.list_pending_invites("u3")) == 1
+
 
 class TestUserProjectAccess:
     """Test UserProjectAccess model."""

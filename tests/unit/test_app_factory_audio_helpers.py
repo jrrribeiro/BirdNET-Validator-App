@@ -808,9 +808,11 @@ def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp
     admin_manager = AdminPanelManager(auth_service)
 
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+    emergency_admin_session = auth_service.login("admin_user")
 
-    assert warning == ""
+    assert "Emergency admin access" in warning
     assert auth_service.login("validator_a") is not None
+    assert emergency_admin_session is not None
     assert any(p["project_slug"] == "project-a" for p in admin_manager.list_projects())
 
 
@@ -831,6 +833,48 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
 
     assert "Production bootstrap incomplete" in warning
+
+
+def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text(
+        json.dumps(
+            [
+                {
+                    "project_slug": "project-a",
+                    "name": "Project A",
+                    "dataset_repo_id": "org/project-a",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    users_file = tmp_path / "users.json"
+    users_file.write_text(
+        json.dumps({"validator_only": {"project-a": "validator"}}),
+        encoding="utf-8",
+    )
+
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        page_size=25,
+        projects_file_path=str(projects_file),
+        user_access_file_path=str(users_file),
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service)
+
+    warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+    emergency_session = auth_service.login("admin_user")
+
+    assert "Emergency admin access" in warning
+    assert emergency_session is not None
+    assert emergency_session.role.value == "admin"
 
 
 def test_load_dataset_detections_for_project_reads_jsonl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

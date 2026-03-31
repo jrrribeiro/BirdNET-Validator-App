@@ -872,11 +872,28 @@ def _bootstrap_auth_and_projects(
 
     auth_service.load_pending_invites_map(pending_invites)
 
+    emergency_admin_message = ""
+    has_admin = any(
+        role == "admin"
+        for roles in auth_service.export_user_access_map(include_inactive=True).values()
+        for role in roles.values()
+    )
+    if projects and not has_admin:
+        emergency_admin_username = "admin_user"
+        for project in projects:
+            auth_service.upsert_user_project_role(emergency_admin_username, project.project_slug, Role.admin)
+        auth_service.set_user_active(emergency_admin_username, True)
+        emergency_admin_message = (
+            "⚠️ No administrator was configured in bootstrap files. "
+            "Emergency admin access was granted to username 'admin_user'."
+        )
+
     if used_demo_fallback:
-        return (
+        base_message = (
             "⚠️ Demo bootstrap enabled via BIRDNET_ENABLE_DEMO_BOOTSTRAP. "
             "Use BIRDNET_PROJECTS_FILE and BIRDNET_USER_ACCESS_FILE for production auth/project setup."
         )
+        return f"{base_message}\n\n{emergency_admin_message}" if emergency_admin_message else base_message
 
     if not projects:
         return (
@@ -884,7 +901,7 @@ def _bootstrap_auth_and_projects(
             "BIRDNET_PROJECTS_FILE and BIRDNET_USER_ACCESS_FILE (or enable demo bootstrap for local testing)."
         )
 
-    return ""
+    return emergency_admin_message
 
 
 def _page_to_table(
@@ -2759,6 +2776,59 @@ def create_app() -> gr.Blocks:
                         fn=invite_user,
                         inputs=[session_state, admin_username, admin_project, admin_role],
                         outputs=[admin_message, admin_username, admin_project, admin_role],
+                    )
+
+                    gr.Markdown("#### Delete Project")
+                    with gr.Row():
+                        delete_project_slug = gr.Dropdown(
+                            choices=_project_slugs(),
+                            label="Project to delete",
+                        )
+                        delete_project_btn = gr.Button("🗑️ Delete Project", variant="stop")
+
+                    def delete_project(session, project_slug: str):
+                        if session is None or session.role.value != "admin":
+                            return "❌ Access denied. Only admin can delete projects.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+
+                        success, msg = admin_manager.delete_project(project_slug)
+                        if not success:
+                            return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
+
+                        persisted, persist_error = _persist_admin_state()
+                        if not persisted:
+                            msg = f"{msg} | ⚠️ Persistence failed: {persist_error}"
+
+                        refreshed_service, refreshed_warning = _build_detection_repository(
+                            _project_slugs(),
+                            seed_file_path=runtime_config.detection_seed_path,
+                            project_map=_project_map(),
+                            allow_demo_defaults=runtime_config.enable_demo_bootstrap,
+                        )
+                        service_ref["queue"] = refreshed_service
+                        refreshed_session = auth_service.refresh_session_authorizations(session.session_id) or session
+
+                        return (
+                            msg,
+                            _project_rows(),
+                            gr.update(choices=_project_slugs(), value=None),
+                            gr.update(choices=_project_slugs(), value=None),
+                            refreshed_session,
+                            refreshed_warning,
+                            gr.update(value=""),
+                        )
+
+                    delete_project_btn.click(
+                        fn=delete_project,
+                        inputs=[session_state, delete_project_slug],
+                        outputs=[
+                            admin_message,
+                            projects_table,
+                            admin_project,
+                            token_project_select,
+                            session_state,
+                            seed_warning_state,
+                            delete_project_slug,
+                        ],
                     )
 
                     gr.Markdown("#### Pending Invites")

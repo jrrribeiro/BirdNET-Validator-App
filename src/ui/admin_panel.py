@@ -153,6 +153,22 @@ class AdminPanelManager:
     def revoke_invite(self, username: str, project_slug: str) -> Tuple[bool, str]:
         return self.auth_service.revoke_project_invite(username=username, project_slug=project_slug)
 
+    def delete_project(self, project_slug: str) -> Tuple[bool, str]:
+        """Delete a project and remove all linked assignments/invites."""
+        slug = (project_slug or "").strip()
+        if not slug:
+            return False, "Project slug is required"
+        if slug not in self._projects:
+            return False, f"Project '{slug}' not found"
+
+        del self._projects[slug]
+        removed_assignments = self.auth_service.remove_project_from_all_users(slug)
+        revoked_invites = self.auth_service.revoke_all_invites_for_project(slug)
+        return (
+            True,
+            f"✅ Project '{slug}' deleted (removed assignments: {removed_assignments}, revoked invites: {revoked_invites})",
+        )
+
     def remove_user_from_project(self, username: str, project_slug: str) -> Tuple[bool, str]:
         """Remove a user's access to a project.
 
