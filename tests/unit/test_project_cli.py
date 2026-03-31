@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from src.cli.project_cli import main
 
 
@@ -160,3 +162,126 @@ def test_init_build_and_verify_project_flow(tmp_path: Path) -> None:
         ]
     )
     assert verify_exit == 0
+
+
+def test_create_project_rejects_invalid_slug(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text("[]\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "create-project",
+            "--projects-file",
+            str(projects_file),
+            "--slug",
+            "Invalid Slug",
+            "--name",
+            "Project",
+            "--dataset-repo-id",
+            "org/p1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Invalid slug" in captured.out
+
+
+def test_create_project_fails_on_invalid_projects_json(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text("{not-json", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "create-project",
+            "--projects-file",
+            str(projects_file),
+            "--slug",
+            "p3",
+            "--name",
+            "Project 3",
+            "--dataset-repo-id",
+            "org/p3",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Invalid JSON" in captured.out
+
+
+def test_build_index_fails_on_invalid_jsonl_line(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    dataset_root = tmp_path / "datasets"
+    project_root = dataset_root / "p4"
+    (project_root / "detections").mkdir(parents=True)
+    (project_root / "index").mkdir(parents=True)
+    (project_root / "detections" / "detections.jsonl").write_text("{bad json}\n", encoding="utf-8")
+
+    exit_code = main(
+        [
+            "build-index",
+            "--dataset-root",
+            str(dataset_root),
+            "--slug",
+            "p4",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Invalid JSONL" in captured.out
+    assert "line 1" in captured.out
+
+
+def test_build_index_fails_on_non_numeric_confidence(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    dataset_root = tmp_path / "datasets"
+    project_root = dataset_root / "p5"
+    (project_root / "detections").mkdir(parents=True)
+    (project_root / "index").mkdir(parents=True)
+    (project_root / "detections" / "detections.jsonl").write_text(
+        json.dumps(
+            {
+                "detection_key": "k1",
+                "audio_id": "a1",
+                "scientific_name": "Sp",
+                "confidence": "not-a-number",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    exit_code = main(
+        [
+            "build-index",
+            "--dataset-root",
+            str(dataset_root),
+            "--slug",
+            "p5",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "confidence" in captured.out
+
+
+def test_verify_project_rejects_invalid_projects_schema(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    projects_file = tmp_path / "projects.json"
+    projects_file.write_text(json.dumps({"project_slug": "p2"}), encoding="utf-8")
+
+    exit_code = main(
+        [
+            "verify-project",
+            "--projects-file",
+            str(projects_file),
+            "--dataset-root",
+            str(tmp_path / "datasets"),
+            "--slug",
+            "p2",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "Expected list" in captured.out
