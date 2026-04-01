@@ -42,6 +42,7 @@ class SmtpInviteEmailNotifier(InviteEmailNotifier):
         smtp_username: str | None = None,
         smtp_password: str | None = None,
         smtp_use_tls: bool = True,
+        smtp_use_ssl: bool = False,
     ):
         self._sender_email = sender_email
         self._smtp_host = smtp_host
@@ -49,6 +50,7 @@ class SmtpInviteEmailNotifier(InviteEmailNotifier):
         self._smtp_username = smtp_username
         self._smtp_password = smtp_password
         self._smtp_use_tls = smtp_use_tls
+        self._smtp_use_ssl = smtp_use_ssl
 
     def send(self, payload: InviteEmailPayload) -> tuple[bool, str]:
         message = EmailMessage()
@@ -72,12 +74,18 @@ class SmtpInviteEmailNotifier(InviteEmailNotifier):
         message.set_content(body)
 
         try:
-            with smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=20) as server:
-                if self._smtp_use_tls:
-                    server.starttls()
-                if self._smtp_username and self._smtp_password:
-                    server.login(self._smtp_username, self._smtp_password)
-                server.send_message(message)
+            if self._smtp_use_ssl:
+                with smtplib.SMTP_SSL(self._smtp_host, self._smtp_port, timeout=20) as server:
+                    if self._smtp_username and self._smtp_password:
+                        server.login(self._smtp_username, self._smtp_password)
+                    server.send_message(message)
+            else:
+                with smtplib.SMTP(self._smtp_host, self._smtp_port, timeout=20) as server:
+                    if self._smtp_use_tls:
+                        server.starttls()
+                    if self._smtp_username and self._smtp_password:
+                        server.login(self._smtp_username, self._smtp_password)
+                    server.send_message(message)
             return True, f"Invite email sent to {payload.invitee_email}"
         except Exception as exc:
             return False, f"Invite created, but email delivery failed: {exc}"

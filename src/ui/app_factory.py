@@ -2480,6 +2480,7 @@ def create_app() -> gr.Blocks:
             smtp_username=runtime_config.smtp_username,
             smtp_password=runtime_config.smtp_password,
             smtp_use_tls=runtime_config.smtp_use_tls,
+            smtp_use_ssl=runtime_config.smtp_use_ssl,
         )
 
     # Initialize admin panel manager

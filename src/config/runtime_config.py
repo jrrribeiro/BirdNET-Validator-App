@@ -23,6 +23,7 @@ class RuntimeConfig:
     smtp_username: str | None
     smtp_password: str | None
     smtp_use_tls: bool
+    smtp_use_ssl: bool = False
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -87,6 +88,8 @@ class RuntimeConfig:
         smtp_password = (os.getenv("BIRDNET_SMTP_PASSWORD") or "").strip() or None
         raw_smtp_use_tls = (os.getenv("BIRDNET_SMTP_USE_TLS") or "").strip().lower()
         smtp_use_tls = raw_smtp_use_tls not in {"0", "false", "no", "off"}
+        raw_smtp_use_ssl = (os.getenv("BIRDNET_SMTP_USE_SSL") or "").strip().lower()
+        smtp_use_ssl = raw_smtp_use_ssl in {"1", "true", "yes", "on"}
 
         return cls(
             detection_seed_path=detection_seed_path,
@@ -106,4 +109,5 @@ class RuntimeConfig:
             smtp_username=smtp_username,
             smtp_password=smtp_password,
             smtp_use_tls=smtp_use_tls,
+            smtp_use_ssl=smtp_use_ssl,
         )
