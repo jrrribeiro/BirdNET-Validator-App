@@ -1271,9 +1271,9 @@ def _build_validation_summary_cards(rows: object) -> str:
 
     return (
         "<div style='display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:12px;margin:4px 0 12px 0;'>"
-        f"<div style='padding:10px 14px;border-radius:10px;background:#ececec;'><div style='font-size:12px;color:#555;'>Total</div><div style='font-size:24px;font-weight:700;color:#222;'>{total}</div></div>"
-        f"<div style='padding:10px 14px;border-radius:10px;background:#e7f4ea;'><div style='font-size:12px;color:#3f6c49;'>Positivo</div><div style='font-size:24px;font-weight:700;color:#215d2f;'>{positive}</div></div>"
-        f"<div style='padding:10px 14px;border-radius:10px;background:#fdeaea;'><div style='font-size:12px;color:#7b3a3a;'>Negativo</div><div style='font-size:24px;font-weight:700;color:#6f1f1f;'>{negative}</div></div>"
+        f"<div style='padding:10px 14px;border-radius:10px;background:#ececec;'><div style='font-size:12px;color:#555;'>Total Items</div><div style='font-size:24px;font-weight:700;color:#222;'>{total}</div></div>"
+        f"<div style='padding:10px 14px;border-radius:10px;background:#e7f4ea;'><div style='font-size:12px;color:#3f6c49;'>Positive</div><div style='font-size:24px;font-weight:700;color:#215d2f;'>{positive}</div></div>"
+        f"<div style='padding:10px 14px;border-radius:10px;background:#fdeaea;'><div style='font-size:12px;color:#7b3a3a;'>Negative</div><div style='font-size:24px;font-weight:700;color:#6f1f1f;'>{negative}</div></div>"
         "</div>"
     )
 
@@ -1336,10 +1336,45 @@ def _normalize_rows(rows: object) -> list[list[object]]:
     return [list(item) for item in rows] if rows else []
 
 
-def _spectrogram_title(audio_path: str | None) -> str:
-    if not audio_path:
-        return "### Espectrograma"
-    return f"### Espectrograma - {Path(audio_path).name}"
+def _spectrogram_title(audio_name: str | None) -> str:
+    if not audio_name:
+        return "### Spectrogram"
+    return f"### Spectrogram - {Path(audio_name).name}"
+
+
+def _selected_audio_display_name(rows: object, selected_index: int, audio_path: str | None) -> str | None:
+    if audio_path:
+        return Path(audio_path).name
+
+    normalized_rows = _normalize_rows(rows)
+    if normalized_rows:
+        safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
+        if len(normalized_rows[safe_index]) > 1:
+            audio_id = str(normalized_rows[safe_index][1]).strip()
+            if audio_id:
+                return Path(audio_id).name
+    return None
+
+
+def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
+    normalized_rows = _normalize_rows(rows)
+    if not normalized_rows:
+        return []
+
+    safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
+    marked_rows: list[list[object]] = []
+    for row_index, row in enumerate(normalized_rows):
+        updated = list(row)
+        if len(updated) > 2:
+            species = str(updated[2])
+            if species.startswith("▶ "):
+                species = species[2:]
+            if row_index == safe_index:
+                species = f"▶ {species}"
+            updated[2] = species
+        marked_rows.append(updated)
+
+    return marked_rows
 
 
 def _paginate_rows(rows: list[list[object]], page: int, page_size: int) -> tuple[list[list[object]], int, int]:
@@ -1403,7 +1438,8 @@ def _fetch_selected_audio_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    return audio_path, cache_key, status, spectrogram_path, _spectrogram_title(audio_path)
+    display_name = _selected_audio_display_name(rows, selected_index, audio_path)
+    return audio_path, cache_key, status, spectrogram_path, _spectrogram_title(display_name)
 
 
 def _select_and_fetch_audio_with_title(
@@ -1424,13 +1460,14 @@ def _select_and_fetch_audio_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
+    display_name = _selected_audio_display_name(rows, selected_index, audio_path)
     return (
         selected_index,
         audio_path,
         updated_cache_key,
         status,
         spectrogram_path,
-        _spectrogram_title(audio_path),
+        _spectrogram_title(display_name),
     )
 
 
@@ -1450,13 +1487,14 @@ def _autofetch_first_row_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
+    display_name = _selected_audio_display_name(rows, selected_index, audio_path)
     return (
         selected_index,
         audio_path,
         updated_cache_key,
         status,
         spectrogram_path,
-        _spectrogram_title(audio_path),
+        _spectrogram_title(display_name),
     )
 
 
@@ -1483,7 +1521,8 @@ def _advance_to_next_row_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    return safe_index, audio_path, updated_cache_key, status, spectrogram_path, _spectrogram_title(audio_path)
+    display_name = _selected_audio_display_name(normalized_rows, safe_index, audio_path)
+    return safe_index, audio_path, updated_cache_key, status, spectrogram_path, _spectrogram_title(display_name)
 
 
 def _cleanup_selected_audio(audio_service: _AudioServiceProtocol, cache_key: str) -> tuple[str, str | None]:
@@ -2431,8 +2470,8 @@ def create_app() -> gr.Blocks:
     validation_repository = AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
     validation_service = ValidationService(validation_repository)
 
-    with gr.Blocks(title="BirdNET-Validator-App - Multi-Project") as wrapper:
-        gr.Markdown("# BirdNET-Validator-App - Sprint 4: Multi-Project Security")
+    with gr.Blocks(title="BirdNET-Validator-App") as wrapper:
+        gr.Markdown("# BirdNET-Validator-App")
         gr.Markdown("**Version with authentication, project-level authorization, and admin panel**")
         if bootstrap_warning:
             gr.Markdown(bootstrap_warning)
@@ -3054,12 +3093,12 @@ def create_app() -> gr.Blocks:
                         return (
                             gr.Dropdown(choices=[], value=None, interactive=False),
                             (
-                                "ℹ️ **Nenhum projeto disponível ainda**\n\n"
-                                "Para começar:\n"
-                                "1. Vá para a aba **Admin**.\n"
-                                "2. Preencha **New Project Slug**, **Project Name** e **HF Dataset Repo ID**.\n"
-                                "3. Clique em **Create Project**.\n"
-                                "4. Volte para **Select Project** e selecione o projeto criado."
+                                "ℹ️ **No projects available yet**\n\n"
+                                "To get started:\n"
+                                "1. Go to the **Admin** tab.\n"
+                                "2. Fill **New Project Slug**, **Project Name**, and **HF Dataset Repo ID**.\n"
+                                "3. Click **Create Project**.\n"
+                                "4. Go back to **Select Project** and choose the created project."
                             ),
                             None,
                             "",
@@ -3315,29 +3354,33 @@ def create_app() -> gr.Blocks:
                     with gr.Column(scale=8):
                         validation_summary_cards = gr.HTML(value=_build_validation_summary_cards([]))
 
-                        spectrogram_title = gr.Markdown("### Espectrograma")
+                        spectrogram_title = gr.Markdown("### Spectrogram")
                         spectrogram_image = gr.Image(
                             label="",
                             type="filepath",
                             interactive=False,
                             height=330,
                         )
-                        audio_player = gr.Audio(label="Audio selecionado", type="filepath", autoplay=True)
+                        with gr.Row():
+                            audio_player = gr.Audio(label="Selected Audio", type="filepath", autoplay=True)
+                        auto_play_audio = gr.Checkbox(label="Auto-play selected audio", value=True)
 
                         with gr.Row():
-                            approve_btn = gr.Button("Up - Positive", variant="primary")
-                            reject_btn = gr.Button("Down - Negative")
+                            approve_btn = gr.Button("Positive", variant="primary")
+                            reject_btn = gr.Button("Negative")
                             uncertain_btn = gr.Button("Uncertain")
                             skip_btn = gr.Button("Skip")
-                            favorite_btn = gr.Button("★ Favorite")
+                            favorite_btn = gr.Button("☆ Favorite", variant="secondary")
 
                         corrected_species_input = gr.Dropdown(
-                            label="Especie corrigida",
-                            choices=["Ruido", "Indeterminado"],
+                            label="Corrected species",
+                            choices=["Noise", "Undetermined"],
                             allow_custom_value=True,
                             filterable=True,
                             value=None,
                         )
+
+                        status = gr.Textbox(label="Status", interactive=False)
 
                         table = gr.Dataframe(
                             headers=[
@@ -3356,24 +3399,22 @@ def create_app() -> gr.Blocks:
                             interactive=False,
                         )
                         selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
-                        status = gr.Textbox(label="Status", interactive=False)
 
                     with gr.Column(scale=4):
                         dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
                         species_filter = gr.Dropdown(
-                            label="Especie para validar",
+                            label="Species to validate",
                             choices=[],
                             value=None,
                             interactive=False,
                         )
 
-                        gr.Markdown("#### Navegacao")
+                        gr.Markdown("#### Navigation")
                         with gr.Row():
-                            prev_btn = gr.Button("Prev")
-                            next_btn = gr.Button("Next")
-                            refresh_btn = gr.Button("Apply")
+                            prev_btn = gr.Button("←")
+                            next_btn = gr.Button("→")
 
-                        gr.Markdown("#### Filtros")
+                        gr.Markdown("#### Filters")
                         min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
                         validator_filter = gr.Textbox(label="Validator filter", placeholder="Ex: validator-demo")
                         validation_status_filter = gr.Dropdown(
@@ -3383,31 +3424,26 @@ def create_app() -> gr.Blocks:
                         )
                         updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
                         show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
+                        refresh_btn = gr.Button("Apply Filters")
 
-                        gr.Markdown("#### Acoes")
+                        gr.Markdown("#### Actions")
                         validator_name = gr.Textbox(label="Validator", value="validator-demo")
-                        validation_notes = gr.Textbox(label="Notes", placeholder="Opcional", lines=4)
-                        load_audio_btn = gr.Button("Load selected audio")
-                        clear_audio_btn = gr.Button("Clear cached audio")
-                        reapply_btn = gr.Button("Reapply validation after conflict")
-                        batch_approve_conflicts_btn = gr.Button("Approve all conflicts")
-                        batch_reject_conflicts_btn = gr.Button("Reject all conflicts")
+                        validation_notes = gr.Textbox(label="Notes", placeholder="Optional", lines=4)
                         report_btn = gr.Button("Generate validation report")
 
                         keyboard_shortcuts_info = gr.HTML(
                             value="<div style='font-size:12px;color:#333;padding:8px 10px;background:#f5f5f5;border-radius:6px;margin-bottom:8px;'>"
-                            "<strong>Shortcuts:</strong> ArrowUp=Positive | ArrowDown=Negative | 1=Positive | 2=Negative | 3=Uncertain | 4=Skip | R=Reapply"
+                            "<strong>Shortcuts:</strong> ArrowUp=Positive | ArrowDown=Negative | 1=Positive | 2=Negative | 3=Uncertain | 4=Skip"
                             "</div>"
                             "<script>"
                             "document.addEventListener('keydown', function(event) {"
                             "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
                             "  const key = event.key;"
                             "  let buttonText = null;"
-                            "  if (key === 'ArrowUp' || key === '1') buttonText = 'Up - Positive';"
-                            "  else if (key === 'ArrowDown' || key === '2') buttonText = 'Down - Negative';"
+                            "  if (key === 'ArrowUp' || key === '1') buttonText = 'Positive';"
+                            "  else if (key === 'ArrowDown' || key === '2') buttonText = 'Negative';"
                             "  else if (key === '3') buttonText = 'Uncertain';"
                             "  else if (key === '4') buttonText = 'Skip';"
-                            "  else if (key.toLowerCase() === 'r') buttonText = 'Reapply validation after conflict';"
                             "  if (!buttonText) return;"
                             "  event.preventDefault();"
                             "  const buttons = document.querySelectorAll('button');"
@@ -3450,7 +3486,7 @@ def create_app() -> gr.Blocks:
                         return [], "", 1
                     species_name = (species or "").strip()
                     if not species_name:
-                        return [], "Selecione uma especie para iniciar a validacao", 1
+                        return [], "Select a species to start validation", 1
 
                     rows, status_text, updated_page = _page_to_table(
                         service=service_ref["queue"],
@@ -3512,18 +3548,18 @@ def create_app() -> gr.Blocks:
 
                 def refresh_for_selected_project(project_slug: str):
                     if not project_slug:
-                        return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None), _build_validation_summary_cards([]), gr.update(choices=["Ruido", "Indeterminado"], value=None), []
+                        return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
 
                     species_options = _extract_species_options_from_queue(
                         queue_service=service_ref["queue"],
                         project_slug=project_slug,
                         page_size=max(32, runtime_config.page_size),
                     )
-                    corrected_choices = species_options + ["Ruido", "Indeterminado"]
+                    corrected_choices = species_options + ["Noise", "Undetermined"]
                     return (
                         gr.update(choices=species_options, value=None, interactive=True),
                         [],
-                        "Selecione uma especie para iniciar a validacao",
+                        "Select a species to start validation",
                         1,
                         None,
                         None,
@@ -3661,7 +3697,7 @@ def create_app() -> gr.Blocks:
                     detected_species: list[str],
                     custom_by_project: dict[str, list[str]],
                 ):
-                    base_choices = list(dict.fromkeys([*detected_species, "Ruido", "Indeterminado"]))
+                    base_choices = list(dict.fromkeys([*detected_species, "Noise", "Undetermined"]))
                     value = (corrected_value or "").strip()
 
                     if not project_slug:
@@ -3684,7 +3720,7 @@ def create_app() -> gr.Blocks:
                 ):
                     normalized_rows = _normalize_rows(rows)
                     if not project_slug or not normalized_rows:
-                        return "Nenhuma deteccao selecionada para favoritar", favorite_map
+                        return "No detection selected to favorite", favorite_map, gr.update(value="☆ Favorite", variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
                     detection_key = str(normalized_rows[safe_idx][0]).strip()
@@ -3692,12 +3728,31 @@ def create_app() -> gr.Blocks:
                     project_favs = set(updated_map.get(project_slug, []))
                     if detection_key in project_favs:
                         project_favs.remove(detection_key)
-                        action = "removida dos favoritos"
+                        action = "removed from favorites"
+                        button_update = gr.update(value="☆ Favorite", variant="secondary")
                     else:
                         project_favs.add(detection_key)
-                        action = "adicionada aos favoritos"
+                        action = "added to favorites"
+                        button_update = gr.update(value="★ Favorited", variant="primary")
                     updated_map[project_slug] = sorted(project_favs)
-                    return f"Deteccao {detection_key} {action}", updated_map
+                    return f"Detection {detection_key} {action}", updated_map, button_update
+
+                def update_favorite_button_state(
+                    project_slug: str,
+                    rows: object,
+                    idx: int,
+                    favorite_map: dict[str, list[str]],
+                ):
+                    normalized_rows = _normalize_rows(rows)
+                    if not project_slug or not normalized_rows:
+                        return gr.update(value="☆ Favorite", variant="secondary")
+
+                    safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
+                    detection_key = str(normalized_rows[safe_idx][0]).strip()
+                    favs = set((favorite_map or {}).get(project_slug, []))
+                    if detection_key in favs:
+                        return gr.update(value="★ Favorited", variant="primary")
+                    return gr.update(value="☆ Favorite", variant="secondary")
 
                 def on_table_select(project_slug: str, repo: str, rows: object, cache_key: str, session, evt: gr.SelectData):
                     return _select_and_fetch_audio_with_title(
@@ -3800,35 +3855,35 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 )
 
-                table.select(
+                table_select_event = table.select(
                     fn=on_table_select,
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
-
-                load_audio_btn.click(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _fetch_selected_audio_with_title(
-                        audio_service=audio_service,
-                        dataset_repo=repo,
-                        rows=rows,
-                        selected_index=int(idx),
-                        previous_cache_key=cache_key,
-                        allow_demo_fallback=False,
-                        hf_token=_project_fetch_token(project_slug, session),
-                    ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
-                    outputs=[audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
-                )
-                clear_audio_btn.click(
-                    fn=lambda cache_key: (*_cleanup_selected_audio(audio_service=audio_service, cache_key=cache_key), None),
-                    inputs=[cache_key_state],
-                    outputs=[status, audio_player, spectrogram_image],
+                table_select_event.then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
                 ).then(
-                    fn=lambda: _spectrogram_title(None),
-                    inputs=None,
-                    outputs=[spectrogram_title],
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
+                )
+
+                auto_play_audio.change(
+                    fn=lambda enabled: gr.update(autoplay=bool(enabled)),
+                    inputs=[auto_play_audio],
+                    outputs=[audio_player],
                 )
 
                 refresh_event.then(
@@ -3846,6 +3901,14 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 )
                 next_event.then(
                     fn=lambda rows: _build_validation_summary_cards(rows),
@@ -3862,6 +3925,14 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 )
                 prev_event.then(
                     fn=lambda rows: _build_validation_summary_cards(rows),
@@ -3878,12 +3949,20 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 )
 
                 favorite_btn.click(
                     fn=toggle_favorite_detection,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
-                    outputs=[status, favorite_detection_state],
+                    outputs=[status, favorite_detection_state, favorite_btn],
                 )
 
                 corrected_species_input.change(
@@ -4036,104 +4115,6 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
-                reapply_event = reapply_btn.click(
-                    fn=lambda project_slug, rows, idx, pending_status, conflict_key, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: reapply_for_project(
-                        project_slug,
-                        rows,
-                        idx,
-                        pending_status,
-                        conflict_key,
-                        name,
-                        notes,
-                        cache_key,
-                        page,
-                        species,
-                        confidence,
-                        validator_filter_value,
-                        status_filter_value,
-                        updated_after_value,
-                        only_conflicts,
-                    ),
-                    inputs=[
-                        selected_project_state,
-                        table,
-                        selected_index,
-                        pending_status_state,
-                        conflict_detection_key_state,
-                        validator_name,
-                        validation_notes,
-                        cache_key_state,
-                        page_state,
-                        species_filter,
-                        min_confidence,
-                        validator_filter,
-                        validation_status_filter,
-                        updated_after_filter,
-                        show_conflicts_only,
-                    ],
-                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
-                )
-
-                batch_approve_event = batch_approve_conflicts_btn.click(
-                    fn=lambda project_slug, rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: batch_for_project(
-                        project_slug,
-                        rows,
-                        "positive",
-                        name,
-                        notes,
-                        cache_key,
-                        page,
-                        species,
-                        confidence,
-                        validator_filter_value,
-                        status_filter_value,
-                        updated_after_value,
-                    ),
-                    inputs=[
-                        selected_project_state,
-                        table,
-                        validator_name,
-                        validation_notes,
-                        cache_key_state,
-                        page_state,
-                        species_filter,
-                        min_confidence,
-                        validator_filter,
-                        validation_status_filter,
-                        updated_after_filter,
-                    ],
-                    outputs=[status, cache_key_state, audio_player, table, page_state],
-                )
-                batch_reject_event = batch_reject_conflicts_btn.click(
-                    fn=lambda project_slug, rows, name, notes, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value: batch_for_project(
-                        project_slug,
-                        rows,
-                        "negative",
-                        name,
-                        notes,
-                        cache_key,
-                        page,
-                        species,
-                        confidence,
-                        validator_filter_value,
-                        status_filter_value,
-                        updated_after_value,
-                    ),
-                    inputs=[
-                        selected_project_state,
-                        table,
-                        validator_name,
-                        validation_notes,
-                        cache_key_state,
-                        page_state,
-                        species_filter,
-                        min_confidence,
-                        validator_filter,
-                        validation_status_filter,
-                        updated_after_filter,
-                    ],
-                    outputs=[status, cache_key_state, audio_player, table, page_state],
-                )
 
                 approve_event.then(
                     fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
@@ -4147,6 +4128,14 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
 
                 reject_event.then(
@@ -4161,6 +4150,14 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
 
                 uncertain_event.then(
@@ -4175,6 +4172,14 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
 
                 skip_event.then(
@@ -4189,6 +4194,14 @@ def create_app() -> gr.Blocks:
                     ),
                     inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
+                ).then(
+                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[table],
+                ).then(
+                    fn=update_favorite_button_state,
+                    inputs=[selected_project_state, table, selected_index, favorite_detection_state],
+                    outputs=[favorite_btn],
                 ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
 
                 session_state.change(
@@ -4197,9 +4210,6 @@ def create_app() -> gr.Blocks:
                     outputs=[validator_name],
                 )
 
-                reapply_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
-                batch_approve_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
-                batch_reject_event.then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
                 report_btn.click(
                     fn=build_report_for_project,
                     inputs=[selected_project_state],
