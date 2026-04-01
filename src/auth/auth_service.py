@@ -229,7 +229,7 @@ class AuthService:
             return None, f"❌ User '{username}' is not invited to any project yet"
 
         if is_first_user:
-            return session, f"✅ Welcome, {username}! (Admin bootstrap)"
+            return session, f"✅ Welcome, {username}! (Admin)"
         if session.role == Role.admin:
             return session, f"✅ Welcome, {username}! (Admin)"
         return session, f"✅ Welcome, {username}! (Validator)"
