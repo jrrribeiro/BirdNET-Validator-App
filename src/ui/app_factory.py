@@ -9,6 +9,7 @@ import wave
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 import numpy as np
 from huggingface_hub import HfApi, hf_hub_download
@@ -742,9 +743,15 @@ def _load_projects_from_file(projects_file_path: str | None) -> list[Project]:
         if not isinstance(row, dict):
             continue
         try:
+            slug = str(row.get("project_slug", "")).strip()
+            project_id = str(row.get("project_id", "")).strip()
+            if not project_id and slug:
+                # Deterministic legacy migration so IDs are stable before first re-persist.
+                project_id = str(uuid5(NAMESPACE_URL, f"birdnet-validator:{slug}"))
             projects.append(
                 Project(
-                    project_slug=str(row.get("project_slug", "")).strip(),
+                    project_id=project_id or str(uuid4()),
+                    project_slug=slug,
                     name=str(row.get("name", "")).strip(),
                     dataset_repo_id=str(row.get("dataset_repo_id", "")).strip(),
                     visibility=str(row.get("visibility", "collaborative")).strip() or "collaborative",
@@ -829,6 +836,7 @@ def _persist_bootstrap_state(
     project_rows = admin_manager.list_projects()
     projects_payload = [
         {
+            "project_id": str(project.get("project_id", "")).strip(),
             "project_slug": str(project.get("project_slug", "")).strip(),
             "name": str(project.get("name", "")).strip(),
             "dataset_repo_id": str(project.get("dataset_repo_id", "")).strip(),
@@ -2677,6 +2685,7 @@ def create_app() -> gr.Blocks:
 
                         created = admin_manager.register_project(
                             Project(
+                                project_id=str(uuid4()),
                                 project_slug=slug,
                                 name=name,
                                 dataset_repo_id=repo_id,

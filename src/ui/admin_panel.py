@@ -54,6 +54,7 @@ class AdminPanelManager:
         """
         return [
             {
+                "project_id": p.project_id,
                 "project_slug": p.project_slug,
                 "name": p.name,
                 "dataset_repo_id": p.dataset_repo_id,

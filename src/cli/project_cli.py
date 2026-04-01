@@ -5,6 +5,7 @@ import json
 import re
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 
 DEFAULT_DATASET_DIRS = [
@@ -119,6 +120,7 @@ def cmd_create_project(args: argparse.Namespace) -> int:
         return EXIT_VALIDATION_ERROR
 
     project_entry: dict[str, Any] = {
+        "project_id": str(uuid4()),
         "project_slug": args.slug,
         "name": args.name,
         "dataset_repo_id": args.dataset_repo_id,
