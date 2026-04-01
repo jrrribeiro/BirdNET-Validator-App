@@ -3139,6 +3139,7 @@ def create_app() -> gr.Blocks:
                     choices=[],
                     label="Authorized Project",
                     interactive=False,
+                    allow_custom_value=True,
                 )
                 invitations_info = gr.Markdown(value="")
                 invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
@@ -3635,7 +3636,7 @@ def create_app() -> gr.Blocks:
                         1,
                         None,
                         None,
-                        _spectrogram_title(None),
+                        _spectrogram_title(None, None),
                         _build_validation_summary_cards([]),
                         gr.update(choices=corrected_choices, value=None),
                         species_options,
@@ -4290,6 +4291,7 @@ def create_app() -> gr.Blocks:
                     value=None,
                     label="Project",
                     interactive=False,
+                    allow_custom_value=True,
                 )
                 report_kpis = gr.HTML(value="")
                 report_species_table = gr.Dataframe(
