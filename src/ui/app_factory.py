@@ -2552,9 +2552,7 @@ def create_app() -> gr.Blocks:
         with gr.Tabs():
             # ===== TAB 1: Login =====
             with gr.Tab("🔐 Login", id="login_tab"):
-                login_block, username_input, session_output, login_button, error_message = (
-                    create_login_page(auth_service)
-                )
+                username_input, session_output, login_button, error_message = create_login_page(auth_service)
 
                 # Store session ID when login succeeds
                 def handle_login_success(session_id: str):
