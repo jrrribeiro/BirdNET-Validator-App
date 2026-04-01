@@ -798,12 +798,21 @@ def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp
     runtime_config = RuntimeConfig(
         detection_seed_path=None,
         validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
         page_size=25,
         projects_file_path=str(projects_file),
         user_access_file_path=str(users_file),
         invites_file_path=None,
         invite_ttl_hours=72,
         enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        smtp_host=None,
+        smtp_port=587,
+        smtp_username=None,
+        smtp_password=None,
+        smtp_use_tls=True,
     )
     auth_service = AuthService()
     admin_manager = AdminPanelManager(auth_service)
@@ -821,12 +830,21 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
     runtime_config = RuntimeConfig(
         detection_seed_path=None,
         validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
         page_size=25,
         projects_file_path=None,
         user_access_file_path=None,
         invites_file_path=None,
         invite_ttl_hours=72,
         enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        smtp_host=None,
+        smtp_port=587,
+        smtp_username=None,
+        smtp_password=None,
+        smtp_use_tls=True,
     )
     auth_service = AuthService()
     admin_manager = AdminPanelManager(auth_service)
@@ -859,12 +877,21 @@ def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_p
     runtime_config = RuntimeConfig(
         detection_seed_path=None,
         validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
         page_size=25,
         projects_file_path=str(projects_file),
         user_access_file_path=str(users_file),
         invites_file_path=None,
         invite_ttl_hours=72,
         enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        smtp_host=None,
+        smtp_port=587,
+        smtp_username=None,
+        smtp_password=None,
+        smtp_use_tls=True,
     )
     auth_service = AuthService()
     admin_manager = AdminPanelManager(auth_service)

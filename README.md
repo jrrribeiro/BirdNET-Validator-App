@@ -59,7 +59,21 @@ Optional runtime configuration:
 - `BIRDNET_PAGE_SIZE`: queue page size (default: `25`).
 - `BIRDNET_PROJECTS_FILE`: JSON file with project catalog used at app startup.
 - `BIRDNET_USER_ACCESS_FILE`: JSON file mapping users to project roles (`admin`/`validator`).
+- `BIRDNET_INVITES_FILE`: JSON file storing pending invites.
+- `BIRDNET_INVITE_TTL_HOURS`: invite expiration in hours (default: `72`).
+- `BIRDNET_BOOTSTRAP_DIR`: base directory for bootstrap state files (`projects.json`, `user_access.json`, `invites.json`).
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP`: set to `true` only for local/demo mode to load built-in sample users/projects.
+
+Invite email settings (SMTP):
+
+- `BIRDNET_INVITE_EMAIL_ENABLED`: set to `true` to send invite emails.
+- `BIRDNET_INVITE_EMAIL_SENDER`: sender email used for project invitations.
+- `BIRDNET_INVITE_EMAIL_LOGIN_URL`: login URL included in invitation instructions.
+- `BIRDNET_SMTP_HOST`: SMTP server host.
+- `BIRDNET_SMTP_PORT`: SMTP server port (default: `587`).
+- `BIRDNET_SMTP_USERNAME`: SMTP username (optional).
+- `BIRDNET_SMTP_PASSWORD`: SMTP password or app token.
+- `BIRDNET_SMTP_USE_TLS`: set to `false` only when TLS is not available.
 
 JSON seed format examples:
 
@@ -210,9 +224,22 @@ Required for production bootstrap:
 
 Optional runtime settings:
 - `BIRDNET_DETECTIONS_FILE` (seed detections JSON)
-- `BIRDNET_VALIDATIONS_DIR` (default uses temp directory)
+- `BIRDNET_VALIDATIONS_DIR` (recommended: `/data/validations`)
+- `BIRDNET_BOOTSTRAP_DIR` (recommended: `/data/bootstrap`)
+- `BIRDNET_INVITES_FILE` (recommended: `/data/bootstrap/invites.json`)
+- `BIRDNET_INVITE_TTL_HOURS` (default `72`)
 - `BIRDNET_PAGE_SIZE` (default `25`)
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
+
+Optional invite email settings:
+- `BIRDNET_INVITE_EMAIL_ENABLED=true`
+- `BIRDNET_INVITE_EMAIL_SENDER`
+- `BIRDNET_INVITE_EMAIL_LOGIN_URL`
+- `BIRDNET_SMTP_HOST`
+- `BIRDNET_SMTP_PORT`
+- `BIRDNET_SMTP_USERNAME`
+- `BIRDNET_SMTP_PASSWORD`
+- `BIRDNET_SMTP_USE_TLS`
 
 4. For first smoke test only, you may temporarily set:
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP=true`
@@ -229,6 +256,8 @@ Then log in with one of the demo users:
 Notes:
 - The app entrypoint reads `PORT` automatically in Spaces.
 - Keep user/project bootstrap files private if they contain sensitive assignments.
+- Use `/data` paths in Spaces to keep projects, invites, ACL, and validations across redeploys.
+- Collaborative access is token-per-user: each collaborator logs in with their own Hugging Face token.
 
 ## Troubleshooting
 

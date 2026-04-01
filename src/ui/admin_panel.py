@@ -6,12 +6,18 @@ import gradio as gr
 
 from src.auth.auth_service import AuthService, Session
 from src.domain.models import Project, Role
+from src.services.invite_email_notifier import InviteEmailNotifier, InviteEmailPayload, NoopInviteEmailNotifier
 
 
 class AdminPanelManager:
     """Management backend for the admin panel."""
 
-    def __init__(self, auth_service: AuthService):
+    def __init__(
+        self,
+        auth_service: AuthService,
+        invite_notifier: InviteEmailNotifier | None = None,
+        invite_login_url: str = "",
+    ):
         """Initialize admin panel manager.
 
         Args:
@@ -19,6 +25,11 @@ class AdminPanelManager:
         """
         self.auth_service = auth_service
         self._projects: dict[str, Project] = {}  # project_slug -> Project
+        self.invite_notifier = invite_notifier or NoopInviteEmailNotifier()
+        self.invite_login_url = (invite_login_url or "").strip()
+
+    def _can_admin_project(self, actor_username: str, project_slug: str) -> bool:
+        return self.auth_service.get_user_role_for_project(actor_username, project_slug) == Role.admin
 
     def register_project(self, project: Project) -> bool:
         """Register a new project (idempotent).
@@ -48,6 +59,7 @@ class AdminPanelManager:
                 "dataset_repo_id": p.dataset_repo_id,
                 "visibility": p.visibility,
                 "owner_username": p.owner_username,
+                "dataset_token": p.dataset_token,
                 "dataset_token_set": bool((p.dataset_token or "").strip()),
                 "active": p.active,
             }
@@ -83,7 +95,7 @@ class AdminPanelManager:
         return result
 
     def assign_user_to_project(
-        self, username: str, project_slug: str, role: str
+        self, actor_username: str, username: str, project_slug: str, role: str
     ) -> Tuple[bool, str]:
         """Assign a user to a project with a role.
 
@@ -98,12 +110,19 @@ class AdminPanelManager:
         if project_slug not in self._projects:
             return False, f"Project '{project_slug}' not found"
 
+        if not self._can_admin_project(actor_username, project_slug):
+            return False, "Access denied: admin role required for this project"
+
         if role not in ["admin", "validator"]:
             return False, f"Invalid role: {role}"
 
         project = self._projects[project_slug]
-        if project.visibility == "private" and project.owner_username and username != project.owner_username:
-            return False, "Private projects only allow the owner"
+        owner = (project.owner_username or "").strip()
+        if project.visibility == "private":
+            if not owner:
+                return False, "Private project is misconfigured: owner is required"
+            if username != owner:
+                return False, "Private projects only allow the owner"
 
         self.auth_service.upsert_user_project_role(username, project_slug, Role(role))
 
@@ -111,13 +130,18 @@ class AdminPanelManager:
 
     def invite_user_to_project(
         self,
+        actor_username: str,
         invited_by: str,
         username: str,
+        invitee_email: str,
         project_slug: str,
         role: str,
     ) -> Tuple[bool, str]:
         if project_slug not in self._projects:
             return False, f"Project '{project_slug}' not found"
+
+        if not self._can_admin_project(actor_username, project_slug):
+            return False, "Access denied: admin role required for this project"
 
         if role not in ["admin", "validator"]:
             return False, f"Invalid role: {role}"
@@ -126,12 +150,37 @@ class AdminPanelManager:
         if project.visibility == "private":
             return False, "Private projects do not accept collaborators"
 
-        return self.auth_service.create_project_invite(
+        resolved_email = (invitee_email or "").strip() or (self.auth_service.get_known_email_for_user(username) or "").strip()
+        if not resolved_email:
+            return False, "Invitee email is required (username-only lookup not available yet)."
+
+        ok, message = self.auth_service.create_project_invite(
             username=username,
             project_slug=project_slug,
             role=Role(role),
             invited_by=invited_by,
         )
+        if not ok:
+            return ok, message
+
+        invite = next((item for item in self.auth_service.list_pending_invites(username) if item.project_slug == project_slug), None)
+        if invite is None:
+            return True, message
+
+        email_ok, email_status = self.invite_notifier.send(
+            InviteEmailPayload(
+                invitee_username=username,
+                invitee_email=resolved_email,
+                project_slug=project_slug,
+                role=role,
+                invited_by=invited_by,
+                expires_at=invite.expires_at,
+                login_url=self.invite_login_url,
+            )
+        )
+        if email_ok:
+            return True, f"{message} | {email_status}"
+        return True, f"{message} | ⚠️ {email_status}"
 
     def list_pending_invites(self, project_slug: str | None = None) -> List[dict]:
         invites = self.auth_service.list_all_pending_invites()
@@ -153,13 +202,24 @@ class AdminPanelManager:
     def revoke_invite(self, username: str, project_slug: str) -> Tuple[bool, str]:
         return self.auth_service.revoke_project_invite(username=username, project_slug=project_slug)
 
-    def delete_project(self, project_slug: str) -> Tuple[bool, str]:
+    def delete_project(self, actor_username: str, project_slug: str) -> Tuple[bool, str]:
         """Delete a project and remove all linked assignments/invites."""
         slug = (project_slug or "").strip()
         if not slug:
             return False, "Project slug is required"
         if slug not in self._projects:
             return False, f"Project '{slug}' not found"
+
+        if not self._can_admin_project(actor_username, slug):
+            return False, "Access denied: admin role required for this project"
+
+        project = self._projects[slug]
+        if project.visibility == "private":
+            owner = (project.owner_username or "").strip()
+            if not owner:
+                return False, "Private project is misconfigured: owner is required"
+            if actor_username != owner:
+                return False, "Only the private project owner can delete this project"
 
         del self._projects[slug]
         removed_assignments = self.auth_service.remove_project_from_all_users(slug)
@@ -169,7 +229,7 @@ class AdminPanelManager:
             f"✅ Project '{slug}' deleted (removed assignments: {removed_assignments}, revoked invites: {revoked_invites})",
         )
 
-    def remove_user_from_project(self, username: str, project_slug: str) -> Tuple[bool, str]:
+    def remove_user_from_project(self, actor_username: str, username: str, project_slug: str) -> Tuple[bool, str]:
         """Remove a user's access to a project.
 
         Args:
@@ -181,6 +241,19 @@ class AdminPanelManager:
         """
         if username not in self.auth_service.list_usernames(include_inactive=True):
             return False, f"User '{username}' not found"
+
+        if not self._can_admin_project(actor_username, project_slug):
+            return False, "Access denied: admin role required for this project"
+
+        project = self._projects.get(project_slug)
+        if project is None:
+            return False, f"Project '{project_slug}' not found"
+        if project.visibility == "private":
+            owner = (project.owner_username or "").strip()
+            if not owner:
+                return False, "Private project is misconfigured: owner is required"
+            if username != owner:
+                return False, "Private projects only allow the owner"
 
         role = self.auth_service.get_user_role_for_project(username, project_slug)
         if role is None:
@@ -295,11 +368,20 @@ def create_admin_panel(admin_manager: AdminPanelManager, current_session: Sessio
                 remove_button = gr.Button("Remove User", variant="stop")
 
                 def assign_user(username: str, project_slug: str, role: str) -> str:
-                    success, msg = admin_manager.assign_user_to_project(username, project_slug, role)
+                    success, msg = admin_manager.assign_user_to_project(
+                        current_session.username,
+                        username,
+                        project_slug,
+                        role,
+                    )
                     return msg
 
                 def remove_user(username: str, project_slug: str) -> str:
-                    success, msg = admin_manager.remove_user_from_project(username, project_slug)
+                    success, msg = admin_manager.remove_user_from_project(
+                        current_session.username,
+                        username,
+                        project_slug,
+                    )
                     return msg
 
                 assign_button.click(

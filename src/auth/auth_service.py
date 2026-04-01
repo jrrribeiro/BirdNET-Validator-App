@@ -30,7 +30,6 @@ class Session:
     created_at: datetime
     last_activity: datetime
     expires_at: datetime
-    hf_token: str | None = None
 
     def is_expired(self) -> bool:
         """Check if session has expired."""
@@ -55,6 +54,12 @@ class ProjectInvite:
         return datetime.now(UTC) > self.expires_at
 
 
+@dataclass
+class UserProfile:
+    username: str
+    hf_email: str | None = None
+
+
 class AuthService:
     """Manages user authentication, sessions, and project access control."""
 
@@ -69,6 +74,26 @@ class AuthService:
         self._sessions: Dict[str, Session] = {}  # session_id -> Session
         self._user_access: Dict[str, UserProjectAccess] = {}  # username -> UserProjectAccess
         self._pending_invites: Dict[str, Dict[str, ProjectInvite]] = {}
+        self._hf_tokens_by_username: Dict[str, str] = {}
+        self._user_profiles: Dict[str, UserProfile] = {}
+
+    def _refresh_or_revoke_sessions_for_username(self, username: str) -> None:
+        access = self._user_access.get(username)
+        session_ids = [sid for sid, session in self._sessions.items() if session.username == username]
+        if access is None or not access.is_active:
+            for session_id in session_ids:
+                self._sessions.pop(session_id, None)
+            return
+
+        projects = list(access.project_slugs.keys())
+        role = Role.admin if any(project_role == Role.admin for project_role in access.project_slugs.values()) else Role.validator
+        for session_id in session_ids:
+            session = self._sessions.get(session_id)
+            if session is None:
+                continue
+            session.authorized_projects = projects
+            session.role = role
+            session.update_activity(self.session_ttl_minutes)
 
     def _prune_expired_invites(self) -> None:
         expired_users: list[str] = []
@@ -126,6 +151,7 @@ class AuthService:
             self._user_access[username] = access
 
         access.project_slugs[project_slug] = role
+        self._refresh_or_revoke_sessions_for_username(username)
 
     def remove_user_project_role(self, username: str, project_slug: str) -> bool:
         """Remove a user assignment from a project.
@@ -145,6 +171,12 @@ class AuthService:
             return False
 
         del access.project_slugs[project_slug]
+        pending = self._pending_invites.get(username, {})
+        if project_slug in pending:
+            del pending[project_slug]
+            if not pending:
+                self._pending_invites.pop(username, None)
+        self._refresh_or_revoke_sessions_for_username(username)
         return True
 
     def login(self, username: str) -> Optional[Session]:
@@ -161,7 +193,6 @@ class AuthService:
     def login_internal(
         self,
         username: str,
-        hf_token: str | None = None,
         auto_promote_to_admin: bool = False,
     ) -> Optional[Session]:
         if username not in self._user_access:
@@ -198,7 +229,6 @@ class AuthService:
             created_at=now,
             last_activity=now,
             expires_at=now + timedelta(minutes=self.session_ttl_minutes),
-            hf_token=hf_token,
         )
 
         self._sessions[session_id] = session
@@ -219,10 +249,13 @@ class AuthService:
         if not username:
             return None, "❌ Unable to resolve Hugging Face username from token"
 
+        email_value = str(whoami.get("email") or "").strip() or None
+        self._hf_tokens_by_username[username] = token_value
+        self._user_profiles[username] = UserProfile(username=username, hf_email=email_value)
+
         is_first_user = len(self._user_access) == 0
         session = self.login_internal(
             username=username,
-            hf_token=token_value,
             auto_promote_to_admin=is_first_user,
         )
         if session is None:
@@ -347,6 +380,20 @@ class AuthService:
         """
         if username in self._user_access:
             self._user_access[username].is_active = active
+            if not active:
+                self._hf_tokens_by_username.pop(username, None)
+            self._refresh_or_revoke_sessions_for_username(username)
+
+    def get_hf_token_for_user(self, username: str) -> str | None:
+        token = (self._hf_tokens_by_username.get(username) or "").strip()
+        return token or None
+
+    def get_known_email_for_user(self, username: str) -> str | None:
+        profile = self._user_profiles.get(username)
+        if profile is None:
+            return None
+        email = (profile.hf_email or "").strip()
+        return email or None
 
     def create_project_invite(
         self,

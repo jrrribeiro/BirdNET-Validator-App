@@ -2,6 +2,7 @@ import gradio as gr
 import csv
 import hashlib
 import json
+import os
 import re
 import tempfile
 import wave
@@ -21,6 +22,7 @@ from src.repositories.in_memory_detection_repository import InMemoryDetectionRep
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
 from src.services.validation_service import ValidationService
+from src.services.invite_email_notifier import NoopInviteEmailNotifier, SmtpInviteEmailNotifier
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
@@ -803,11 +805,18 @@ def _load_pending_invites_from_file(invites_file_path: str | None) -> dict[str, 
 
 
 def _resolve_bootstrap_file_paths(runtime_config: RuntimeConfig) -> tuple[Path, Path, Path]:
-    bootstrap_dir = Path(runtime_config.validation_base_dir) / "bootstrap"
+    bootstrap_dir = Path(runtime_config.bootstrap_base_dir)
     projects_path = Path(runtime_config.projects_file_path) if runtime_config.projects_file_path else (bootstrap_dir / "projects.json")
     user_access_path = Path(runtime_config.user_access_file_path) if runtime_config.user_access_file_path else (bootstrap_dir / "user_access.json")
     invites_path = Path(runtime_config.invites_file_path) if runtime_config.invites_file_path else (bootstrap_dir / "invites.json")
     return projects_path, user_access_path, invites_path
+
+
+def _atomic_write_json(path: Path, payload: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_path = path.parent / f".{path.name}.tmp.{os.getpid()}"
+    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    os.replace(tmp_path, path)
 
 
 def _persist_bootstrap_state(
@@ -817,10 +826,6 @@ def _persist_bootstrap_state(
     admin_manager: AdminPanelManager,
     auth_service: AuthService,
 ) -> None:
-    projects_path.parent.mkdir(parents=True, exist_ok=True)
-    user_access_path.parent.mkdir(parents=True, exist_ok=True)
-    invites_path.parent.mkdir(parents=True, exist_ok=True)
-
     project_rows = admin_manager.list_projects()
     projects_payload = [
         {
@@ -834,13 +839,13 @@ def _persist_bootstrap_state(
         }
         for project in project_rows
     ]
-    projects_path.write_text(json.dumps(projects_payload, indent=2), encoding="utf-8")
+    _atomic_write_json(projects_path, projects_payload)
 
     access_payload = auth_service.export_user_access_map(include_inactive=True)
-    user_access_path.write_text(json.dumps(access_payload, indent=2), encoding="utf-8")
+    _atomic_write_json(user_access_path, access_payload)
 
     invites_payload = auth_service.export_pending_invites_map()
-    invites_path.write_text(json.dumps(invites_payload, indent=2), encoding="utf-8")
+    _atomic_write_json(invites_path, invites_payload)
 
 
 def _bootstrap_auth_and_projects(
@@ -861,7 +866,25 @@ def _bootstrap_auth_and_projects(
     for username, access in user_access.items():
         auth_service.register_user_project_access(username, access)
 
+    # Enforce private-project owner-only ACL even if bootstrap files are malformed.
+    for username in auth_service.list_usernames(include_inactive=True):
+        for project_slug in list(auth_service.list_user_projects(username)):
+            project = admin_manager.get_project(project_slug)
+            if project is None:
+                continue
+            if project.visibility != "private":
+                continue
+            owner = (project.owner_username or "").strip()
+            if not owner or username != owner:
+                auth_service.remove_user_project_role(username, project_slug)
+
     auth_service.load_pending_invites_map(pending_invites)
+    for invite in auth_service.list_all_pending_invites():
+        project = admin_manager.get_project(invite.project_slug)
+        if project is None:
+            continue
+        if project.visibility == "private":
+            auth_service.revoke_project_invite(invite.username, invite.project_slug)
 
     emergency_admin_message = ""
     has_admin = any(
@@ -2444,8 +2467,27 @@ def create_app() -> gr.Blocks:
         invite_ttl_hours=runtime_config.invite_ttl_hours,
     )
 
+    invite_notifier = NoopInviteEmailNotifier()
+    if (
+        runtime_config.invite_email_enabled
+        and runtime_config.invite_email_sender
+        and runtime_config.smtp_host
+    ):
+        invite_notifier = SmtpInviteEmailNotifier(
+            sender_email=runtime_config.invite_email_sender,
+            smtp_host=runtime_config.smtp_host,
+            smtp_port=runtime_config.smtp_port,
+            smtp_username=runtime_config.smtp_username,
+            smtp_password=runtime_config.smtp_password,
+            smtp_use_tls=runtime_config.smtp_use_tls,
+        )
+
     # Initialize admin panel manager
-    admin_manager = AdminPanelManager(auth_service)
+    admin_manager = AdminPanelManager(
+        auth_service,
+        invite_notifier=invite_notifier,
+        invite_login_url=runtime_config.invite_email_login_url,
+    )
 
     projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
     bootstrap_warning = _bootstrap_auth_and_projects(
@@ -2806,6 +2848,10 @@ def create_app() -> gr.Blocks:
                         admin_username = gr.Textbox(
                             label="Username", placeholder="validator_001"
                         )
+                        admin_invite_email = gr.Textbox(
+                            label="Invite email",
+                            placeholder="validator@example.org",
+                        )
                         admin_project = gr.Dropdown(
                             choices=_project_slugs(),
                             label="Project",
@@ -2821,46 +2867,51 @@ def create_app() -> gr.Blocks:
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None:
-                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update()
+                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
                         if not _is_admin_for_project(session, project):
-                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update()
+                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
                         success, msg = admin_manager.assign_user_to_project(
-                            username, project, role
+                            session.username,
+                            username,
+                            project,
+                            role,
                         )
                         if success:
                             persisted, persist_error = _persist_admin_state()
                             final_message = msg if persisted else f"{msg} | ⚠️ Persistence failed: {persist_error}"
-                            return final_message, gr.update(value=""), gr.update(value=None), gr.update(value="validator")
-                        return msg, gr.update(), gr.update(), gr.update()
+                            return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
+                        return msg, gr.update(), gr.update(), gr.update(), gr.update()
 
                     assign_btn = gr.Button("✅ Assign", variant="primary")
                     assign_btn.click(
                         fn=assign_user,
                         inputs=[session_state, admin_username, admin_project, admin_role],
-                        outputs=[admin_message, admin_username, admin_project, admin_role],
+                        outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 
-                    def invite_user(session, username: str, project: str, role: str):
+                    def invite_user(session, username: str, invite_email: str, project: str, role: str):
                         if session is None:
-                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update()
+                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
                         if not _is_admin_for_project(session, project):
-                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update()
+                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
                         success, msg = admin_manager.invite_user_to_project(
+                            actor_username=session.username,
                             invited_by=session.username,
                             username=username,
+                            invitee_email=invite_email,
                             project_slug=project,
                             role=role,
                         )
                         if success:
                             persisted, persist_error = _persist_admin_state()
                             final_message = msg if persisted else f"{msg} | ⚠️ Persistence failed: {persist_error}"
-                            return final_message, gr.update(value=""), gr.update(value=None), gr.update(value="validator")
-                        return msg, gr.update(), gr.update(), gr.update()
+                            return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
+                        return msg, gr.update(), gr.update(), gr.update(), gr.update()
 
                     invite_btn.click(
                         fn=invite_user,
-                        inputs=[session_state, admin_username, admin_project, admin_role],
-                        outputs=[admin_message, admin_username, admin_project, admin_role],
+                        inputs=[session_state, admin_username, admin_invite_email, admin_project, admin_role],
+                        outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 
                     gr.Markdown("<div style='height:8px;'></div>")
@@ -2879,7 +2930,7 @@ def create_app() -> gr.Blocks:
                         if not _is_admin_for_project(session, project_slug):
                             return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
 
-                        success, msg = admin_manager.delete_project(project_slug)
+                        success, msg = admin_manager.delete_project(session.username, project_slug)
                         if not success:
                             return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
 
@@ -3477,15 +3528,21 @@ def create_app() -> gr.Blocks:
                 def _session_hf_token(session) -> str | None:
                     if session is None:
                         return None
-                    return getattr(session, "hf_token", None)
+                    return auth_service.get_hf_token_for_user(session.username)
 
                 def _project_fetch_token(project_slug: str, session) -> str | None:
+                    session_token = _session_hf_token(session)
+                    if session_token:
+                        return session_token
+
                     project = admin_manager.get_project(project_slug) if project_slug else None
-                    if project is not None:
+                    if project is not None and project.visibility == "private":
+                        if session is None or session.username != (project.owner_username or "").strip():
+                            return None
                         project_token = (project.dataset_token or "").strip()
                         if project_token:
                             return project_token
-                    return _session_hf_token(session)
+                    return None
 
                 def refresh(
                     project_slug: str,

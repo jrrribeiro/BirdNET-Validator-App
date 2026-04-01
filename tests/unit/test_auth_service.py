@@ -189,6 +189,31 @@ class TestAuthService:
         auth_service.set_user_active("inactive_user", False)
         assert not auth_service.is_user_authorized_for_project("inactive_user", "kenya-2024")
 
+    def test_set_user_inactive_revokes_existing_sessions(self, auth_service):
+        auth_service.register_user_project_access("active_user", {"project-1": Role.validator})
+        session = auth_service.login("active_user")
+        assert session is not None
+
+        auth_service.set_user_active("active_user", False)
+
+        assert auth_service.get_session(session.session_id) is None
+
+    def test_login_with_hf_token_stores_user_token_and_email(self, monkeypatch):
+        class FakeApi:
+            def whoami(self, token: str):
+                assert token == "hf_test_token"
+                return {"name": "hf_user", "email": "hf_user@example.org"}
+
+        monkeypatch.setattr("src.auth.auth_service.HfApi", lambda: FakeApi())
+
+        service = AuthService()
+        session, message = service.login_with_hf_token("hf_test_token")
+
+        assert session is not None
+        assert "Welcome" in message
+        assert service.get_hf_token_for_user("hf_user") == "hf_test_token"
+        assert service.get_known_email_for_user("hf_user") == "hf_user@example.org"
+
     def test_register_user_project_access_update(self, auth_service):
         """Test updating user's project access."""
         auth_service.register_user_project_access(
@@ -224,6 +249,34 @@ class TestAuthService:
 
         removed_again = auth_service.remove_user_project_role("temp_user", "project-1")
         assert removed_again is False
+
+    def test_remove_user_project_role_clears_matching_pending_invite(self, auth_service):
+        auth_service.register_user_project_access("temp_user", {"project-1": Role.validator})
+        ok, _ = auth_service.create_project_invite(
+            username="temp_user",
+            project_slug="project-1",
+            role=Role.validator,
+            invited_by="owner",
+        )
+        assert ok is True
+
+        removed = auth_service.remove_user_project_role("temp_user", "project-1")
+        assert removed is True
+        assert auth_service.list_pending_invites("temp_user") == []
+
+    def test_remove_user_project_role_refreshes_active_session(self, auth_service):
+        auth_service.register_user_project_access("temp_user", {"project-1": Role.validator, "project-2": Role.validator})
+        session = auth_service.login("temp_user")
+        assert session is not None
+        assert "project-1" in session.authorized_projects
+
+        removed = auth_service.remove_user_project_role("temp_user", "project-1")
+        assert removed is True
+
+        refreshed = auth_service.get_session(session.session_id)
+        assert refreshed is not None
+        assert "project-1" not in refreshed.authorized_projects
+        assert "project-2" in refreshed.authorized_projects
 
     def test_list_usernames_honors_active_filter(self, auth_service):
         auth_service.register_user_project_access("active_user", {"project-1": Role.validator})
