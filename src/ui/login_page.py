@@ -18,30 +18,36 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Blocks, gr.Textbox,
     """
 
     with gr.Blocks(title="BirdNET-Validator-App - Login") as login_block:
-        gr.Markdown("# BirdNET Validation Platform")
-        gr.Markdown("Login to access multi-project validation workflows")
+        with gr.Row():
+            with gr.Column(scale=1):
+                gr.Markdown("")
+            with gr.Column(scale=6):
+                gr.Markdown("# BirdNET Validation Platform")
+                gr.Markdown("Login to access multi-project validation workflows")
 
-        username_input = gr.Textbox(
-            label="Username",
-            placeholder="Enter your username",
-            lines=1,
-        )
-        hf_token_input = gr.Textbox(
-            label="Hugging Face Token (recommended)",
-            placeholder="hf_xxx...",
-            type="password",
-            lines=1,
-        )
+                username_input = gr.Textbox(
+                    label="Username",
+                    placeholder="Enter your username",
+                    lines=1,
+                )
+                hf_token_input = gr.Textbox(
+                    label="Hugging Face Token (recommended)",
+                    placeholder="hf_xxx...",
+                    type="password",
+                    lines=1,
+                )
 
-        error_message = gr.Markdown()
+                error_message = gr.Markdown()
 
-        login_button = gr.Button("Login", variant="primary", scale=1)
+                login_button = gr.Button("Login", variant="primary", scale=1)
 
-        session_output = gr.Textbox(
-            label="Session ID",
-            interactive=False,
-            visible=False,
-        )
+                session_output = gr.Textbox(
+                    label="Session ID",
+                    interactive=False,
+                    visible=False,
+                )
+            with gr.Column(scale=1):
+                gr.Markdown("")
 
         def perform_login(username: str, hf_token: str) -> Tuple[str, str]:
             """Attempt login and return session ID or error message.

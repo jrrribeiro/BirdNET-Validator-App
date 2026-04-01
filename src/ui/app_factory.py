@@ -1336,24 +1336,36 @@ def _normalize_rows(rows: object) -> list[list[object]]:
     return [list(item) for item in rows] if rows else []
 
 
-def _spectrogram_title(audio_name: str | None) -> str:
-    if not audio_name:
+def _spectrogram_title(species_name: str | None, confidence: float | None) -> str:
+    if not species_name or confidence is None:
         return "### Spectrogram"
-    return f"### Spectrogram - {Path(audio_name).name}"
+    return f"### {species_name} - {confidence:.3f}"
 
 
-def _selected_audio_display_name(rows: object, selected_index: int, audio_path: str | None) -> str | None:
-    if audio_path:
-        return Path(audio_path).name
-
+def _selected_row_species_and_confidence(rows: object, selected_index: int) -> tuple[str | None, float | None]:
     normalized_rows = _normalize_rows(rows)
     if normalized_rows:
         safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
-        if len(normalized_rows[safe_index]) > 1:
-            audio_id = str(normalized_rows[safe_index][1]).strip()
-            if audio_id:
-                return Path(audio_id).name
-    return None
+        row = normalized_rows[safe_index]
+
+        species_name: str | None = None
+        confidence_value: float | None = None
+
+        if len(row) > 2:
+            raw_species = str(row[2]).strip()
+            if raw_species.startswith("▶ "):
+                raw_species = raw_species[2:].strip()
+            species_name = raw_species or None
+
+        if len(row) > 3:
+            try:
+                confidence_value = float(row[3])
+            except Exception:
+                confidence_value = None
+
+        return species_name, confidence_value
+
+    return None, None
 
 
 def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
@@ -1438,8 +1450,8 @@ def _fetch_selected_audio_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    display_name = _selected_audio_display_name(rows, selected_index, audio_path)
-    return audio_path, cache_key, status, spectrogram_path, _spectrogram_title(display_name)
+    species_name, confidence_value = _selected_row_species_and_confidence(rows, selected_index)
+    return audio_path, cache_key, status, spectrogram_path, _spectrogram_title(species_name, confidence_value)
 
 
 def _select_and_fetch_audio_with_title(
@@ -1460,14 +1472,14 @@ def _select_and_fetch_audio_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    display_name = _selected_audio_display_name(rows, selected_index, audio_path)
+    species_name, confidence_value = _selected_row_species_and_confidence(rows, selected_index)
     return (
         selected_index,
         audio_path,
         updated_cache_key,
         status,
         spectrogram_path,
-        _spectrogram_title(display_name),
+        _spectrogram_title(species_name, confidence_value),
     )
 
 
@@ -1487,14 +1499,14 @@ def _autofetch_first_row_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    display_name = _selected_audio_display_name(rows, selected_index, audio_path)
+    species_name, confidence_value = _selected_row_species_and_confidence(rows, selected_index)
     return (
         selected_index,
         audio_path,
         updated_cache_key,
         status,
         spectrogram_path,
-        _spectrogram_title(display_name),
+        _spectrogram_title(species_name, confidence_value),
     )
 
 
@@ -1509,7 +1521,7 @@ def _advance_to_next_row_with_title(
 ) -> tuple[int, str | None, str, str, str | None, str]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
-        return 0, None, cache_key, "No detections available", None, _spectrogram_title(None)
+        return 0, None, cache_key, "No detections available", None, _spectrogram_title(None, None)
 
     safe_index = max(0, min(int(selected_index) + 1, len(normalized_rows) - 1))
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
@@ -1521,8 +1533,8 @@ def _advance_to_next_row_with_title(
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    display_name = _selected_audio_display_name(normalized_rows, safe_index, audio_path)
-    return safe_index, audio_path, updated_cache_key, status, spectrogram_path, _spectrogram_title(display_name)
+    species_name, confidence_value = _selected_row_species_and_confidence(normalized_rows, safe_index)
+    return safe_index, audio_path, updated_cache_key, status, spectrogram_path, _spectrogram_title(species_name, confidence_value)
 
 
 def _cleanup_selected_audio(audio_service: _AudioServiceProtocol, cache_key: str) -> tuple[str, str | None]:
@@ -1628,6 +1640,7 @@ def _save_selected_validation_with_refresh(
         updated_after=updated_after,
         show_conflicts_only=show_conflicts_only,
     )
+    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
 
     if selected_key:
         refreshed_index = _find_detection_row_index(refreshed_rows, selected_key)
@@ -1649,6 +1662,7 @@ def _save_selected_validation_with_refresh(
             conflict_detection_key=conflict_key,
             show_conflicts_only=show_conflicts_only,
         )
+        refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
         refreshed_index = _find_detection_row_index(refreshed_rows, selected_key) if selected_key else 0
         pending_status_value = status_value
         status = f"{save_status} Table reloaded to resolve conflict."
@@ -1703,6 +1717,7 @@ def _reapply_last_conflict_validation_with_refresh(
             updated_after=updated_after,
             show_conflicts_only=show_conflicts_only,
         )
+        refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
         return (
             f"No pending validation to reapply | {page_status}",
             cache_key,
@@ -1810,6 +1825,7 @@ def _batch_validate_conflicts(
         updated_after=updated_after,
         show_conflicts_only=False,
     )
+    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
 
     summary = f"Processed {len(conflict_rows)} conflicts: {success_count} success, {conflict_count} new conflicts, {failure_count} failures"
     status = f"{summary} | {page_status}"
@@ -1881,6 +1897,7 @@ def _batch_reapply_all_pending(
         updated_after=updated_after,
         show_conflicts_only=False,
     )
+    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
 
     summary = f"Reapplied {len(pending_statuses)} validations: {success_count} success, {conflict_count} new conflicts, {failure_count} failures"
     status = f"{summary} | {page_status}"
@@ -1970,14 +1987,11 @@ def build_demo_app(project_slug: str = "demo-project") -> gr.Blocks:
             batch_approve_conflicts_btn = gr.Button("Approve all conflicts")
             batch_reject_conflicts_btn = gr.Button("Reject all conflicts")
 
-        report_btn = gr.Button("Generate validation report")
-
         audio_player = gr.Audio(label="On-demand audio", type="filepath")
         cache_key_state = gr.State(value="")
         pending_status_state = gr.State(value="")
         conflict_detection_key_state = gr.State(value="")
         status = gr.Textbox(label="Status", interactive=False)
-        report_box = gr.Textbox(label="Report", interactive=False)
 
         # Keyboard shortcuts: 1=positive, 2=negative, 3=uncertain, 4=skip, R=reapply
         keyboard_shortcuts_info = gr.HTML(
@@ -2406,11 +2420,6 @@ def build_demo_app(project_slug: str = "demo-project") -> gr.Blocks:
             ],
             outputs=[status, cache_key_state, audio_player, table, page_state],
         )
-        report_btn.click(
-            fn=lambda: _build_validation_report(validation_repository, project_slug),
-            inputs=None,
-            outputs=[report_box],
-        )
 
     return demo
 
@@ -2696,6 +2705,8 @@ def create_app() -> gr.Blocks:
                     )
                     refresh_projects_btn = gr.Button("🔄 Refresh List")
 
+                    gr.Markdown("<div style='height:8px;'></div>")
+
                     def _render_admin_scope_info(session, selected_admin_project: str):
                         if session is None:
                             return ""
@@ -2854,6 +2865,8 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_message, admin_username, admin_project, admin_role],
                     )
 
+                    gr.Markdown("<div style='height:8px;'></div>")
+
                     gr.Markdown("#### Delete Project")
                     with gr.Row():
                         delete_project_slug = gr.Dropdown(
@@ -2909,6 +2922,8 @@ def create_app() -> gr.Blocks:
                             delete_project_slug,
                         ],
                     )
+
+                    gr.Markdown("<div style='height:8px;'></div>")
 
                     gr.Markdown("#### Pending Invites")
                     with gr.Row():
@@ -3040,6 +3055,12 @@ def create_app() -> gr.Blocks:
                     fn=lambda s: gr.update(visible=bool(s is not None)),
                     inputs=[session_state],
                     outputs=[admin_users_controls],
+                )
+
+                session_state.change(
+                    fn=lambda s: _project_rows() if s is not None else [],
+                    inputs=[session_state],
+                    outputs=[projects_table],
                 )
 
                 session_state.change(
@@ -3429,8 +3450,6 @@ def create_app() -> gr.Blocks:
                         gr.Markdown("#### Actions")
                         validator_name = gr.Textbox(label="Validator", value="validator-demo")
                         validation_notes = gr.Textbox(label="Notes", placeholder="Optional", lines=4)
-                        report_btn = gr.Button("Generate validation report")
-
                         keyboard_shortcuts_info = gr.HTML(
                             value="<div style='font-size:12px;color:#333;padding:8px 10px;background:#f5f5f5;border-radius:6px;margin-bottom:8px;'>"
                             "<strong>Shortcuts:</strong> ArrowUp=Positive | ArrowDown=Negative | 1=Positive | 2=Negative | 3=Uncertain | 4=Skip"
@@ -3457,8 +3476,6 @@ def create_app() -> gr.Blocks:
                 cache_key_state = gr.State(value="")
                 pending_status_state = gr.State(value="")
                 conflict_detection_key_state = gr.State(value="")
-                report_box = gr.Textbox(label="Report", interactive=False)
-
                 def _session_hf_token(session) -> str | None:
                     if session is None:
                         return None
@@ -3548,7 +3565,7 @@ def create_app() -> gr.Blocks:
 
                 def refresh_for_selected_project(project_slug: str):
                     if not project_slug:
-                        return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
+                        return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
 
                     species_options = _extract_species_options_from_queue(
                         queue_service=service_ref["queue"],
@@ -4210,10 +4227,114 @@ def create_app() -> gr.Blocks:
                     outputs=[validator_name],
                 )
 
-                report_btn.click(
-                    fn=build_report_for_project,
+            # ===== TAB 5: Report =====
+            with gr.Tab("📊 Report", id="report_tab"):
+                report_header = gr.Markdown("### Validation Dashboard")
+                report_project_selector = gr.Dropdown(
+                    choices=[],
+                    value=None,
+                    label="Project",
+                    interactive=False,
+                )
+                report_kpis = gr.HTML(value="")
+                report_species_table = gr.Dataframe(
+                    headers=["species", "total_recordings", "validated", "remaining"],
+                    value=[],
+                    interactive=False,
+                    label="Species Overview",
+                )
+                report_status = gr.Markdown("")
+
+                def _list_project_detections(project_slug: str) -> list[Detection]:
+                    if not project_slug:
+                        return []
+                    page = 1
+                    collected: list[Detection] = []
+                    while True:
+                        page_obj = service_ref["queue"].get_page(
+                            project_slug=project_slug,
+                            page=page,
+                            page_size=500,
+                            scientific_name=None,
+                            min_confidence=None,
+                            max_confidence=None,
+                        )
+                        collected.extend(page_obj.items)
+                        if not page_obj.has_next:
+                            break
+                        page += 1
+                    return collected
+
+                def _render_report_dashboard(project_slug: str):
+                    slug = (project_slug or "").strip()
+                    if not slug:
+                        return "", [], "Select a project to view the dashboard"
+
+                    items = _list_project_detections(slug)
+                    snapshot = validation_repository.load_current_snapshot(project_slug=slug)
+                    total_recordings = len(items)
+
+                    species_totals: dict[str, dict[str, int]] = {}
+                    validated_recordings = 0
+
+                    for item in items:
+                        species_name = str(item.scientific_name).strip() or "Unknown species"
+                        counters = species_totals.setdefault(species_name, {"total": 0, "validated": 0})
+                        counters["total"] += 1
+
+                        state = snapshot.get(item.detection_key, {})
+                        status_value = str(state.get("status", "pending")).strip().lower()
+                        if status_value and status_value != "pending":
+                            counters["validated"] += 1
+                            validated_recordings += 1
+
+                    validated_species = sum(1 for counters in species_totals.values() if counters["validated"] > 0)
+                    remaining_recordings = max(0, total_recordings - validated_recordings)
+
+                    rows = []
+                    for species_name, counters in species_totals.items():
+                        remaining = max(0, counters["total"] - counters["validated"])
+                        rows.append([species_name, counters["total"], counters["validated"], remaining])
+                    rows.sort(key=lambda row: (-int(row[1]), str(row[0]).lower()))
+
+                    kpis_html = (
+                        "<div style='display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:12px;margin:6px 0 12px 0;'>"
+                        f"<div style='padding:10px 14px;border-radius:10px;background:#eef2ff;'><div style='font-size:12px;color:#4f46e5;'>Validated species</div><div style='font-size:24px;font-weight:700;color:#312e81;'>{validated_species}</div></div>"
+                        f"<div style='padding:10px 14px;border-radius:10px;background:#fff7ed;'><div style='font-size:12px;color:#c2410c;'>Recordings remaining</div><div style='font-size:24px;font-weight:700;color:#9a3412;'>{remaining_recordings}</div></div>"
+                        f"<div style='padding:10px 14px;border-radius:10px;background:#ecfdf3;'><div style='font-size:12px;color:#166534;'>Recordings validated</div><div style='font-size:24px;font-weight:700;color:#14532d;'>{validated_recordings}</div></div>"
+                        "</div>"
+                    )
+                    status_text = (
+                        f"Project: **{slug}** | Total recordings: **{total_recordings}** | "
+                        f"Validated: **{validated_recordings}** | Remaining: **{remaining_recordings}**"
+                    )
+                    return kpis_html, rows, status_text
+
+                session_state.change(
+                    fn=lambda s: (
+                        gr.update(
+                            choices=(s.authorized_projects if s is not None else []),
+                            value=(s.authorized_projects[0] if (s is not None and s.authorized_projects) else None),
+                            interactive=bool(s is not None and s.authorized_projects),
+                        ),
+                        "",
+                        [],
+                        "Login and choose a project to view metrics" if s is None else "",
+                    ),
+                    inputs=[session_state],
+                    outputs=[report_project_selector, report_kpis, report_species_table, report_status],
+                )
+
+                selected_project_state.change(
+                    fn=lambda p: gr.update(value=p if p else None),
                     inputs=[selected_project_state],
-                    outputs=[report_box],
+                    outputs=[report_project_selector],
+                )
+
+                report_project_selector.change(
+                    fn=_render_report_dashboard,
+                    inputs=[report_project_selector],
+                    outputs=[report_kpis, report_species_table, report_status],
                 )
 
     return wrapper
