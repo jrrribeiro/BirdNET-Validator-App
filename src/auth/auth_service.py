@@ -417,6 +417,21 @@ class AuthService:
         email = (profile.hf_email or "").strip()
         return email or None
 
+    def _pending_invite_keys_for_username(self, username: str) -> list[str]:
+        keys = [username]
+        known_email = self.get_known_email_for_user(username)
+        if known_email:
+            keys.insert(0, f"email:{known_email}")
+        return keys
+
+    def _find_pending_invite_bucket(self, username: str, project_slug: str) -> tuple[str | None, dict[str, ProjectInvite] | None, ProjectInvite | None]:
+        for invite_key in self._pending_invite_keys_for_username(username):
+            pending = self._pending_invites.get(invite_key, {})
+            invite = pending.get(project_slug)
+            if invite is not None:
+                return invite_key, pending, invite
+        return None, None, None
+
     def create_project_invite(
         self,
         project_slug: str,
@@ -483,7 +498,14 @@ class AuthService:
 
     def list_pending_invites(self, username: str) -> List[ProjectInvite]:
         self._prune_expired_invites()
-        invites = list(self._pending_invites.get(username, {}).values())
+        invites: list[ProjectInvite] = []
+        seen_projects: set[str] = set()
+        for invite_key in self._pending_invite_keys_for_username(username):
+            for invite in self._pending_invites.get(invite_key, {}).values():
+                if invite.project_slug in seen_projects:
+                    continue
+                seen_projects.add(invite.project_slug)
+                invites.append(invite)
         invites.sort(key=lambda item: item.created_at)
         return invites
 
@@ -497,32 +519,34 @@ class AuthService:
 
     def accept_project_invite(self, username: str, project_slug: str) -> tuple[bool, str]:
         self._prune_expired_invites()
-        pending = self._pending_invites.get(username, {})
-        invite = pending.get(project_slug)
-        if invite is None:
+        invite_key, pending, invite = self._find_pending_invite_bucket(username, project_slug)
+        if invite_key is None or pending is None or invite is None:
             return False, f"Invite not found for {username} in {project_slug}"
 
         self.upsert_user_project_role(username, project_slug, invite.role)
         del pending[project_slug]
         if not pending:
-            self._pending_invites.pop(username, None)
+            self._pending_invites.pop(invite_key, None)
         return True, f"✅ Invite accepted for {project_slug} as {invite.role.value}"
 
     def reject_project_invite(self, username: str, project_slug: str) -> tuple[bool, str]:
         self._prune_expired_invites()
-        pending = self._pending_invites.get(username, {})
-        invite = pending.get(project_slug)
-        if invite is None:
+        invite_key, pending, invite = self._find_pending_invite_bucket(username, project_slug)
+        if invite_key is None or pending is None or invite is None:
             return False, f"Invite not found for {username} in {project_slug}"
 
         del pending[project_slug]
         if not pending:
-            self._pending_invites.pop(username, None)
+            self._pending_invites.pop(invite_key, None)
         return True, f"✅ Invite rejected for {project_slug}"
 
     def accept_all_project_invites(self, username: str) -> tuple[int, int, str]:
         self._prune_expired_invites()
-        pending = self._pending_invites.get(username, {})
+        pending_keys = self._pending_invite_keys_for_username(username)
+        pending: dict[str, ProjectInvite] = {}
+        for invite_key in pending_keys:
+            pending.update(self._pending_invites.get(invite_key, {}))
+
         if not pending:
             return 0, 0, "No pending invites"
 
@@ -538,12 +562,12 @@ class AuthService:
 
     def revoke_project_invite(self, username: str, project_slug: str) -> tuple[bool, str]:
         self._prune_expired_invites()
-        pending = self._pending_invites.get(username, {})
-        if project_slug not in pending:
+        invite_key, pending, invite = self._find_pending_invite_bucket(username, project_slug)
+        if invite_key is None or pending is None or invite is None:
             return False, f"Invite not found for {username} in {project_slug}"
         del pending[project_slug]
         if not pending:
-            self._pending_invites.pop(username, None)
+            self._pending_invites.pop(invite_key, None)
         return True, f"✅ Invite revoked for {username} in {project_slug}"
 
     def export_user_access_map(self, include_inactive: bool = False) -> Dict[str, Dict[str, str]]:

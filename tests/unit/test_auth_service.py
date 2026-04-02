@@ -3,7 +3,7 @@
 import pytest
 from datetime import UTC, datetime, timedelta
 
-from src.auth.auth_service import AuthService, Session, UserProjectAccess
+from src.auth.auth_service import AuthService, Session, UserProjectAccess, UserProfile
 from src.domain.models import Role
 
 
@@ -336,6 +336,29 @@ class TestAuthService:
         assert session is not None
         assert session.username == "pending_user"
         assert session.authorized_projects == []
+
+    def test_email_only_invite_is_visible_and_accepts_for_known_email(self, auth_service):
+        ok, _ = auth_service.create_project_invite(
+            project_slug="proj-email",
+            role=Role.validator,
+            invited_by="owner",
+            invitee_email="invitee@example.org",
+        )
+        assert ok is True
+
+        auth_service._user_profiles["invitee_user"] = UserProfile(
+            username="invitee_user",
+            hf_email="invitee@example.org",
+        )
+
+        pending = auth_service.list_pending_invites("invitee_user")
+        assert len(pending) == 1
+        assert pending[0].project_slug == "proj-email"
+
+        accepted, _ = auth_service.accept_project_invite("invitee_user", "proj-email")
+        assert accepted is True
+        assert auth_service.get_user_role_for_project("invitee_user", "proj-email") == Role.validator
+        assert auth_service.list_pending_invites("invitee_user") == []
 
     def test_reject_invite_removes_pending(self, auth_service):
         ok, _ = auth_service.create_project_invite(
