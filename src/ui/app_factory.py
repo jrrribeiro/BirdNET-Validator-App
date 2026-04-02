@@ -23,12 +23,7 @@ from src.repositories.in_memory_detection_repository import InMemoryDetectionRep
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
 from src.services.validation_service import ValidationService
-from src.services.invite_email_notifier import (
-    FallbackInviteEmailNotifier,
-    HttpInviteEmailNotifier,
-    NoopInviteEmailNotifier,
-    SmtpInviteEmailNotifier,
-)
+from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
@@ -2480,45 +2475,15 @@ def create_app() -> gr.Blocks:
         invite_ttl_hours=runtime_config.invite_ttl_hours,
     )
 
-    invite_notifier = NoopInviteEmailNotifier()
-    smtp_notifier = None
-    http_notifier = None
-
-    if (
-        runtime_config.invite_email_enabled
-        and runtime_config.invite_email_sender
-        and runtime_config.smtp_host
-    ):
-        smtp_notifier = SmtpInviteEmailNotifier(
-            sender_email=runtime_config.invite_email_sender,
-            smtp_host=runtime_config.smtp_host,
-            smtp_port=runtime_config.smtp_port,
-            smtp_username=runtime_config.smtp_username,
-            smtp_password=runtime_config.smtp_password,
-            smtp_use_tls=runtime_config.smtp_use_tls,
-            smtp_use_ssl=runtime_config.smtp_use_ssl,
-        )
-
-    if (
-        runtime_config.invite_email_enabled
-        and runtime_config.invite_email_sender
-        and runtime_config.invite_email_http_enabled
-        and runtime_config.invite_email_http_endpoint
-        and runtime_config.invite_email_http_api_key
-    ):
-        http_notifier = HttpInviteEmailNotifier(
-            sender_email=runtime_config.invite_email_sender,
-            endpoint=runtime_config.invite_email_http_endpoint,
-            api_key=runtime_config.invite_email_http_api_key,
-            timeout_seconds=runtime_config.invite_email_http_timeout_seconds,
-        )
-
-    if smtp_notifier and http_notifier:
-        invite_notifier = FallbackInviteEmailNotifier(primary=smtp_notifier, secondary=http_notifier)
-    elif smtp_notifier:
-        invite_notifier = smtp_notifier
-    elif http_notifier:
-        invite_notifier = http_notifier
+    # Initialize EmailJS invite notifier (only transport)
+    invite_notifier: InviteEmailNotifier = EmailJSInviteEmailNotifier(
+        sender_email=runtime_config.invite_email_sender,
+        service_id=runtime_config.emailjs_service_id or "",
+        template_id=runtime_config.emailjs_template_id or "",
+        public_key=runtime_config.emailjs_public_key or "",
+        endpoint=runtime_config.emailjs_endpoint,
+        timeout_seconds=runtime_config.emailjs_timeout_seconds,
+    )
 
     # Initialize admin panel manager
     admin_manager = AdminPanelManager(
@@ -2904,6 +2869,61 @@ def create_app() -> gr.Blocks:
                     admin_message = gr.Markdown()
                     invite_btn = gr.Button("✉️ Invite")
 
+                    # Invite scenario selection
+                    gr.Markdown(
+                        "**Choose how to invite:**\n"
+                        "- **Internal app only**: Invite by HF username (no email notifications)\n"
+                        "- **Email only**: Invite by email (for users without HF account yet)\n"
+                        "- **Both**: Invite both internally and via email"
+                    )
+
+                    invite_mode = gr.Radio(
+                        choices=["Internal app only", "Email only", "Both"],
+                        value="Both",
+                        label="Invite Method",
+                    )
+
+                    with gr.Column():
+                        admin_username = gr.Textbox(
+                            label="HF Username (for internal app invite)",
+                            placeholder="validator_001",
+                            visible=True,
+                        )
+                        admin_invite_email = gr.Textbox(
+                            label="Email Address (for email notification)",
+                            placeholder="validator@example.org",
+                            visible=True,
+                        )
+
+                    # Update visibility based on invite mode
+                    def update_invite_fields(mode: str):
+                        if mode == "Internal app only":
+                            return gr.update(visible=True), gr.update(visible=False)
+                        elif mode == "Email only":
+                            return gr.update(visible=False), gr.update(visible=True)
+                        else:  # Both
+                            return gr.update(visible=True), gr.update(visible=True)
+
+                    invite_mode.change(
+                        fn=update_invite_fields,
+                        inputs=[invite_mode],
+                        outputs=[admin_username, admin_invite_email],
+                    )
+
+                    with gr.Row():
+                        admin_project = gr.Dropdown(
+                            choices=_project_slugs(),
+                            label="Project",
+                        )
+                        admin_role = gr.Dropdown(
+                            choices=["admin", "validator"],
+                            value="validator",
+                            label="Role",
+                        )
+
+                    admin_message = gr.Markdown()
+                    invite_btn = gr.Button("✉️ Send Invite")
+
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None:
                             return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
@@ -2928,16 +2948,20 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 
-                    def invite_user(session, username: str, invite_email: str, project: str, role: str):
+                    def invite_user(session, mode: str, username: str, invite_email: str, project: str, role: str):
                         if session is None:
                             return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
                         if not _is_admin_for_project(session, project):
                             return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
+
+                        final_username = None if mode == "Email only" else (username or None)
+                        final_email = None if mode == "Internal app only" else (invite_email or None)
+
                         success, msg = admin_manager.invite_user_to_project(
                             actor_username=session.username,
                             invited_by=session.username,
-                            username=username,
-                            invitee_email=invite_email,
+                            username=final_username,
+                            invitee_email=final_email,
                             project_slug=project,
                             role=role,
                         )
@@ -2949,7 +2973,7 @@ def create_app() -> gr.Blocks:
 
                     invite_btn.click(
                         fn=invite_user,
-                        inputs=[session_state, admin_username, admin_invite_email, admin_project, admin_role],
+                        inputs=[session_state, invite_mode, admin_username, admin_invite_email, admin_project, admin_role],
                         outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 

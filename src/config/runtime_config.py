@@ -18,16 +18,12 @@ class RuntimeConfig:
     invite_email_enabled: bool
     invite_email_sender: str
     invite_email_login_url: str
-    smtp_host: str | None
-    smtp_port: int
-    smtp_username: str | None
-    smtp_password: str | None
-    smtp_use_tls: bool
-    smtp_use_ssl: bool = False
-    invite_email_http_enabled: bool = False
-    invite_email_http_endpoint: str | None = None
-    invite_email_http_api_key: str | None = None
-    invite_email_http_timeout_seconds: int = 20
+    emailjs_enabled: bool = False
+    emailjs_service_id: str | None = None
+    emailjs_template_id: str | None = None
+    emailjs_public_key: str | None = None
+    emailjs_endpoint: str = "https://api.emailjs.com/api/v1.0/email/send"
+    emailjs_timeout_seconds: int = 20
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -76,38 +72,21 @@ class RuntimeConfig:
         invite_email_sender = (os.getenv("BIRDNET_INVITE_EMAIL_SENDER") or "").strip()
         invite_email_login_url = (os.getenv("BIRDNET_INVITE_EMAIL_LOGIN_URL") or "").strip() or ""
 
-        smtp_host = (os.getenv("BIRDNET_SMTP_HOST") or "").strip() or None
-
-        raw_smtp_port = (os.getenv("BIRDNET_SMTP_PORT") or "").strip()
-        smtp_port = 587
-        if raw_smtp_port:
+        raw_emailjs_enabled = (os.getenv("BIRDNET_EMAILJS_ENABLED") or "").strip().lower()
+        emailjs_enabled = raw_emailjs_enabled in {"1", "true", "yes", "on"}
+        emailjs_service_id = (os.getenv("BIRDNET_EMAILJS_SERVICE_ID") or "").strip() or None
+        emailjs_template_id = (os.getenv("BIRDNET_EMAILJS_TEMPLATE_ID") or "").strip() or None
+        emailjs_public_key = (os.getenv("BIRDNET_EMAILJS_PUBLIC_KEY") or os.getenv("EMAILJS_PUBLIC_KEY") or "").strip() or None
+        emailjs_endpoint = (os.getenv("BIRDNET_EMAILJS_ENDPOINT") or "https://api.emailjs.com/api/v1.0/email/send").strip() or "https://api.emailjs.com/api/v1.0/email/send"
+        raw_emailjs_timeout = (os.getenv("BIRDNET_EMAILJS_TIMEOUT_SECONDS") or "").strip()
+        emailjs_timeout_seconds = 20
+        if raw_emailjs_timeout:
             try:
-                parsed = int(raw_smtp_port)
+                parsed = int(raw_emailjs_timeout)
                 if parsed > 0:
-                    smtp_port = parsed
+                    emailjs_timeout_seconds = parsed
             except ValueError:
-                smtp_port = 587
-
-        smtp_username = (os.getenv("BIRDNET_SMTP_USERNAME") or "").strip() or None
-        smtp_password = (os.getenv("BIRDNET_SMTP_PASSWORD") or "").strip() or None
-        raw_smtp_use_tls = (os.getenv("BIRDNET_SMTP_USE_TLS") or "").strip().lower()
-        smtp_use_tls = raw_smtp_use_tls not in {"0", "false", "no", "off"}
-        raw_smtp_use_ssl = (os.getenv("BIRDNET_SMTP_USE_SSL") or "").strip().lower()
-        smtp_use_ssl = raw_smtp_use_ssl in {"1", "true", "yes", "on"}
-
-        raw_invite_email_http_enabled = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_ENABLED") or "").strip().lower()
-        invite_email_http_enabled = raw_invite_email_http_enabled in {"1", "true", "yes", "on"}
-        invite_email_http_endpoint = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_ENDPOINT") or "").strip() or None
-        invite_email_http_api_key = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_API_KEY") or "").strip() or None
-        raw_invite_email_http_timeout = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_TIMEOUT_SECONDS") or "").strip()
-        invite_email_http_timeout_seconds = 20
-        if raw_invite_email_http_timeout:
-            try:
-                parsed = int(raw_invite_email_http_timeout)
-                if parsed > 0:
-                    invite_email_http_timeout_seconds = parsed
-            except ValueError:
-                invite_email_http_timeout_seconds = 20
+                emailjs_timeout_seconds = 20
 
         return cls(
             detection_seed_path=detection_seed_path,
@@ -122,14 +101,10 @@ class RuntimeConfig:
             invite_email_enabled=invite_email_enabled,
             invite_email_sender=invite_email_sender,
             invite_email_login_url=invite_email_login_url,
-            smtp_host=smtp_host,
-            smtp_port=smtp_port,
-            smtp_username=smtp_username,
-            smtp_password=smtp_password,
-            smtp_use_tls=smtp_use_tls,
-            smtp_use_ssl=smtp_use_ssl,
-            invite_email_http_enabled=invite_email_http_enabled,
-            invite_email_http_endpoint=invite_email_http_endpoint,
-            invite_email_http_api_key=invite_email_http_api_key,
-            invite_email_http_timeout_seconds=invite_email_http_timeout_seconds,
+            emailjs_enabled=emailjs_enabled,
+            emailjs_service_id=emailjs_service_id,
+            emailjs_template_id=emailjs_template_id,
+            emailjs_public_key=emailjs_public_key,
+            emailjs_endpoint=emailjs_endpoint,
+            emailjs_timeout_seconds=emailjs_timeout_seconds,
         )

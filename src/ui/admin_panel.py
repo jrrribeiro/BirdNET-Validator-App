@@ -6,7 +6,7 @@ import gradio as gr
 
 from src.auth.auth_service import AuthService, Session
 from src.domain.models import Project, Role
-from src.services.invite_email_notifier import InviteEmailNotifier, InviteEmailPayload, NoopInviteEmailNotifier
+from src.services.invite_email_notifier import InviteEmailNotifier, InviteEmailPayload
 
 
 class AdminPanelManager:
@@ -15,17 +15,19 @@ class AdminPanelManager:
     def __init__(
         self,
         auth_service: AuthService,
-        invite_notifier: InviteEmailNotifier | None = None,
+        invite_notifier: InviteEmailNotifier,
         invite_login_url: str = "",
     ):
         """Initialize admin panel manager.
 
         Args:
             auth_service: AuthService instance
+            invite_notifier: InviteEmailNotifier for sending invites
+            invite_login_url: URL to login page for invite emails
         """
         self.auth_service = auth_service
         self._projects: dict[str, Project] = {}  # project_slug -> Project
-        self.invite_notifier = invite_notifier or NoopInviteEmailNotifier()
+        self.invite_notifier = invite_notifier
         self.invite_login_url = (invite_login_url or "").strip()
 
     def _can_admin_project(self, actor_username: str, project_slug: str) -> bool:
@@ -133,12 +135,29 @@ class AdminPanelManager:
         self,
         actor_username: str,
         invited_by: str,
-        username: str,
-        invitee_email: str,
-        project_slug: str,
-        role: str,
+        username: str | None = None,
+        invitee_email: str | None = None,
+        project_slug: str | None = None,
+        role: str = "validator",
     ) -> Tuple[bool, str]:
-        if project_slug not in self._projects:
+        """Invite a user to a project. Supports 3 scenarios:
+        
+        1. Username only: internal app invite (no email)
+        2. Email only: external email-based invite
+        3. Both: dual invite (internal + email)
+        
+        Args:
+            actor_username: User performing the action (must be admin)
+            invited_by: Username of the inviter
+            username: (Optional) HF username of invitee
+            invitee_email: (Optional) Email of invitee
+            project_slug: Project slug
+            role: Role to assign ("admin" or "validator")
+            
+        Returns:
+            Tuple of (success, message)
+        """
+        if not project_slug or project_slug not in self._projects:
             return False, f"Project '{project_slug}' not found"
 
         if not self._can_admin_project(actor_username, project_slug):
@@ -147,41 +166,51 @@ class AdminPanelManager:
         if role not in ["admin", "validator"]:
             return False, f"Invalid role: {role}"
 
+        # Validate that at least username or email is provided
+        username = (username or "").strip() or None
+        invitee_email = (invitee_email or "").strip() or None
+        if not username and not invitee_email:
+            return False, "Please provide either a username or an email address"
+
         project = self._projects[project_slug]
         if project.visibility == "private":
             return False, "Private projects do not accept collaborators"
 
-        resolved_email = (invitee_email or "").strip() or (self.auth_service.get_known_email_for_user(username) or "").strip()
-        if not resolved_email:
-            return False, "Invitee email is required (username-only lookup not available yet)."
-
+        # Create the invite
         ok, message = self.auth_service.create_project_invite(
-            username=username,
             project_slug=project_slug,
             role=Role(role),
             invited_by=invited_by,
+            username=username,
+            invitee_email=invitee_email,
         )
         if not ok:
             return ok, message
 
-        invite = next((item for item in self.auth_service.list_pending_invites(username) if item.project_slug == project_slug), None)
+        # Get the created invite to send email if needed
+        invite_key = username or f"email:{invitee_email}"
+        invite = self.auth_service._pending_invites.get(invite_key, {}).get(project_slug)
         if invite is None:
             return True, message
 
-        email_ok, email_status = self.invite_notifier.send(
-            InviteEmailPayload(
-                invitee_username=username,
-                invitee_email=resolved_email,
-                project_slug=project_slug,
-                role=role,
-                invited_by=invited_by,
-                expires_at=invite.expires_at,
-                login_url=self.invite_login_url,
+        # Send email if email address is provided
+        if invitee_email:
+            email_ok, email_status = self.invite_notifier.send(
+                InviteEmailPayload(
+                    invitee_username=username,
+                    invitee_email=invitee_email,
+                    project_slug=project_slug,
+                    role=role,
+                    invited_by=invited_by,
+                    expires_at=invite.expires_at,
+                    login_url=self.invite_login_url,
+                )
             )
-        )
-        if email_ok:
-            return True, f"{message} | {email_status}"
-        return True, f"{message} | ⚠️ {email_status}"
+            if email_ok:
+                return True, f"{message} | {email_status}"
+            return True, f"{message} | ⚠️ {email_status}"
+
+        return True, message
 
     def list_pending_invites(self, project_slug: str | None = None) -> List[dict]:
         invites = self.auth_service.list_all_pending_invites()

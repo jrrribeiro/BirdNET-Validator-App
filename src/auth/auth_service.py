@@ -43,15 +43,37 @@ class Session:
 
 @dataclass
 class ProjectInvite:
-    username: str
+    """Represents an invitation to join a project.
+    
+    Supports 3 scenarios:
+    1. Username only: internal app invite (no email notification)
+    2. Email only: external email-based invite (no prior HF account required)
+    3. Both: dual invite (internal + email notification)
+    """
     project_slug: str
     role: Role
     invited_by: str
     created_at: datetime
     expires_at: datetime
+    username: str | None = None  # HF username (optional)
+    invitee_email: str | None = None  # Email address (optional)
+
+    def __post_init__(self) -> None:
+        if not self.username and not self.invitee_email:
+            raise ValueError("At least one of username or invitee_email must be provided")
 
     def is_expired(self) -> bool:
         return datetime.now(UTC) > self.expires_at
+
+    @property
+    def invite_mode(self) -> str:
+        """Return the invitation mode: 'username_only', 'email_only', or 'dual'."""
+        if self.username and self.invitee_email:
+            return "dual"
+        elif self.username:
+            return "username_only"
+        else:
+            return "email_only"
 
 
 @dataclass
@@ -397,33 +419,67 @@ class AuthService:
 
     def create_project_invite(
         self,
-        username: str,
         project_slug: str,
         role: Role,
         invited_by: str,
+        username: str | None = None,
+        invitee_email: str | None = None,
     ) -> tuple[bool, str]:
-        invited_username = (username or "").strip()
-        if not invited_username:
-            return False, "Username is required"
+        """Create a project invite supporting 3 scenarios:
+        
+        1. Username only: internal app invite (no email notification)
+        2. Email only: external email-based invite
+        3. Both: dual invite (internal + email notification)
+        
+        Args:
+            project_slug: Target project
+            role: Role to assign
+            invited_by: Username of the inviter
+            username: (Optional) HF username of invitee
+            invitee_email: (Optional) Email address of invitee
+            
+        Returns:
+            (success, message) tuple
+        """
+        username = (username or "").strip() or None
+        invitee_email = (invitee_email or "").strip() or None
+
+        if not username and not invitee_email:
+            return False, "Please provide either a username or an email address"
 
         self._prune_expired_invites()
 
-        user_invites = self._pending_invites.setdefault(invited_username, {})
-        if project_slug in user_invites:
-            return False, f"Invite for {invited_username} to {project_slug} already exists"
+        # For username-based invites, check if already exists
+        if username:
+            user_invites = self._pending_invites.get(username, {})
+            if project_slug in user_invites:
+                return False, f"Invite for {username} to {project_slug} already exists"
 
         now = datetime.now(UTC)
         expires_at = now + timedelta(hours=self.invite_ttl_hours)
 
-        user_invites[project_slug] = ProjectInvite(
-            username=invited_username,
+        invite = ProjectInvite(
             project_slug=project_slug,
             role=role,
             invited_by=invited_by,
             created_at=now,
             expires_at=expires_at,
+            username=username,
+            invitee_email=invitee_email,
         )
-        return True, f"✅ Invite sent to {invited_username} for {project_slug} as {role.value} (expires {expires_at.isoformat()})"
+
+        # Store by username if available, otherwise by email (as temporary key)
+        if username:
+            self._pending_invites.setdefault(username, {})[project_slug] = invite
+        else:
+            # For email-only invites, use email as the storage key
+            # This allows the user to later link their username
+            email_key = f"email:{invitee_email}"
+            self._pending_invites.setdefault(email_key, {})[project_slug] = invite
+
+        mode = invite.invite_mode
+        summary = f"✅ {mode.replace('_', ' ').title()} invite"
+        return True, summary
 
     def list_pending_invites(self, username: str) -> List[ProjectInvite]:
         self._prune_expired_invites()

@@ -808,14 +808,11 @@ def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp
         invite_email_enabled=False,
         invite_email_sender="",
         invite_email_login_url="",
-        smtp_host=None,
-        smtp_port=587,
-        smtp_username=None,
-        smtp_password=None,
-        smtp_use_tls=True,
     )
     auth_service = AuthService()
-    admin_manager = AdminPanelManager(auth_service)
+    from src.services.invite_email_notifier import EmailJSInviteEmailNotifier
+    notifier = EmailJSInviteEmailNotifier("", "", "", "", timeout_seconds=20)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=notifier)
 
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
     emergency_admin_session = auth_service.login("admin_user")
@@ -840,14 +837,11 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
         invite_email_enabled=False,
         invite_email_sender="",
         invite_email_login_url="",
-        smtp_host=None,
-        smtp_port=587,
-        smtp_username=None,
-        smtp_password=None,
-        smtp_use_tls=True,
     )
     auth_service = AuthService()
-    admin_manager = AdminPanelManager(auth_service)
+    from src.services.invite_email_notifier import EmailJSInviteEmailNotifier
+    notifier = EmailJSInviteEmailNotifier("", "", "", "", timeout_seconds=20)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=notifier)
 
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
     assert warning == ""
@@ -887,14 +881,11 @@ def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_p
         invite_email_enabled=False,
         invite_email_sender="",
         invite_email_login_url="",
-        smtp_host=None,
-        smtp_port=587,
-        smtp_username=None,
-        smtp_password=None,
-        smtp_use_tls=True,
     )
     auth_service = AuthService()
-    admin_manager = AdminPanelManager(auth_service)
+    from src.services.invite_email_notifier import EmailJSInviteEmailNotifier
+    notifier = EmailJSInviteEmailNotifier("", "", "", "", timeout_seconds=20)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=notifier)
 
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
     emergency_session = auth_service.login("admin_user")

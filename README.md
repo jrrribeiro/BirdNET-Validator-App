@@ -64,24 +64,17 @@ Optional runtime configuration:
 - `BIRDNET_BOOTSTRAP_DIR`: base directory for bootstrap state files (`projects.json`, `user_access.json`, `invites.json`).
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP`: set to `true` only for local/demo mode to load built-in sample users/projects.
 
-Invite email settings (SMTP):
+Invite email settings (EmailJS):
 
-- `BIRDNET_INVITE_EMAIL_ENABLED`: set to `true` to send invite emails.
-- `BIRDNET_INVITE_EMAIL_SENDER`: sender email used for project invitations.
+- `BIRDNET_EMAILJS_ENABLED`: set to `true` to send invite emails via EmailJS.
+- `BIRDNET_INVITE_EMAIL_ENABLED`: set to `true` to enable invite delivery.
+- `BIRDNET_INVITE_EMAIL_SENDER`: sender label shown in the invite email.
 - `BIRDNET_INVITE_EMAIL_LOGIN_URL`: login URL included in invitation instructions.
-- `BIRDNET_SMTP_HOST`: SMTP server host.
-- `BIRDNET_SMTP_PORT`: SMTP server port (default: `587`).
-- `BIRDNET_SMTP_USERNAME`: SMTP username (optional).
-- `BIRDNET_SMTP_PASSWORD`: SMTP password or app token.
-- `BIRDNET_SMTP_USE_TLS`: set to `false` only when TLS is not available.
-- `BIRDNET_SMTP_USE_SSL`: set to `true` for implicit SSL (typically port `465`).
-
-Optional invite email fallback (HTTP API over port 443):
-
-- `BIRDNET_INVITE_EMAIL_HTTP_ENABLED`: set to `true` to enable HTTP provider.
-- `BIRDNET_INVITE_EMAIL_HTTP_ENDPOINT`: provider endpoint (expects JSON POST with bearer token).
-- `BIRDNET_INVITE_EMAIL_HTTP_API_KEY`: provider API key.
-- `BIRDNET_INVITE_EMAIL_HTTP_TIMEOUT_SECONDS`: request timeout in seconds (default: `20`).
+- `BIRDNET_EMAILJS_SERVICE_ID`: EmailJS service ID.
+- `BIRDNET_EMAILJS_TEMPLATE_ID`: EmailJS template ID.
+- `BIRDNET_EMAILJS_PUBLIC_KEY`: EmailJS public key.
+- `BIRDNET_EMAILJS_ENDPOINT`: EmailJS API endpoint (default: `https://api.emailjs.com/api/v1.0/email/send`).
+- `BIRDNET_EMAILJS_TIMEOUT_SECONDS`: request timeout in seconds (default: `20`).
 
 JSON seed format examples:
 
@@ -243,18 +236,12 @@ Optional invite email settings:
 - `BIRDNET_INVITE_EMAIL_ENABLED=true`
 - `BIRDNET_INVITE_EMAIL_SENDER`
 - `BIRDNET_INVITE_EMAIL_LOGIN_URL`
-- `BIRDNET_SMTP_HOST`
-- `BIRDNET_SMTP_PORT`
-- `BIRDNET_SMTP_USERNAME`
-- `BIRDNET_SMTP_PASSWORD`
-- `BIRDNET_SMTP_USE_TLS`
-- `BIRDNET_SMTP_USE_SSL`
-
-Optional HTTP fallback settings:
-- `BIRDNET_INVITE_EMAIL_HTTP_ENABLED`
-- `BIRDNET_INVITE_EMAIL_HTTP_ENDPOINT`
-- `BIRDNET_INVITE_EMAIL_HTTP_API_KEY`
-- `BIRDNET_INVITE_EMAIL_HTTP_TIMEOUT_SECONDS`
+- `BIRDNET_EMAILJS_ENABLED`
+- `BIRDNET_EMAILJS_SERVICE_ID`
+- `BIRDNET_EMAILJS_TEMPLATE_ID`
+- `BIRDNET_EMAILJS_PUBLIC_KEY`
+- `BIRDNET_EMAILJS_ENDPOINT`
+- `BIRDNET_EMAILJS_TIMEOUT_SECONDS`
 
 4. For first smoke test only, you may temporarily set:
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP=true`

@@ -33,7 +33,8 @@ def test_private_project_allows_only_owner_assignment() -> None:
     auth = AuthService()
     auth.register_user_project_access("owner", {"private-proj": Role.admin})
     auth.register_user_project_access("intruder", {})
-    manager = AdminPanelManager(auth)
+    notifier = _FakeNotifier()
+    manager = AdminPanelManager(auth, invite_notifier=notifier)
     manager.register_project(_make_project("private-proj", "private", "owner"))
 
     ok, message = manager.assign_user_to_project("owner", "intruder", "private-proj", "validator")
@@ -45,7 +46,8 @@ def test_private_project_allows_only_owner_assignment() -> None:
 def test_private_project_without_owner_is_rejected() -> None:
     auth = AuthService()
     auth.register_user_project_access("admin", {"broken-private": Role.admin})
-    manager = AdminPanelManager(auth)
+    notifier = _FakeNotifier()
+    manager = AdminPanelManager(auth, invite_notifier=notifier)
     manager.register_project(_make_project("broken-private", "private", None))
 
     ok, message = manager.assign_user_to_project("admin", "admin", "broken-private", "admin")
@@ -58,7 +60,8 @@ def test_invite_requires_project_admin_actor() -> None:
     auth = AuthService()
     auth.register_user_project_access("owner", {"collab-proj": Role.admin})
     auth.register_user_project_access("viewer", {"collab-proj": Role.validator})
-    manager = AdminPanelManager(auth)
+    notifier = _FakeNotifier()
+    manager = AdminPanelManager(auth, invite_notifier=notifier)
     manager.register_project(_make_project("collab-proj", "collaborative", "owner"))
 
     ok, message = manager.invite_user_to_project(
@@ -91,14 +94,15 @@ def test_collaborative_invite_sends_email_when_address_present() -> None:
     )
 
     assert ok is True
-    assert "Invite sent" in message
+    assert "Dual invite" in message
     assert notifier.calls == 1
 
 
 def test_collaborative_invite_requires_email_if_unknown_username() -> None:
     auth = AuthService()
     auth.register_user_project_access("owner", {"collab-proj": Role.admin})
-    manager = AdminPanelManager(auth)
+    notifier = _FakeNotifier()
+    manager = AdminPanelManager(auth, invite_notifier=notifier)
     manager.register_project(_make_project("collab-proj", "collaborative", "owner"))
 
     ok, message = manager.invite_user_to_project(
@@ -110,5 +114,52 @@ def test_collaborative_invite_requires_email_if_unknown_username() -> None:
         role="validator",
     )
 
+    # Username-only invites are now allowed (scenario 1: internal only)
+    assert ok is True
+    # Should be internal-only mode since no email was provided
+    assert "Username Only" in message
+    # Notifier should not be called for email-less invites
+    assert notifier.calls == 0
+
+
+def test_collaborative_invite_email_only() -> None:
+    """Test scenario 2: email-only invite (no username known)."""
+    auth = AuthService()
+    auth.register_user_project_access("owner", {"collab-proj": Role.admin})
+    notifier = _FakeNotifier()
+    manager = AdminPanelManager(auth, invite_notifier=notifier)
+    manager.register_project(_make_project("collab-proj", "collaborative", "owner"))
+
+    ok, message = manager.invite_user_to_project(
+        actor_username="owner",
+        invited_by="owner",
+        username=None,
+        invitee_email="unknown@example.org",
+        project_slug="collab-proj",
+        role="validator",
+    )
+
+    assert ok is True
+    assert "Email Only" in message
+    assert notifier.calls == 1
+
+
+def test_collaborative_invite_requires_username_or_email() -> None:
+    """Test that at least username or email is required."""
+    auth = AuthService()
+    auth.register_user_project_access("owner", {"collab-proj": Role.admin})
+    notifier = _FakeNotifier()
+    manager = AdminPanelManager(auth, invite_notifier=notifier)
+    manager.register_project(_make_project("collab-proj", "collaborative", "owner"))
+
+    ok, message = manager.invite_user_to_project(
+        actor_username="owner",
+        invited_by="owner",
+        username="",
+        invitee_email="",
+        project_slug="collab-proj",
+        role="validator",
+    )
+
     assert ok is False
-    assert "email is required" in message.lower()
+    assert "provide either" in message.lower()
