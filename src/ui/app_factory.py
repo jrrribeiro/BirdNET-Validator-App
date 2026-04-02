@@ -2481,6 +2481,9 @@ def create_app() -> gr.Blocks:
         service_id=runtime_config.emailjs_service_id or "",
         template_id=runtime_config.emailjs_template_id or "",
         public_key=runtime_config.emailjs_public_key or "",
+        template_id_username_only=runtime_config.emailjs_template_id_username_only,
+        template_id_email_only=runtime_config.emailjs_template_id_email_only,
+        template_id_dual=runtime_config.emailjs_template_id_dual,
         endpoint=runtime_config.emailjs_endpoint,
         timeout_seconds=runtime_config.emailjs_timeout_seconds,
     )

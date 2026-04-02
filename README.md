@@ -71,7 +71,10 @@ Invite email settings (EmailJS):
 - `BIRDNET_INVITE_EMAIL_SENDER`: sender label shown in the invite email.
 - `BIRDNET_INVITE_EMAIL_LOGIN_URL`: login URL included in invitation instructions.
 - `BIRDNET_EMAILJS_SERVICE_ID`: EmailJS service ID.
-- `BIRDNET_EMAILJS_TEMPLATE_ID`: EmailJS template ID.
+- `BIRDNET_EMAILJS_TEMPLATE_ID`: default/fallback EmailJS template ID.
+- `BIRDNET_EMAILJS_TEMPLATE_ID_USERNAME_ONLY`: optional template for username-only mode.
+- `BIRDNET_EMAILJS_TEMPLATE_ID_EMAIL_ONLY`: optional template for email-only mode.
+- `BIRDNET_EMAILJS_TEMPLATE_ID_DUAL`: optional template for dual mode (username + email).
 - `BIRDNET_EMAILJS_PUBLIC_KEY`: EmailJS public key.
 - `BIRDNET_EMAILJS_ENDPOINT`: EmailJS API endpoint (default: `https://api.emailjs.com/api/v1.0/email/send`).
 - `BIRDNET_EMAILJS_TIMEOUT_SECONDS`: request timeout in seconds (default: `20`).

@@ -41,6 +41,9 @@ class EmailJSInviteEmailNotifier(InviteEmailNotifier):
         service_id: str,
         template_id: str,
         public_key: str,
+        template_id_username_only: str | None = None,
+        template_id_email_only: str | None = None,
+        template_id_dual: str | None = None,
         endpoint: str = "https://api.emailjs.com/api/v1.0/email/send",
         timeout_seconds: int = 20,
     ):
@@ -48,18 +51,41 @@ class EmailJSInviteEmailNotifier(InviteEmailNotifier):
         self._service_id = service_id
         self._template_id = template_id
         self._public_key = public_key
+        self._template_id_username_only = (template_id_username_only or "").strip() or None
+        self._template_id_email_only = (template_id_email_only or "").strip() or None
+        self._template_id_dual = (template_id_dual or "").strip() or None
         self._endpoint = endpoint
         self._timeout_seconds = max(5, int(timeout_seconds))
+
+    def _resolve_invite_mode(self, payload: InviteEmailPayload) -> str:
+        if payload.invitee_username and payload.invitee_email:
+            return "dual"
+        if payload.invitee_email:
+            return "email_only"
+        return "username_only"
+
+    def _resolve_template_id(self, mode: str) -> str:
+        if mode == "username_only" and self._template_id_username_only:
+            return self._template_id_username_only
+        if mode == "email_only" and self._template_id_email_only:
+            return self._template_id_email_only
+        if mode == "dual" and self._template_id_dual:
+            return self._template_id_dual
+        return self._template_id
 
     def send(self, payload: InviteEmailPayload) -> tuple[bool, str]:
         """Send invite email via EmailJS.
         
         If invitee_email is missing, returns success with message indicating internal-only invite.
         """
+        invite_mode = self._resolve_invite_mode(payload)
         if not payload.invitee_email:
             return True, f"✅ Internal invite created for {payload.invitee_username or 'pending'}"
 
-        invitee_display = payload.invitee_username or payload.invitee_email
+        template_id = self._resolve_template_id(invite_mode)
+        if not template_id:
+            return False, "Internal invite created, but email send failed: EmailJS template ID is not configured"
+
         template_params = {
             "from_name": self._sender_email,
             "to_email": payload.invitee_email,
@@ -70,11 +96,12 @@ class EmailJSInviteEmailNotifier(InviteEmailNotifier):
             "expires_at": payload.expires_at.isoformat(),
             "login_url": payload.login_url or "",
             "invite_link": payload.login_url or "",
+            "invite_mode": invite_mode,
         }
 
         req_payload = {
             "service_id": self._service_id,
-            "template_id": self._template_id,
+            "template_id": template_id,
             "user_id": self._public_key,
             "template_params": template_params,
         }

@@ -21,6 +21,9 @@ class RuntimeConfig:
     emailjs_enabled: bool = False
     emailjs_service_id: str | None = None
     emailjs_template_id: str | None = None
+    emailjs_template_id_username_only: str | None = None
+    emailjs_template_id_email_only: str | None = None
+    emailjs_template_id_dual: str | None = None
     emailjs_public_key: str | None = None
     emailjs_endpoint: str = "https://api.emailjs.com/api/v1.0/email/send"
     emailjs_timeout_seconds: int = 20
@@ -76,6 +79,9 @@ class RuntimeConfig:
         emailjs_enabled = raw_emailjs_enabled in {"1", "true", "yes", "on"}
         emailjs_service_id = (os.getenv("BIRDNET_EMAILJS_SERVICE_ID") or "").strip() or None
         emailjs_template_id = (os.getenv("BIRDNET_EMAILJS_TEMPLATE_ID") or "").strip() or None
+        emailjs_template_id_username_only = (os.getenv("BIRDNET_EMAILJS_TEMPLATE_ID_USERNAME_ONLY") or "").strip() or None
+        emailjs_template_id_email_only = (os.getenv("BIRDNET_EMAILJS_TEMPLATE_ID_EMAIL_ONLY") or "").strip() or None
+        emailjs_template_id_dual = (os.getenv("BIRDNET_EMAILJS_TEMPLATE_ID_DUAL") or "").strip() or None
         emailjs_public_key = (os.getenv("BIRDNET_EMAILJS_PUBLIC_KEY") or os.getenv("EMAILJS_PUBLIC_KEY") or "").strip() or None
         emailjs_endpoint = (os.getenv("BIRDNET_EMAILJS_ENDPOINT") or "https://api.emailjs.com/api/v1.0/email/send").strip() or "https://api.emailjs.com/api/v1.0/email/send"
         raw_emailjs_timeout = (os.getenv("BIRDNET_EMAILJS_TIMEOUT_SECONDS") or "").strip()
@@ -104,6 +110,9 @@ class RuntimeConfig:
             emailjs_enabled=emailjs_enabled,
             emailjs_service_id=emailjs_service_id,
             emailjs_template_id=emailjs_template_id,
+            emailjs_template_id_username_only=emailjs_template_id_username_only,
+            emailjs_template_id_email_only=emailjs_template_id_email_only,
+            emailjs_template_id_dual=emailjs_template_id_dual,
             emailjs_public_key=emailjs_public_key,
             emailjs_endpoint=emailjs_endpoint,
             emailjs_timeout_seconds=emailjs_timeout_seconds,
