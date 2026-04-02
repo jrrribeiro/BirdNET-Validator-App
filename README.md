@@ -74,6 +74,14 @@ Invite email settings (SMTP):
 - `BIRDNET_SMTP_USERNAME`: SMTP username (optional).
 - `BIRDNET_SMTP_PASSWORD`: SMTP password or app token.
 - `BIRDNET_SMTP_USE_TLS`: set to `false` only when TLS is not available.
+- `BIRDNET_SMTP_USE_SSL`: set to `true` for implicit SSL (typically port `465`).
+
+Optional invite email fallback (HTTP API over port 443):
+
+- `BIRDNET_INVITE_EMAIL_HTTP_ENABLED`: set to `true` to enable HTTP provider.
+- `BIRDNET_INVITE_EMAIL_HTTP_ENDPOINT`: provider endpoint (expects JSON POST with bearer token).
+- `BIRDNET_INVITE_EMAIL_HTTP_API_KEY`: provider API key.
+- `BIRDNET_INVITE_EMAIL_HTTP_TIMEOUT_SECONDS`: request timeout in seconds (default: `20`).
 
 JSON seed format examples:
 
@@ -240,6 +248,13 @@ Optional invite email settings:
 - `BIRDNET_SMTP_USERNAME`
 - `BIRDNET_SMTP_PASSWORD`
 - `BIRDNET_SMTP_USE_TLS`
+- `BIRDNET_SMTP_USE_SSL`
+
+Optional HTTP fallback settings:
+- `BIRDNET_INVITE_EMAIL_HTTP_ENABLED`
+- `BIRDNET_INVITE_EMAIL_HTTP_ENDPOINT`
+- `BIRDNET_INVITE_EMAIL_HTTP_API_KEY`
+- `BIRDNET_INVITE_EMAIL_HTTP_TIMEOUT_SECONDS`
 
 4. For first smoke test only, you may temporarily set:
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP=true`

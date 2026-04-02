@@ -24,6 +24,10 @@ class RuntimeConfig:
     smtp_password: str | None
     smtp_use_tls: bool
     smtp_use_ssl: bool = False
+    invite_email_http_enabled: bool = False
+    invite_email_http_endpoint: str | None = None
+    invite_email_http_api_key: str | None = None
+    invite_email_http_timeout_seconds: int = 20
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -91,6 +95,20 @@ class RuntimeConfig:
         raw_smtp_use_ssl = (os.getenv("BIRDNET_SMTP_USE_SSL") or "").strip().lower()
         smtp_use_ssl = raw_smtp_use_ssl in {"1", "true", "yes", "on"}
 
+        raw_invite_email_http_enabled = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_ENABLED") or "").strip().lower()
+        invite_email_http_enabled = raw_invite_email_http_enabled in {"1", "true", "yes", "on"}
+        invite_email_http_endpoint = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_ENDPOINT") or "").strip() or None
+        invite_email_http_api_key = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_API_KEY") or "").strip() or None
+        raw_invite_email_http_timeout = (os.getenv("BIRDNET_INVITE_EMAIL_HTTP_TIMEOUT_SECONDS") or "").strip()
+        invite_email_http_timeout_seconds = 20
+        if raw_invite_email_http_timeout:
+            try:
+                parsed = int(raw_invite_email_http_timeout)
+                if parsed > 0:
+                    invite_email_http_timeout_seconds = parsed
+            except ValueError:
+                invite_email_http_timeout_seconds = 20
+
         return cls(
             detection_seed_path=detection_seed_path,
             validation_base_dir=validation_base_dir,
@@ -110,4 +128,8 @@ class RuntimeConfig:
             smtp_password=smtp_password,
             smtp_use_tls=smtp_use_tls,
             smtp_use_ssl=smtp_use_ssl,
+            invite_email_http_enabled=invite_email_http_enabled,
+            invite_email_http_endpoint=invite_email_http_endpoint,
+            invite_email_http_api_key=invite_email_http_api_key,
+            invite_email_http_timeout_seconds=invite_email_http_timeout_seconds,
         )

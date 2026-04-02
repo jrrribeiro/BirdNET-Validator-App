@@ -23,7 +23,12 @@ from src.repositories.in_memory_detection_repository import InMemoryDetectionRep
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
 from src.services.validation_service import ValidationService
-from src.services.invite_email_notifier import NoopInviteEmailNotifier, SmtpInviteEmailNotifier
+from src.services.invite_email_notifier import (
+    FallbackInviteEmailNotifier,
+    HttpInviteEmailNotifier,
+    NoopInviteEmailNotifier,
+    SmtpInviteEmailNotifier,
+)
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
@@ -2476,12 +2481,15 @@ def create_app() -> gr.Blocks:
     )
 
     invite_notifier = NoopInviteEmailNotifier()
+    smtp_notifier = None
+    http_notifier = None
+
     if (
         runtime_config.invite_email_enabled
         and runtime_config.invite_email_sender
         and runtime_config.smtp_host
     ):
-        invite_notifier = SmtpInviteEmailNotifier(
+        smtp_notifier = SmtpInviteEmailNotifier(
             sender_email=runtime_config.invite_email_sender,
             smtp_host=runtime_config.smtp_host,
             smtp_port=runtime_config.smtp_port,
@@ -2490,6 +2498,27 @@ def create_app() -> gr.Blocks:
             smtp_use_tls=runtime_config.smtp_use_tls,
             smtp_use_ssl=runtime_config.smtp_use_ssl,
         )
+
+    if (
+        runtime_config.invite_email_enabled
+        and runtime_config.invite_email_sender
+        and runtime_config.invite_email_http_enabled
+        and runtime_config.invite_email_http_endpoint
+        and runtime_config.invite_email_http_api_key
+    ):
+        http_notifier = HttpInviteEmailNotifier(
+            sender_email=runtime_config.invite_email_sender,
+            endpoint=runtime_config.invite_email_http_endpoint,
+            api_key=runtime_config.invite_email_http_api_key,
+            timeout_seconds=runtime_config.invite_email_http_timeout_seconds,
+        )
+
+    if smtp_notifier and http_notifier:
+        invite_notifier = FallbackInviteEmailNotifier(primary=smtp_notifier, secondary=http_notifier)
+    elif smtp_notifier:
+        invite_notifier = smtp_notifier
+    elif http_notifier:
+        invite_notifier = http_notifier
 
     # Initialize admin panel manager
     admin_manager = AdminPanelManager(
