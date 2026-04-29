@@ -5,5 +5,8 @@ description = "BirdNET-Validator-App for multi-project bird detection review wor
 readme = "README.md"
 requires-python = ">=3.11"
 
+[project.scripts]
+birdnet-uploader = "src.uploader_cli.main:cli"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
