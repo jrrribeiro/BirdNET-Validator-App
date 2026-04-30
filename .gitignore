@@ -6,3 +6,6 @@ __pycache__/
 .env.*
 .DS_Store
 .vscode/
+dist/
+build/release/
+build/pyinstaller_uploader/

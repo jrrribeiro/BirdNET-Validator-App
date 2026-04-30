@@ -230,6 +230,80 @@ Notes:
 
 The repository also includes a local uploader CLI designed for large dataset ingest and resume support.
 
+### Release Pipeline
+
+The repository includes a release pipeline that produces a portable uploader bundle and can publish it to Hugging Face.
+
+One-command Windows pipeline:
+
+```powershell
+.\build\release_pipeline.ps1 -Version 0.1.0
+```
+
+Build and publish in one step:
+
+```powershell
+$env:HF_TOKEN = "hf_xxx"
+.\build\release_pipeline.ps1 -Version 0.1.0 -PublishToHf -RepoId jrrribeiro/birdnet-uploader-releases -RepoType dataset
+```
+
+Validation-only step (recommended before publish):
+
+```powershell
+.\build\validate_release.ps1 -Version 0.1.0
+```
+
+Local build steps:
+
+```bash
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+pip install pyinstaller
+python build/release_uploader.py --version 0.1.0
+```
+
+The build produces:
+
+- a zipped release bundle under `build/release/`
+- a `.sha256` checksum file next to the zip
+
+To publish a release bundle to Hugging Face from a local machine:
+
+```bash
+set HF_TOKEN=hf_xxx
+python build/publish_release_to_hf.py ^
+  --repo-id jrrribeiro/birdnet-uploader-releases ^
+  --repo-type dataset ^
+  --bundle build\release\birdnet-uploader-0.1.0-windows.zip ^
+  --checksum build\release\birdnet-uploader-0.1.0-windows.zip.sha256 ^
+  --version 0.1.0
+```
+
+Recommended Hugging Face release repo layout:
+
+```text
+birdnet-uploader-releases/
+  releases/
+    v0.1.0/
+      birdnet-uploader-0.1.0-windows.zip
+      birdnet-uploader-0.1.0-windows.zip.sha256
+```
+
+Workflow on GitHub Actions:
+
+- run the release workflow manually
+- build the Windows executable with PyInstaller
+- archive the bundle as a workflow artifact
+- optionally upload the bundle and checksum to a Hugging Face repo
+
+Recommended user-facing validation after publishing:
+
+1. Download the zip from Hugging Face.
+2. Unzip into a clean folder.
+3. Run the executable without Python installed.
+4. Authenticate with a Hugging Face token.
+5. Create a session and confirm resume/recovery works.
+
 ### What It Does
 
 - authenticates with a Hugging Face token stored in the OS keyring
@@ -241,6 +315,7 @@ The repository also includes a local uploader CLI designed for large dataset ing
 - resumes from the last checkpoint after close or crash
 
 ### Main Commands
+
 
 The CLI entrypoint is:
 
@@ -270,6 +345,7 @@ python -m src.uploader_cli.main scan --segments C:\audio\segments
 
 # Create a resumable local session checkpoint
 python -m src.uploader_cli.main start --repo-id alice/birdnet-2026 --segments C:\audio\segments
+
 
 # Resume and inspect the checkpoint later
 python -m src.uploader_cli.main resume upload-20260429T120000Z

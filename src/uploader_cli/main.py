@@ -7,11 +7,11 @@ from typing import Any, Callable
 
 import click
 
-from .auth_service import AuthService
-from .error_handler import build_error_message
-from .repo_service import RepositoryService
-from .scanner import LocalScanner
-from .session_manager import SessionManager
+from src.uploader_cli.auth_service import AuthService
+from src.uploader_cli.error_handler import build_error_message
+from src.uploader_cli.repo_service import RepositoryService
+from src.uploader_cli.scanner import LocalScanner
+from src.uploader_cli.session_manager import SessionManager
 
 
 def handle_cli_errors(fn: Callable[..., Any]) -> Callable[..., Any]:
