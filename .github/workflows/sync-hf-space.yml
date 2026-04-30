@@ -18,6 +18,7 @@ jobs:
           lfs: true
 
       - name: Push to Hugging Face Space
+        if: ${{ secrets.HF_TOKEN && secrets.HF_USERNAME && secrets.HF_SPACE_NAME }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
@@ -25,16 +26,10 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          if [ -z "$HF_TOKEN" ]; then
-            echo "HF_TOKEN secret is required"
-            exit 1
-          fi
-          if [ -z "$HF_USERNAME" ]; then
-            echo "HF_USERNAME secret is required"
-            exit 1
-          fi
-          if [ -z "$HF_SPACE_NAME" ]; then
-            echo "HF_SPACE_NAME secret is required"
-            exit 1
-          fi
           git push "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}" HEAD:main --force
+
+      - name: Skip push to Hugging Face Space (missing secrets)
+        if: ${{ !secrets.HF_TOKEN || !secrets.HF_USERNAME || !secrets.HF_SPACE_NAME }}
+        run: |
+          echo "Skipping push to Hugging Face Space because one or more required secrets are not configured."
+          echo "Configure secrets: HF_TOKEN, HF_USERNAME, HF_SPACE_NAME to enable automatic sync."
