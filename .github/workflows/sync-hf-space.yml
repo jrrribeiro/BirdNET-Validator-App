@@ -17,8 +17,9 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+
       - name: Ensure Hugging Face Space exists
-        if: ${{ secrets.HF_TOKEN && secrets.HF_USERNAME && secrets.HF_SPACE_NAME }}
+        if: ${{ secrets.HF_TOKEN != '' && secrets.HF_USERNAME != '' && secrets.HF_SPACE_NAME != '' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
@@ -41,8 +42,9 @@ jobs:
           )
           PY
 
+
       - name: Push to Hugging Face Space
-        if: ${{ secrets.HF_TOKEN && secrets.HF_USERNAME && secrets.HF_SPACE_NAME }}
+        if: ${{ secrets.HF_TOKEN != '' && secrets.HF_USERNAME != '' && secrets.HF_SPACE_NAME != '' }}
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
           HF_USERNAME: ${{ secrets.HF_USERNAME }}
@@ -52,8 +54,9 @@ jobs:
           git config --global user.email "actions@github.com"
           git push "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}.git" HEAD:main --force
 
+
       - name: Skip push to Hugging Face Space (missing secrets)
-        if: ${{ !secrets.HF_TOKEN || !secrets.HF_USERNAME || !secrets.HF_SPACE_NAME }}
+        if: ${{ secrets.HF_TOKEN == '' || secrets.HF_USERNAME == '' || secrets.HF_SPACE_NAME == '' }}
         run: |
           echo "Skipping push to Hugging Face Space because one or more required secrets are not configured."
           echo "Configure secrets: HF_TOKEN, HF_USERNAME, HF_SPACE_NAME to enable automatic sync."
