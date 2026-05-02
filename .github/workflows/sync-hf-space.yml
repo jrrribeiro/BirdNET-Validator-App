@@ -17,6 +17,30 @@ jobs:
           fetch-depth: 0
           lfs: true
 
+      - name: Ensure Hugging Face Space exists
+        if: ${{ secrets.HF_TOKEN && secrets.HF_USERNAME && secrets.HF_SPACE_NAME }}
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+          HF_USERNAME: ${{ secrets.HF_USERNAME }}
+          HF_SPACE_NAME: ${{ secrets.HF_SPACE_NAME }}
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import HfApi
+
+          token = os.environ["HF_TOKEN"]
+          username = os.environ["HF_USERNAME"]
+          space_name = os.environ["HF_SPACE_NAME"]
+
+          api = HfApi(token=token)
+          api.create_repo(
+              repo_id=f"{username}/{space_name}",
+              repo_type="space",
+              exist_ok=True,
+              space_sdk="gradio",
+          )
+          PY
+
       - name: Push to Hugging Face Space
         if: ${{ secrets.HF_TOKEN && secrets.HF_USERNAME && secrets.HF_SPACE_NAME }}
         env:
@@ -26,7 +50,7 @@ jobs:
         run: |
           git config --global user.name "github-actions"
           git config --global user.email "actions@github.com"
-          git push "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}" HEAD:main --force
+          git push "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_USERNAME}/${HF_SPACE_NAME}.git" HEAD:main --force
 
       - name: Skip push to Hugging Face Space (missing secrets)
         if: ${{ !secrets.HF_TOKEN || !secrets.HF_USERNAME || !secrets.HF_SPACE_NAME }}
