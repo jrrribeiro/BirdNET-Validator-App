@@ -320,7 +320,7 @@ Recommended user-facing validation after publishing:
 The CLI entrypoint is:
 
 ```bash
-python -m src.uploader.main --help
+python -m src.uploader_cli.main --help
 ```
 
 Commands:
@@ -335,34 +335,34 @@ Commands:
 
 ```bash
 # Authenticate once
-python -m src.uploader.main login
+python -m src.uploader_cli.main login
 
 # Create or initialize the dataset repository
-python -m src.uploader.main init-repo --repo-id alice/birdnet-2026 --private
+python -m src.uploader_cli.main init-repo --repo-id alice/birdnet-2026 --private
 
 # Inspect the local folder before upload
-python -m src.uploader.main scan --segments C:\audio\segments
+python -m src.uploader_cli.main scan --segments C:\audio\segments
 
 # Create a resumable local session checkpoint
-python -m src.uploader.main start --repo-id alice/birdnet-2026 --segments C:\audio\segments
+python -m src.uploader_cli.main start --repo-id alice/birdnet-2026 --segments C:\audio\segments
 
 
 # Resume and inspect the checkpoint later
-python -m src.uploader.main resume upload-20260429T120000Z
+python -m src.uploader_cli.main resume upload-20260429T120000Z
 ```
 
 ### Upload Engine Building Blocks
 
 The uploader CLI is built from the following modules:
 
-`src/uploader/auth_service.py`: token validation and keyring storage
-`src/uploader/repo_service.py`: dataset creation and structure initialization
-`src/uploader/scanner.py`: recursive audio discovery and metadata collection
-`src/uploader/hash_utils.py`: streaming SHA-256 helpers
-`src/uploader/deduplicator.py`: remote index cache and skip/upload decisions
-`src/uploader/session_manager.py`: checkpoint and session metadata persistence
-`src/uploader/batch_uploader.py`: retrying upload orchestration
-`src/uploader/error_handler.py`: user-friendly error formatting
+- `src/uploader_cli/auth_service.py`: token validation and keyring storage
+- `src/uploader_cli/repo_service.py`: dataset creation and structure initialization
+- `src/uploader_cli/scanner.py`: recursive audio discovery and metadata collection
+- `src/uploader_cli/hash_utils.py`: streaming SHA-256 helpers
+- `src/uploader_cli/deduplicator.py`: remote index cache and skip/upload decisions
+- `src/uploader_cli/session_manager.py`: checkpoint and session metadata persistence
+- `src/uploader_cli/batch_uploader.py`: retrying upload orchestration
+- `src/uploader_cli/error_handler.py`: user-friendly error formatting
 
 ### Local Data Layout
 
@@ -400,8 +400,7 @@ audit/ingestion-runs/...        # ingestion run history
 
 ### Uploader Configuration
 
-Runtime constants are centralized in `src/uploader/config.py`:
-Runtime constants are centralized in `src/uploader/config.py`:
+Runtime constants are centralized in `src/uploader_cli/config.py`:
 
 - `APP_NAME`
 - `SCHEMA_VERSION`
@@ -452,7 +451,7 @@ python app.py
 4. Run the uploader CLI help:
 
 ```bash
-python -m src.uploader.main --help
+python -m src.uploader_cli.main --help
 ```
 
 ### First-Time Uploader Setup
@@ -460,25 +459,25 @@ python -m src.uploader.main --help
 1. Log in with a Hugging Face token:
 
 ```bash
-python -m src.uploader.main login
+python -m src.uploader_cli.main login
 ```
 
 2. Validate your target repository exists or create it:
 
 ```bash
-python -m src.uploader.main init-repo --repo-id alice/birdnet-2026 --private
+python -m src.uploader_cli.main init-repo --repo-id alice/birdnet-2026 --private
 ```
 
 3. Scan your local dataset folder:
 
 ```bash
-python -m src.uploader.main scan --segments C:\audio\segments
+python -m src.uploader_cli.main scan --segments C:\audio\segments
 ```
 
 4. Start a resumable session:
 
 ```bash
-python -m src.uploader.main start --repo-id alice/birdnet-2026 --segments C:\audio\segments
+python -m src.uploader_cli.main start --repo-id alice/birdnet-2026 --segments C:\audio\segments
 ```
 
 ## Configuration
@@ -541,7 +540,7 @@ python -m src.uploader.main start --repo-id alice/birdnet-2026 --segments C:\aud
 - `src/repositories`: in-memory and append-only persistence
 - `src/services`: queue, validation, and audio fetch services
 - `src/ui`: Gradio interface composition and callbacks
-- `src/uploader`: local uploader CLI, session persistence, deduplication, and retrying uploads
+- `src/uploader_cli`: local uploader CLI, session persistence, deduplication, and retrying uploads
 - `tests`: unit and integration test suites
 - `docs`: collaborative workflow and QA checklists
 
