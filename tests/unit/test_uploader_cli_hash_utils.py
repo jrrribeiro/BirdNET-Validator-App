@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.uploader_cli.hash_utils import compute_file_hash, verify_file_integrity
+from src.uploader.hash_utils import compute_file_hash, verify_file_integrity
 
 
 def test_compute_file_hash_matches_known_sha256(tmp_path: Path) -> None:

@@ -1,7 +1,7 @@
 import pytest
 
-from src.uploader_cli.auth_service import AuthService
-from src.uploader_cli.exceptions import AuthenticationError
+from src.uploader.auth_service import AuthService
+from src.uploader.exceptions import AuthenticationError
 
 
 def test_authenticate_success_stores_token(monkeypatch: pytest.MonkeyPatch) -> None:

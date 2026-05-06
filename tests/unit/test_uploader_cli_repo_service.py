@@ -2,8 +2,8 @@ import json
 
 import pytest
 
-from src.uploader_cli.exceptions import RepositoryError
-from src.uploader_cli.repo_service import RepositoryService
+from src.uploader.exceptions import RepositoryError
+from src.uploader.repo_service import RepositoryService
 
 
 class _FakeApi:

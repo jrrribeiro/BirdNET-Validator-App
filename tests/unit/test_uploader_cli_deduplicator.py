@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from src.uploader_cli.deduplicator import Deduplicator
+from src.uploader.deduplicator import Deduplicator
 
 
 class FakeApi:

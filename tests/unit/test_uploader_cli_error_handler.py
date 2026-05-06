@@ -1,5 +1,5 @@
-from src.uploader_cli.error_handler import build_error_message
-from src.uploader_cli.exceptions import AuthenticationError, UploadError
+from src.uploader.error_handler import build_error_message
+from src.uploader.exceptions import AuthenticationError, UploadError
 
 
 def test_build_error_message_uses_default_hint() -> None:

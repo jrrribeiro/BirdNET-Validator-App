@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.uploader_cli.scanner import LocalScanner
+from src.uploader.scanner import LocalScanner
 
 
 def test_scan_folder_counts_audio_files(tmp_path: Path) -> None:

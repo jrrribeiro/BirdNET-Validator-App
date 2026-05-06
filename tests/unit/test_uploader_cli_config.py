@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.uploader_cli.config import get_runtime_config, get_session_root
+from src.uploader.config import get_runtime_config, get_session_root
 
 
 def test_get_session_root_uses_env_override(tmp_path: Path, monkeypatch) -> None:

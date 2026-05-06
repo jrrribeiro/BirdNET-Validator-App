@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from src.uploader_cli.exceptions import SessionError
-from src.uploader_cli.session_manager import SessionManager
+from src.uploader.exceptions import SessionError
+from src.uploader.session_manager import SessionManager
 
 
 def test_create_session_persists_metadata(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

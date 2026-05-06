@@ -2,8 +2,8 @@ import os
 
 from pathlib import Path
 
-from src.uploader_cli.batch_uploader import BatchUploader
-from src.uploader_cli.session_manager import SessionManager
+from src.uploader.batch_uploader import BatchUploader
+from src.uploader.session_manager import SessionManager
 
 
 class FakeAPI:

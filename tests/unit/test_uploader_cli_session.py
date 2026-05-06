@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from src.uploader_cli.session_manager import SessionManager
+from src.uploader.session_manager import SessionManager
 
 
 def test_session_checkpoint_roundtrip(tmp_path: Path, monkeypatch) -> None:
