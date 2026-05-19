@@ -7,13 +7,18 @@ import sys
 from pathlib import Path
 
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+
 def check_python_version() -> bool:
     """Verify Python 3.11+."""
     version = sys.version_info
     if version.major == 3 and version.minor >= 11:
-        print(f"✓ Python {version.major}.{version.minor}.{version.micro}")
+        print(f"[OK] Python {version.major}.{version.minor}.{version.micro}")
         return True
-    print(f"✗ Python {version.major}.{version.minor} (require 3.11+)")
+    print(f"[FAIL] Python {version.major}.{version.minor} (require 3.11+)")
     return False
 
 
@@ -32,9 +37,9 @@ def check_files() -> bool:
     for file in required:
         path = Path(file)
         if path.exists():
-            print(f"✓ {file}")
+            print(f"[OK] {file}")
         else:
-            print(f"✗ {file} NOT FOUND")
+            print(f"[FAIL] {file} NOT FOUND")
             all_exist = False
     
     return all_exist
@@ -47,10 +52,10 @@ def check_imports() -> bool:
         from src.config.runtime_config import RuntimeConfig
         from src.ui.app_factory import create_app
         from src.auth.auth_service import AuthService
-        print("✓ All imports work")
+        print("[OK] All imports work")
         return True
     except Exception as exc:
-        print(f"✗ Import failed: {exc}")
+        print(f"[FAIL] Import failed: {exc}")
         return False
 
 
@@ -60,13 +65,13 @@ def check_config() -> bool:
         print("Checking runtime config...")
         from src.config.runtime_config import RuntimeConfig
         cfg = RuntimeConfig.from_env()
-        print(f"✓ Config loaded:")
+        print("[OK] Config loaded:")
         print(f"  - Page size: {cfg.page_size}")
         print(f"  - Demo bootstrap: {cfg.enable_demo_bootstrap}")
         print(f"  - Validation dir: {cfg.validation_base_dir}")
         return True
     except Exception as exc:
-        print(f"✗ Config error: {exc}")
+        print(f"[FAIL] Config error: {exc}")
         return False
 
 
@@ -78,9 +83,9 @@ def check_dependencies() -> bool:
     for pkg in dependencies:
         try:
             __import__(pkg)
-            print(f"✓ {pkg}")
+            print(f"[OK] {pkg}")
         except ImportError:
-            print(f"✗ {pkg} NOT INSTALLED")
+            print(f"[FAIL] {pkg} NOT INSTALLED")
             all_ok = False
     
     return all_ok
@@ -95,10 +100,10 @@ def check_app_creation() -> bool:
         
         from src.ui.app_factory import create_app
         app = create_app()
-        print(f"✓ App created (type: {type(app).__name__})")
+        print(f"[OK] App created (type: {type(app).__name__})")
         return True
     except Exception as exc:
-        print(f"✗ App creation failed: {exc}")
+        print(f"[FAIL] App creation failed: {exc}")
         import traceback
         traceback.print_exc()
         return False
@@ -127,7 +132,7 @@ def main() -> int:
             result = check_fn()
             results.append(result)
         except Exception as exc:
-            print(f"✗ {name} check failed: {exc}")
+            print(f"[FAIL] {name} check failed: {exc}")
             results.append(False)
     
     print()
@@ -138,10 +143,10 @@ def main() -> int:
     print("=" * 60)
     
     if all(results):
-        print("\n✓ Ready for deployment!")
+        print("\n[OK] Ready for deployment!")
         return 0
     else:
-        print("\n✗ Fix issues above before deploying")
+        print("\n[FAIL] Fix issues above before deploying")
         return 1
 
 

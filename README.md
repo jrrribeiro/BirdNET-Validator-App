@@ -7,6 +7,7 @@ sdk: gradio
 sdk_version: "5.23.1"
 python_version: "3.11"
 app_file: app.py
+hf_oauth: true
 pinned: false
 ---
 
@@ -44,6 +45,7 @@ The validator workflow emphasizes:
 - rapid decision flow for detections
 - auditability through append-only events
 - conflict-aware updates for concurrent validators
+- compatibility with `HF_Dataset_Uploader` datasets using `index/files.parquet`
 
 The uploader workflow emphasizes:
 
@@ -172,6 +174,7 @@ User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
 1. Create a new Space with:
 - SDK: `Gradio`
 - Python: `3.11`
+- OAuth: enabled (`hf_oauth: true` in this README metadata)
 
 2. Push this repository to the Space.
 
@@ -225,6 +228,7 @@ Notes:
 - Keep user/project bootstrap files private if they contain sensitive assignments.
 - Use `/data` paths in Spaces to keep projects, invites, ACL, and validations across redeploys.
 - Collaborative access is token-per-user: each collaborator logs in with their own Hugging Face token.
+- Datasets uploaded by `HF_Dataset_Uploader` are read from `index/files.parquet` first; older `index/shards/*.parquet`, CSV, JSONL, and audio-path fallback layouts remain supported.
 
 ## Local Uploader CLI
 

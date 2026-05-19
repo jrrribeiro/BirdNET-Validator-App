@@ -1109,3 +1109,69 @@ def test_load_dataset_detections_for_project_uses_parquet_shards_when_available(
     assert warning == ""
     assert len(detections) == 1
     assert detections[0].scientific_name == "Species A"
+
+
+def test_load_dataset_detections_for_project_uses_files_parquet_index(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.ui import app_factory as module
+
+    files_index = tmp_path / "files.parquet"
+    pd.DataFrame.from_records(
+        [
+            {
+                "stored_path": "audio/Accipiter_striatus/shard-000000/Catim_20250221_060600_0.0-3.0s_85__abc123.wav",
+                "original_relative_path": "Accipiter striatus/Catim_20250221_060600_0.0-3.0s_85%.wav",
+                "logical_group": "Accipiter striatus",
+                "filename": "Catim_20250221_060600_0.0-3.0s_85%.wav",
+                "size": 123,
+            }
+        ]
+    ).to_parquet(files_index, index=False)
+
+    detections_csv = tmp_path / "detections.csv"
+    detections_csv.write_text(
+        "source_file,scientific_name,confidence,start_time,end_time\n"
+        "Catim_20250221_060600_0.0-3.0s_85%.wav,Accipiter striatus,0.85,0,3\n",
+        encoding="utf-8",
+    )
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            return ["index/files.parquet", "index/detections.csv"]
+
+    def fake_download(repo_id: str, repo_type: str, filename: str, token: str | None = None) -> str:
+        _ = repo_id
+        _ = repo_type
+        _ = token
+        if filename == "index/files.parquet":
+            return str(files_index)
+        if filename == "index/detections.csv":
+            return str(detections_csv)
+        raise FileNotFoundError(filename)
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+    monkeypatch.setattr(module, "hf_hub_download", fake_download)
+
+    project = Project(
+        project_slug="ppbio-rabeca",
+        name="PPBIO RABECA",
+        dataset_repo_id="jrrribeiro/PPBIO-RABECA",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert warning == ""
+    assert len(detections) == 1
+    assert detections[0].audio_id == "Accipiter_striatus/shard-000000/Catim_20250221_060600_0.0-3.0s_85__abc123.wav"
+    assert detections[0].scientific_name == "Accipiter striatus"
+    assert detections[0].confidence == 0.85
+    assert detections[0].start_time == 0.0
+    assert detections[0].end_time == 3.0

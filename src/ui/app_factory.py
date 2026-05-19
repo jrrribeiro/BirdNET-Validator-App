@@ -143,6 +143,7 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
             raw,
             [
                 "segment_path_in_repo",
+                "stored_path",
                 "segment_relpath",
                 "audio_id",
                 "audio_file",
@@ -165,6 +166,7 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
             "species",
             "species_name",
             "predicted_species",
+            "logical_group",
             "label",
             "taxon",
         ],
@@ -254,6 +256,15 @@ def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detecti
     if not repo_files:
         return [], f"⚠️ Dataset {dataset_repo} has no files."
 
+    files_index_detections, files_index_warning = _load_detections_from_files_index(
+        project=project,
+        dataset_repo=dataset_repo,
+        token=token,
+        repo_files=repo_files,
+    )
+    if files_index_detections:
+        return files_index_detections, files_index_warning
+
     shard_detections, shard_warning = _load_detections_from_parquet_shards(
         project=project,
         dataset_repo=dataset_repo,
@@ -285,7 +296,7 @@ def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detecti
         return [], (
             f"⚠️ Dataset {dataset_repo} has no detection metadata file for project {project.project_slug}. "
             "Expected names like detections.jsonl / segments.csv (top-level, metadata/, or <project_slug>/), "
-            "or audio files under audio/segments/<species>/..."
+            "index/files.parquet from HF_Dataset_Uploader, or audio files under audio/segments/<species>/..."
         )
 
     try:
@@ -335,6 +346,117 @@ def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detecti
         )
 
     return parsed, ""
+
+
+def _load_detections_from_files_index(
+    project: Project,
+    dataset_repo: str,
+    token: str | None,
+    repo_files: list[str],
+) -> tuple[list[Detection], str]:
+    files_index_path = _resolve_files_index_path(repo_files)
+    if not files_index_path:
+        return [], ""
+
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except Exception:
+        return [], (
+            f"⚠️ Dataset {dataset_repo} contains {files_index_path}, but pandas/pyarrow are unavailable to read it."
+        )
+
+    try:
+        downloaded = _download_dataset_metadata_file(dataset_repo, files_index_path, token)
+        frame = pd.read_parquet(downloaded)
+        rows = frame.to_dict(orient="records")
+    except Exception as exc:
+        return [], f"⚠️ Failed to read {files_index_path} from {dataset_repo}: {exc}"
+
+    detections_csv_path = _resolve_detection_csv_path(repo_files)
+    if detections_csv_path:
+        try:
+            csv_path = _download_dataset_metadata_file(dataset_repo, detections_csv_path, token)
+            detections_frame = pd.read_csv(csv_path)
+            rows = _merge_files_index_with_detection_rows(rows, detections_frame.to_dict(orient="records"))
+        except Exception:
+            # The files index is enough to validate audio segments. CSV enrichment is optional.
+            pass
+
+    parsed = _parse_detection_metadata_payload(rows, project.project_slug)
+    if not parsed:
+        return [], f"⚠️ Dataset {dataset_repo} has {files_index_path}, but no valid audio rows were parsed."
+    return parsed, ""
+
+
+def _resolve_files_index_path(repo_files: list[str]) -> str:
+    preferred = ["index/files.parquet", "files.parquet", "metadata/files.parquet"]
+    for candidate in preferred:
+        if candidate in repo_files:
+            return candidate
+    for path in repo_files:
+        normalized = str(path).replace("\\", "/").strip().lower()
+        if normalized.endswith("/files.parquet") or normalized == "files.parquet":
+            return str(path)
+    return ""
+
+
+def _resolve_detection_csv_path(repo_files: list[str]) -> str:
+    preferred = ["index/detections.csv", "detections.csv", "metadata/detections.csv"]
+    for candidate in preferred:
+        if candidate in repo_files:
+            return candidate
+    return ""
+
+
+def _download_dataset_metadata_file(dataset_repo: str, filename: str, token: str | None) -> str:
+    if token:
+        return hf_hub_download(
+            repo_id=dataset_repo,
+            repo_type="dataset",
+            filename=filename,
+            token=token,
+        )
+    return hf_hub_download(
+        repo_id=dataset_repo,
+        repo_type="dataset",
+        filename=filename,
+    )
+
+
+def _merge_files_index_with_detection_rows(
+    file_rows: list[dict[str, object]],
+    detection_rows: list[dict[str, object]],
+) -> list[dict[str, object]]:
+    detection_by_species_and_source: dict[tuple[str, str], dict[str, object]] = {}
+    detection_by_source: dict[str, dict[str, object]] = {}
+
+    for row in detection_rows:
+        source_file = _pick_row_value(row, ["source_file", "audio_file", "file", "filename", "path"])
+        species = _pick_row_value(row, ["scientific_name", "species", "label", "logical_group"])
+        if source_file:
+            detection_by_source.setdefault(source_file, row)
+            if species:
+                detection_by_species_and_source.setdefault((species, source_file), row)
+
+    merged: list[dict[str, object]] = []
+    for row in file_rows:
+        combined = dict(row)
+        original_relative_path = _pick_row_value(row, ["original_relative_path", "relative_path", "stored_path", "audio_id"])
+        filename = _pick_row_value(row, ["filename"])
+        if not filename and original_relative_path:
+            filename = Path(original_relative_path).name
+        species = _pick_row_value(row, ["logical_group", "scientific_name", "species"])
+
+        match = None
+        if species and filename:
+            match = detection_by_species_and_source.get((species, filename))
+        if match is None and filename:
+            match = detection_by_source.get(filename)
+        if match:
+            for key, value in match.items():
+                combined.setdefault(key, value)
+        merged.append(combined)
+    return merged
 
 
 def _resolve_shard_paths_from_repo_files(repo_files: list[str]) -> list[str]:
@@ -1574,6 +1696,10 @@ def _cleanup_selected_audio(audio_service: _AudioServiceProtocol, cache_key: str
 
     audio_service.cleanup_after_validation(cache_key=cache_key)
     return "Audio cache cleaned after validation", None
+
+
+def _validator_name_from_session(session: object) -> str:
+    return str(getattr(session, "username", "") or "").strip()
 
 
 def _save_selected_validation(
@@ -3564,7 +3690,7 @@ def create_app() -> gr.Blocks:
                         refresh_btn = gr.Button("Apply Filters")
 
                         gr.Markdown("#### Actions")
-                        validator_name = gr.Textbox(label="Validator", value="validator-demo")
+                        validator_name = gr.Textbox(label="Validator", value="", interactive=False)
                         validation_notes = gr.Textbox(label="Notes", placeholder="Optional", lines=4)
                         keyboard_shortcuts_info = gr.HTML(
                             value="<div style='font-size:12px;color:#333;padding:8px 10px;background:#f5f5f5;border-radius:6px;margin-bottom:8px;'>"
@@ -3713,7 +3839,7 @@ def create_app() -> gr.Blocks:
                     status_value: str,
                     rows: object,
                     idx: int,
-                    name: str,
+                    session,
                     notes: str,
                     corrected_species_value: str | None,
                     cache_key: str,
@@ -3727,6 +3853,9 @@ def create_app() -> gr.Blocks:
                 ):
                     if not project_slug:
                         return "Select a project before validating", cache_key, None, rows, page, idx, "", ""
+                    validator_name_value = _validator_name_from_session(session)
+                    if not validator_name_value:
+                        return "Login before validating", cache_key, None, rows, page, idx, "", ""
                     return _save_selected_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -3736,7 +3865,7 @@ def create_app() -> gr.Blocks:
                         rows=rows,
                         selected_index=int(idx),
                         status_value=status_value,
-                        validator=name,
+                        validator=validator_name_value,
                         notes=notes,
                         corrected_species=corrected_species_value,
                         cache_key=cache_key,
@@ -4111,12 +4240,12 @@ def create_app() -> gr.Blocks:
                 )
 
                 approve_event = approve_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                    fn=lambda project_slug, rows, idx, session, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "positive",
                         rows,
                         idx,
-                        name,
+                        session,
                         notes,
                         corrected_species_value,
                         cache_key,
@@ -4132,7 +4261,7 @@ def create_app() -> gr.Blocks:
                         selected_project_state,
                         table,
                         selected_index,
-                        validator_name,
+                        session_state,
                         validation_notes,
                         corrected_species_input,
                         cache_key_state,
@@ -4147,12 +4276,12 @@ def create_app() -> gr.Blocks:
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
                 reject_event = reject_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                    fn=lambda project_slug, rows, idx, session, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "negative",
                         rows,
                         idx,
-                        name,
+                        session,
                         notes,
                         corrected_species_value,
                         cache_key,
@@ -4168,7 +4297,7 @@ def create_app() -> gr.Blocks:
                         selected_project_state,
                         table,
                         selected_index,
-                        validator_name,
+                        session_state,
                         validation_notes,
                         corrected_species_input,
                         cache_key_state,
@@ -4183,12 +4312,12 @@ def create_app() -> gr.Blocks:
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
                 uncertain_event = uncertain_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                    fn=lambda project_slug, rows, idx, session, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "uncertain",
                         rows,
                         idx,
-                        name,
+                        session,
                         notes,
                         corrected_species_value,
                         cache_key,
@@ -4204,7 +4333,7 @@ def create_app() -> gr.Blocks:
                         selected_project_state,
                         table,
                         selected_index,
-                        validator_name,
+                        session_state,
                         validation_notes,
                         corrected_species_input,
                         cache_key_state,
@@ -4219,12 +4348,12 @@ def create_app() -> gr.Blocks:
                     outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
                 )
                 skip_event = skip_btn.click(
-                    fn=lambda project_slug, rows, idx, name, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
+                    fn=lambda project_slug, rows, idx, session, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
                         project_slug,
                         "skip",
                         rows,
                         idx,
-                        name,
+                        session,
                         notes,
                         corrected_species_value,
                         cache_key,
@@ -4240,7 +4369,7 @@ def create_app() -> gr.Blocks:
                         selected_project_state,
                         table,
                         selected_index,
-                        validator_name,
+                        session_state,
                         validation_notes,
                         corrected_species_input,
                         cache_key_state,
