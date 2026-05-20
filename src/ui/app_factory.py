@@ -28,7 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import compact_metric_grid, inline_hint_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html, validation_queue_html
+from src.ui.components import admin_overview_html, compact_metric_grid, inline_hint_html, invite_panel_html, project_context_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html, validation_queue_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -2825,6 +2825,30 @@ def create_app() -> gr.Blocks:
                 )
                 admin_info = gr.Markdown(value="⚠️ Login first")
                 admin_scope_info = gr.Markdown(value="")
+                admin_overview = gr.HTML(value=admin_overview_html(username=None, total_projects=0, admin_projects=0, validator_projects=0, pending_invites=0))
+
+                def _render_admin_overview(session):
+                    if session is None:
+                        return admin_overview_html(
+                            username=None,
+                            total_projects=len(_project_rows()),
+                            admin_projects=0,
+                            validator_projects=0,
+                            pending_invites=0,
+                        )
+                    admin_projects = _admin_projects_for_session(session)
+                    validator_projects = [
+                        project_slug
+                        for project_slug in session.authorized_projects
+                        if auth_service.get_user_role_for_project(session.username, project_slug) == Role.validator
+                    ]
+                    return admin_overview_html(
+                        username=session.username,
+                        total_projects=len(_project_rows()),
+                        admin_projects=len(admin_projects),
+                        validator_projects=len(validator_projects),
+                        pending_invites=len(auth_service.list_pending_invites(session.username)),
+                    )
 
                 def create_admin_display(session):
                     """Show admin panel or access denied message."""
@@ -2844,7 +2868,14 @@ def create_app() -> gr.Blocks:
                     )
 
                 with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_controls:
-                    gr.Markdown("#### Registered Projects")
+                    gr.HTML(
+                        section_header_html(
+                            "Projects",
+                            "Registered datasets",
+                            "Create project records and keep their Hugging Face dataset access aligned.",
+                            class_name="bn-panel-soft",
+                        )
+                    )
 
                     with gr.Row():
                         create_project_slug = gr.Textbox(
@@ -2950,14 +2981,14 @@ def create_app() -> gr.Blocks:
                             refreshed_session,
                         )
 
-                    create_project_btn = gr.Button("➕ Create Project", variant="primary")
+                    create_project_btn = gr.Button("Create Project", variant="primary")
                     projects_table = gr.Dataframe(
                         value=_project_rows(),
-                        headers=["project_slug", "name", "dataset_repo_id", "visibility", "owner_username", "dataset_token_set", "active"],
+                        headers=["Project", "Name", "Dataset", "Visibility", "Owner", "Token", "Active"],
                         interactive=False,
                         elem_classes=["bn-dataframe"],
                     )
-                    refresh_projects_btn = gr.Button("🔄 Refresh List")
+                    refresh_projects_btn = gr.Button("Refresh List")
 
                     gr.Markdown("<div style='height:8px;'></div>")
 
@@ -3001,7 +3032,14 @@ def create_app() -> gr.Blocks:
                     )
 
                     gr.HTML(inline_hint_html("Project tokens are optional. Use them only for private datasets or datasets that require owner-level access."))
-                    gr.Markdown("#### Project Token Management")
+                    gr.HTML(
+                        section_header_html(
+                            "Access",
+                            "Project token management",
+                            "Store or clear dataset tokens without exposing them in the interface.",
+                            class_name="bn-panel-soft",
+                        )
+                    )
                     with gr.Row():
                         token_project_select = gr.Dropdown(
                             choices=_project_slugs(),
@@ -3058,7 +3096,14 @@ def create_app() -> gr.Blocks:
                     )
 
                 with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_users_controls:
-                    gr.Markdown("#### Team Access")
+                    gr.HTML(
+                        section_header_html(
+                            "Team",
+                            "User access and invitations",
+                            "Assign known users directly or send invites when access should be accepted later.",
+                            class_name="bn-panel-soft",
+                        )
+                    )
                     gr.HTML(
                         inline_hint_html(
                             "Assign immediately when you know the Hugging Face username. Use invites when you want the user to accept access later or receive email instructions."
@@ -3110,7 +3155,7 @@ def create_app() -> gr.Blocks:
                         )
 
                     admin_message = gr.Markdown()
-                    invite_btn = gr.Button("✉️ Send Invite")
+                    invite_btn = gr.Button("Send Invite")
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None:
@@ -3129,7 +3174,7 @@ def create_app() -> gr.Blocks:
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
 
-                    assign_btn = gr.Button("✅ Assign", variant="primary")
+                    assign_btn = gr.Button("Assign", variant="primary")
                     assign_btn.click(
                         fn=assign_user,
                         inputs=[session_state, admin_username, admin_project, admin_role],
@@ -3227,7 +3272,14 @@ def create_app() -> gr.Blocks:
 
                     gr.Markdown("<div style='height:8px;'></div>")
 
-                    gr.Markdown("#### Pending Invites")
+                    gr.HTML(
+                        section_header_html(
+                            "Invites",
+                            "Pending access requests",
+                            "Review outstanding invitations and revoke stale access before onboarding more validators.",
+                            class_name="bn-panel-soft",
+                        )
+                    )
                     with gr.Row():
                         pending_invites_filter_project = gr.Dropdown(
                             choices=["all", *_project_slugs()],
@@ -3238,7 +3290,7 @@ def create_app() -> gr.Blocks:
                         pending_invite_project = gr.Dropdown(choices=_project_slugs(), label="Invite project")
                     pending_invites_table = gr.Dataframe(
                         value=[],
-                        headers=["username", "project_slug", "role", "invited_by", "expires_at", "expires_in"],
+                        headers=["Username", "Project", "Role", "Invited by", "Expires at", "Expires in"],
                         interactive=False,
                         elem_classes=["bn-dataframe"],
                     )
@@ -3349,6 +3401,12 @@ def create_app() -> gr.Blocks:
                 )
 
                 session_state.change(
+                    fn=_render_admin_overview,
+                    inputs=[session_state],
+                    outputs=[admin_overview],
+                )
+
+                session_state.change(
                     fn=_render_admin_scope_info,
                     inputs=[session_state, admin_project],
                     outputs=[admin_scope_info],
@@ -3397,6 +3455,7 @@ def create_app() -> gr.Blocks:
                 project_info_display = gr.Markdown(
                     value="⚠️ Login first in the **Login** tab"
                 )
+                project_context_display = gr.HTML(value=project_context_html(None))
                 project_selector = gr.Dropdown(
                     choices=[],
                     label="Authorized Project",
@@ -3404,6 +3463,7 @@ def create_app() -> gr.Blocks:
                     allow_custom_value=True,
                 )
                 invitations_info = gr.Markdown(value="")
+                invitations_overview = gr.HTML(value=invite_panel_html(0))
                 invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
                 with gr.Row():
                     refresh_invites_btn = gr.Button("Refresh Invites")
@@ -3418,6 +3478,7 @@ def create_app() -> gr.Blocks:
                             gr.Dropdown(choices=[], value=None, interactive=False),
                             project_overview_html([], []),
                             "❌ Not authenticated. Login first.",
+                            project_context_html(None),
                             None,
                             "",
                         )
@@ -3435,6 +3496,7 @@ def create_app() -> gr.Blocks:
                                 "3. Click **Create Project**.\n"
                                 "4. Go back to **Projects** and choose the created project."
                             ),
+                            project_context_html(None),
                             None,
                             "",
                         )
@@ -3444,10 +3506,12 @@ def create_app() -> gr.Blocks:
                     role_label = role.value.upper() if role else "UNKNOWN"
                     selected_project = admin_manager.get_project(selected)
                     dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
+                    project_row = next((row for row in _project_rows() if row and str(row[0]) == selected), None)
                     return (
                         gr.Dropdown(choices=projects, value=selected, interactive=True),
                         project_overview_html(_project_rows(), projects, selected),
                         f"📁 **Project:** {selected} | **Your Role:** {role_label}",
+                        project_context_html(project_row, role_label),
                         selected,
                         dataset_repo_id,
                     )
@@ -3482,14 +3546,15 @@ def create_app() -> gr.Blocks:
 
                 def _build_invites_ui(session):
                     if session is None:
-                        return gr.update(value="", visible=False), gr.update(choices=[], value=None, interactive=False)
+                        return gr.update(value="", visible=False), invite_panel_html(0), gr.update(choices=[], value=None, interactive=False)
                     invites = auth_service.list_pending_invites(session.username)
                     if not invites:
-                        return gr.update(value="No pending invites", visible=True), gr.update(choices=[], value=None, interactive=False)
+                        return gr.update(value="No pending invites", visible=True), invite_panel_html(0), gr.update(choices=[], value=None, interactive=False)
                     encoded = [_format_invite_option(item) for item in invites]
                     labeled_choices = [(_build_invite_label(invite), encoded_value) for invite, encoded_value in zip(invites, encoded)]
                     return (
                         gr.update(value=f"Pending invites: {len(labeled_choices)}", visible=True),
+                        invite_panel_html(len(labeled_choices)),
                         gr.update(choices=labeled_choices, value=encoded[0], interactive=True),
                     )
 
@@ -3540,19 +3605,19 @@ def create_app() -> gr.Blocks:
                 session_state.change(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_overview, project_info_display, selected_project_state, selected_dataset_repo_state],
+                    outputs=[project_selector, project_overview, project_info_display, project_context_display, selected_project_state, selected_dataset_repo_state],
                 )
 
                 session_state.change(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector],
                 )
 
                 refresh_invites_btn.click(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector],
                 )
 
                 accept_invite_btn.click(
@@ -3562,11 +3627,11 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_overview, project_info_display, selected_project_state, selected_dataset_repo_state],
+                    outputs=[project_selector, project_overview, project_info_display, project_context_display, selected_project_state, selected_dataset_repo_state],
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector],
                 )
 
                 accept_all_invites_btn.click(
@@ -3576,11 +3641,11 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_overview, project_info_display, selected_project_state, selected_dataset_repo_state],
+                    outputs=[project_selector, project_overview, project_info_display, project_context_display, selected_project_state, selected_dataset_repo_state],
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector],
                 )
 
                 reject_invite_btn.click(
@@ -3590,7 +3655,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector],
                 )
 
                 def update_selected_project(selected: str, session):
@@ -3598,13 +3663,16 @@ def create_app() -> gr.Blocks:
                     if session and selected:
                         selected_project = admin_manager.get_project(selected)
                         dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
-                        return selected, dataset_repo_id, project_overview_html(_project_rows(), session.authorized_projects, selected)
-                    return None, "", project_overview_html([], [])
+                        role = auth_service.get_user_role_for_project(session.username, selected)
+                        role_label = role.value.upper() if role else "UNKNOWN"
+                        project_row = next((row for row in _project_rows() if row and str(row[0]) == selected), None)
+                        return selected, dataset_repo_id, project_overview_html(_project_rows(), session.authorized_projects, selected), project_context_html(project_row, role_label)
+                    return None, "", project_overview_html([], []), project_context_html(None)
 
                 project_selector.change(
                     fn=update_selected_project,
                     inputs=[project_selector, session_state],
-                    outputs=[selected_project_state, selected_dataset_repo_state, project_overview],
+                    outputs=[selected_project_state, selected_dataset_repo_state, project_overview, project_context_display],
                 )
 
             # ===== TAB 4: Validation =====

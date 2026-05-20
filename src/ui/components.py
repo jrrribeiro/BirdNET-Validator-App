@@ -65,6 +65,86 @@ def compact_metric_grid(items: list[tuple[str, str, str, str]]) -> str:
     return "<div class='bn-kpi-grid'>" + "".join(cards) + "</div>"
 
 
+def admin_overview_html(
+    *,
+    username: str | None,
+    total_projects: int,
+    admin_projects: int,
+    validator_projects: int,
+    pending_invites: int,
+) -> str:
+    if not username:
+        return (
+            "<div class='bn-empty-state'>"
+            "<div class='bn-empty-title'>Admin workspace locked</div>"
+            "<div class='bn-compact-note'>Login to manage projects, teams, invites, and dataset tokens.</div>"
+            "</div>"
+        )
+
+    return compact_metric_grid(
+        [
+            ("User", username, "active session", "info"),
+            ("Projects", str(total_projects), "registered in app", ""),
+            ("Admin scope", str(admin_projects), "projects you manage", "positive" if admin_projects else "warning"),
+            ("Validator scope", str(validator_projects), f"{pending_invites} pending invites", "info"),
+        ]
+    )
+
+
+def project_context_html(project_row: list[object] | None, role: str | None = None) -> str:
+    if not project_row:
+        return (
+            "<div class='bn-empty-state'>"
+            "<div class='bn-empty-title'>No project selected</div>"
+            "<div class='bn-compact-note'>Choose an authorized project before opening the validation workbench.</div>"
+            "</div>"
+        )
+
+    def cell(index: int, default: str = "") -> str:
+        if len(project_row) <= index:
+            return default
+        return str(project_row[index] or "").strip() or default
+
+    slug = cell(0, "unknown-project")
+    name = cell(1, slug)
+    dataset_repo = cell(2, "dataset not set")
+    visibility = cell(3, "collaborative")
+    owner = cell(4, "unknown")
+    token = "token set" if cell(5, "no").lower() == "yes" else "public/default token"
+    active = cell(6, "yes")
+    role_label = (role or "unknown").upper()
+    role_tone = "ok" if role_label == "ADMIN" else "info"
+    active_tone = "ok" if active.lower() == "yes" else "warn"
+
+    return (
+        "<div class='bn-project-context'>"
+        "<div>"
+        "<div class='bn-brand-kicker'>Selected project</div>"
+        f"<div class='bn-project-context-title'>{escape(name)}</div>"
+        f"<div class='bn-project-context-subtitle'>{escape(slug)} · {escape(dataset_repo)}</div>"
+        "</div>"
+        "<div class='bn-card-pills'>"
+        f"{status_pill_html('role', role_label, role_tone)}"
+        f"{status_pill_html('visibility', visibility)}"
+        f"{status_pill_html('owner', owner)}"
+        f"{status_pill_html('token', token)}"
+        f"{status_pill_html('active', active, active_tone)}"
+        "</div>"
+        "</div>"
+    )
+
+
+def invite_panel_html(invite_count: int) -> str:
+    if invite_count <= 0:
+        return inline_hint_html("No pending invites for this user.", "info")
+    return (
+        "<div class='bn-invite-callout'>"
+        f"<div class='bn-empty-title'>{invite_count} pending invite{'s' if invite_count != 1 else ''}</div>"
+        "<div class='bn-compact-note'>Review and accept only the project access you expect to use.</div>"
+        "</div>"
+    )
+
+
 def settings_health_html(items: list[tuple[str, str, str]]) -> str:
     cards = []
     for label, value, tone in items:

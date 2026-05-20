@@ -195,6 +195,42 @@ body,
   margin-top: 10px;
 }
 
+.bn-project-context {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  padding: 14px;
+  margin: 8px 0 12px 0;
+  border: 1px solid var(--bn-border);
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(20, 32, 51, 0.05);
+}
+
+.bn-project-context-title {
+  margin-top: 2px;
+  color: var(--bn-text);
+  font-size: 20px;
+  line-height: 1.18;
+  font-weight: 800;
+}
+
+.bn-project-context-subtitle {
+  margin-top: 4px;
+  color: var(--bn-muted);
+  font-size: 13px;
+  word-break: break-word;
+}
+
+.bn-invite-callout {
+  padding: 12px 14px;
+  margin: 8px 0 12px 0;
+  border: 1px solid #bfdbfe;
+  background: #eff6ff;
+  border-radius: 8px;
+}
+
 .bn-control-band {
   padding: 12px;
   border: 1px solid var(--bn-border);
@@ -594,6 +630,10 @@ select {
 
   .bn-project-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bn-project-context {
+    flex-direction: column;
   }
 
   .bn-health-panel {
