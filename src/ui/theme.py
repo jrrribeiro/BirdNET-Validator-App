@@ -202,6 +202,51 @@ body,
   border-radius: 8px;
 }
 
+.bn-inline-hint {
+  padding: 9px 11px;
+  border: 1px solid var(--bn-border);
+  background: #f8fafc;
+  border-radius: 8px;
+  color: var(--bn-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.bn-hint-info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: #1e3a8a;
+}
+
+.bn-hint-warn {
+  border-color: #fed7aa;
+  background: #fff7ed;
+  color: #9a3412;
+}
+
+.bn-hint-danger {
+  border-color: #f3b6b2;
+  background: #fff6f5;
+  color: var(--bn-negative);
+}
+
+.bn-filter-panel {
+  padding: 12px;
+  border: 1px solid var(--bn-border);
+  background: #fbfcfe;
+  border-radius: 8px;
+  margin: 8px 0 12px 0;
+}
+
+.bn-filter-panel .form {
+  gap: 8px !important;
+}
+
+.bn-danger-zone {
+  border-color: #f3b6b2 !important;
+  background: #fffafa !important;
+}
+
 .bn-health-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));

@@ -28,7 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import compact_metric_grid, project_overview_html, section_header_html, settings_health_html
+from src.ui.components import compact_metric_grid, inline_hint_html, project_overview_html, section_header_html, settings_health_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -2987,6 +2987,7 @@ def create_app() -> gr.Blocks:
                         outputs=[projects_table],
                     )
 
+                    gr.HTML(inline_hint_html("Project tokens are optional. Use them only for private datasets or datasets that require owner-level access."))
                     gr.Markdown("#### Project Token Management")
                     with gr.Row():
                         token_project_select = gr.Dropdown(
@@ -3044,34 +3045,11 @@ def create_app() -> gr.Blocks:
                     )
 
                 with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_users_controls:
-                    gr.Markdown("#### Assign User to Project")
-                    with gr.Row():
-                        admin_username = gr.Textbox(
-                            label="Username", placeholder="validator_001"
+                    gr.Markdown("#### Team Access")
+                    gr.HTML(
+                        inline_hint_html(
+                            "Assign immediately when you know the Hugging Face username. Use invites when you want the user to accept access later or receive email instructions."
                         )
-                        admin_invite_email = gr.Textbox(
-                            label="Invite email",
-                            placeholder="validator@example.org",
-                        )
-                        admin_project = gr.Dropdown(
-                            choices=_project_slugs(),
-                            label="Project",
-                        )
-                        admin_role = gr.Dropdown(
-                            choices=["admin", "validator"],
-                            value="validator",
-                            label="Role",
-                        )
-
-                    admin_message = gr.Markdown()
-                    invite_btn = gr.Button("✉️ Invite")
-
-                    # Invite scenario selection
-                    gr.Markdown(
-                        "**Choose how to invite:**\n"
-                        "- **Internal app only**: Invite by HF username (no email notifications)\n"
-                        "- **Email only**: Invite by email (for users without HF account yet)\n"
-                        "- **Both**: Invite both internally and via email"
                     )
 
                     invite_mode = gr.Radio(
@@ -3176,13 +3154,15 @@ def create_app() -> gr.Blocks:
 
                     gr.Markdown("<div style='height:8px;'></div>")
 
-                    gr.Markdown("#### Delete Project")
-                    with gr.Row():
-                        delete_project_slug = gr.Dropdown(
-                            choices=_project_slugs(),
-                            label="Project to delete",
-                        )
-                        delete_project_btn = gr.Button("🗑️ Delete Project", variant="stop")
+                    with gr.Group(elem_classes=["bn-panel-soft", "bn-danger-zone"]):
+                        gr.Markdown("#### Danger Zone")
+                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites. It does not delete the Hugging Face dataset.", "danger"))
+                        with gr.Row():
+                            delete_project_slug = gr.Dropdown(
+                                choices=_project_slugs(),
+                                label="Project to delete",
+                            )
+                            delete_project_btn = gr.Button("Delete Project", variant="stop")
 
                     def delete_project(session, project_slug: str):
                         if session is None:
@@ -3765,17 +3745,18 @@ def create_app() -> gr.Blocks:
                             prev_btn = gr.Button("←")
                             next_btn = gr.Button("→")
 
-                        gr.Markdown("#### Filters")
-                        min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
-                        validator_filter = gr.Textbox(label="Validator filter", placeholder="Ex: validator-demo")
-                        validation_status_filter = gr.Dropdown(
-                            label="Status filter",
-                            choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
-                            value="all",
-                        )
-                        updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
-                        show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
-                        refresh_btn = gr.Button("Apply filters", variant="primary")
+                        with gr.Group(elem_classes=["bn-filter-panel"]):
+                            gr.Markdown("#### Filters")
+                            min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
+                            validation_status_filter = gr.Dropdown(
+                                label="Status",
+                                choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
+                                value="all",
+                            )
+                            validator_filter = gr.Textbox(label="Validator", placeholder="Ex: validator-demo")
+                            updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
+                            show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
+                            refresh_btn = gr.Button("Apply filters", variant="primary")
 
                         gr.Markdown("#### Review details")
                         validator_name = gr.Textbox(label="Validator", value="", interactive=False)

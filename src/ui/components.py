@@ -76,3 +76,8 @@ def settings_health_html(items: list[tuple[str, str, str]]) -> str:
             "</div>"
         )
     return "<div class='bn-health-panel'>" + "".join(cards) + "</div>"
+
+
+def inline_hint_html(text: str, tone: str = "info") -> str:
+    tone_class = f" bn-hint-{tone}" if tone else ""
+    return f"<div class='bn-inline-hint{tone_class}'>{escape(text)}</div>"
