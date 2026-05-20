@@ -260,16 +260,16 @@ class AuthService:
         """Authenticate using Hugging Face personal token and resolve username via whoami."""
         token_value = (token or "").strip()
         if not token_value:
-            return None, "❌ Please provide a Hugging Face token"
+            return None, "Please provide a Hugging Face token"
 
         try:
             whoami = HfApi().whoami(token=token_value)
         except Exception:
-            return None, "❌ Invalid Hugging Face token or network error"
+            return None, "Invalid Hugging Face token or network error"
 
         username = str(whoami.get("name") or "").strip()
         if not username:
-            return None, "❌ Unable to resolve Hugging Face username from token"
+            return None, "Unable to resolve Hugging Face username from token"
 
         email_value = str(whoami.get("email") or "").strip() or None
         self._hf_tokens_by_username[username] = token_value
@@ -281,13 +281,13 @@ class AuthService:
             auto_promote_to_admin=is_first_user,
         )
         if session is None:
-            return None, f"❌ User '{username}' is not invited to any project yet"
+            return None, f"User '{username}' is not invited to any project yet"
 
         if is_first_user:
-            return session, f"✅ Welcome, {username}! (Admin)"
+            return session, f"Welcome, {username}. Admin access enabled."
         if session.role == Role.admin:
-            return session, f"✅ Welcome, {username}! (Admin)"
-        return session, f"✅ Welcome, {username}! (Validator)"
+            return session, f"Welcome, {username}. Admin access enabled."
+        return session, f"Welcome, {username}. Validator access enabled."
 
     def get_session(self, session_id: str) -> Optional[Session]:
         """Retrieve an active session by ID.
@@ -493,7 +493,7 @@ class AuthService:
             self._pending_invites.setdefault(email_key, {})[project_slug] = invite
 
         mode = invite.invite_mode
-        summary = f"✅ {mode.replace('_', ' ').title()} invite"
+        summary = f"{mode.replace('_', ' ').title()} invite"
         return True, summary
 
     def list_pending_invites(self, username: str) -> List[ProjectInvite]:
@@ -527,7 +527,7 @@ class AuthService:
         del pending[project_slug]
         if not pending:
             self._pending_invites.pop(invite_key, None)
-        return True, f"✅ Invite accepted for {project_slug} as {invite.role.value}"
+        return True, f"Invite accepted for {project_slug} as {invite.role.value}"
 
     def reject_project_invite(self, username: str, project_slug: str) -> tuple[bool, str]:
         self._prune_expired_invites()
@@ -538,7 +538,7 @@ class AuthService:
         del pending[project_slug]
         if not pending:
             self._pending_invites.pop(invite_key, None)
-        return True, f"✅ Invite rejected for {project_slug}"
+        return True, f"Invite rejected for {project_slug}"
 
     def accept_all_project_invites(self, username: str) -> tuple[int, int, str]:
         self._prune_expired_invites()
@@ -568,7 +568,7 @@ class AuthService:
         del pending[project_slug]
         if not pending:
             self._pending_invites.pop(invite_key, None)
-        return True, f"✅ Invite revoked for {username} in {project_slug}"
+        return True, f"Invite revoked for {username} in {project_slug}"
 
     def export_user_access_map(self, include_inactive: bool = False) -> Dict[str, Dict[str, str]]:
         """Export user/project role mapping for persistence."""

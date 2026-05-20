@@ -63,13 +63,13 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Textbox, gr.Textbox
             return session.session_id, message
 
         if not username or not username.strip():
-            return "", "❌ Please enter a username or provide a Hugging Face token"
+            return "", "Please enter a username or provide a Hugging Face token"
 
         username = username.strip()
         session = auth_service.login(username)
 
         if session is None:
-            return "", f"❌ User '{username}' not found or inactive"
+            return "", f"User '{username}' not found or inactive"
 
         admin_projects = 0
         validator_projects = 0
@@ -85,7 +85,7 @@ def create_login_page(auth_service: AuthService) -> Tuple[gr.Textbox, gr.Textbox
         return (
             session.session_id,
             (
-                f"✅ Welcome, {username}! "
+                f"Welcome, {username}. "
                 f"Admin in {admin_projects} project(s), validator in {validator_projects} project(s)."
             ),
         )

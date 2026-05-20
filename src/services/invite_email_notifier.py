@@ -80,7 +80,7 @@ class EmailJSInviteEmailNotifier(InviteEmailNotifier):
         """
         invite_mode = self._resolve_invite_mode(payload)
         if not payload.invitee_email:
-            return True, f"✅ Internal invite created for {payload.invitee_username or 'pending'}"
+            return True, f"Internal invite created for {payload.invitee_username or 'pending'}"
 
         template_id = self._resolve_template_id(invite_mode)
         if not template_id:
@@ -116,7 +116,7 @@ class EmailJSInviteEmailNotifier(InviteEmailNotifier):
             with request.urlopen(req, timeout=self._timeout_seconds) as response:
                 status_code = int(getattr(response, "status", 0) or response.getcode())
                 if 200 <= status_code < 300:
-                    return True, f"✅ Invite sent to {payload.invitee_email}"
+                    return True, f"Invite sent to {payload.invitee_email}"
                 return False, f"Internal invite created, but email send failed (status {status_code})"
         except Exception as exc:
             return False, f"Internal invite created, but email send failed: {exc}"
