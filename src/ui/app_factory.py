@@ -3719,7 +3719,7 @@ def create_app() -> gr.Blocks:
                             value=None,
                         )
 
-                        status = gr.Textbox(label="Status", interactive=False)
+                        status = gr.Markdown(value="", elem_classes=["bn-status-strip"])
 
                         table = gr.Dataframe(
                             headers=[
@@ -4600,6 +4600,13 @@ def create_app() -> gr.Blocks:
                     label="Validator activity",
                     elem_classes=["bn-dataframe"],
                 )
+                report_recent_table = gr.Dataframe(
+                    headers=["timestamp", "validator", "status", "detection_key"],
+                    value=[],
+                    interactive=False,
+                    label="Recent activity",
+                    elem_classes=["bn-dataframe"],
+                )
                 report_status = gr.Markdown("")
 
                 def _list_project_detections(project_slug: str) -> list[Detection]:
@@ -4625,10 +4632,11 @@ def create_app() -> gr.Blocks:
                 def _render_report_dashboard(project_slug: str):
                     slug = (project_slug or "").strip()
                     if not slug:
-                        return "", [], [], "Select a project to view the dashboard"
+                        return "", [], [], [], "Select a project to view the dashboard"
 
                     items = _list_project_detections(slug)
                     snapshot = validation_repository.load_current_snapshot(project_slug=slug)
+                    events = validation_repository.list_events(project_slug=slug)
                     total_recordings = len(items)
 
                     species_totals: dict[str, dict[str, int]] = {}
@@ -4666,6 +4674,16 @@ def create_app() -> gr.Blocks:
                         [[validator, total] for validator, total in validator_totals.items()],
                         key=lambda row: (-int(row[1]), str(row[0]).lower()),
                     )
+                    recent_rows = []
+                    for event in sorted(events, key=lambda payload: str(payload.get("timestamp") or payload.get("created_at") or ""), reverse=True)[:15]:
+                        recent_rows.append(
+                            [
+                                str(event.get("timestamp") or event.get("created_at") or ""),
+                                str(event.get("validator") or ""),
+                                str(event.get("status") or ""),
+                                str(event.get("detection_key") or ""),
+                            ]
+                        )
 
                     kpis_html = compact_metric_grid(
                         [
@@ -4677,13 +4695,14 @@ def create_app() -> gr.Blocks:
                             ("Skipped", str(status_totals["skip"]), "not reviewed", ""),
                             ("Species touched", str(validated_species), "with validation", ""),
                             ("Validators", str(len(validator_totals)), "active in project", ""),
+                            ("Events", str(len(events)), "append-only log", ""),
                         ]
                     )
                     status_text = (
                         f"Project: **{slug}** | Total recordings: **{total_recordings}** | "
                         f"Validated: **{validated_recordings}** | Remaining: **{remaining_recordings}**"
                     )
-                    return kpis_html, rows, validator_rows, status_text
+                    return kpis_html, rows, validator_rows, recent_rows, status_text
 
                 session_state.change(
                     fn=lambda s: (
@@ -4695,10 +4714,11 @@ def create_app() -> gr.Blocks:
                         "",
                         [],
                         [],
+                        [],
                         "Login and choose a project, then click Refresh dashboard." if s is None else "Click Refresh dashboard to load project metrics.",
                     ),
                     inputs=[session_state],
-                    outputs=[report_project_selector, report_kpis, report_species_table, report_validator_table, report_status],
+                    outputs=[report_project_selector, report_kpis, report_species_table, report_validator_table, report_recent_table, report_status],
                 )
 
                 selected_project_state.change(
@@ -4710,7 +4730,7 @@ def create_app() -> gr.Blocks:
                 refresh_report_btn.click(
                     fn=_render_report_dashboard,
                     inputs=[report_project_selector],
-                    outputs=[report_kpis, report_species_table, report_validator_table, report_status],
+                    outputs=[report_kpis, report_species_table, report_validator_table, report_recent_table, report_status],
                 )
 
             # ===== TAB 6: Settings =====
