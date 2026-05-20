@@ -195,6 +195,14 @@ Optional runtime settings:
 - `BIRDNET_PAGE_SIZE` (default `25`)
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
 
+Supabase state backend, recommended for free Spaces without persistent disk:
+
+- `BIRDNET_STATE_BACKEND=supabase`
+- `SUPABASE_URL` (Secret, example: `https://xxxx.supabase.co`)
+- `SUPABASE_SERVICE_ROLE_KEY` (Secret)
+
+When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`.
+
 Optional invite email settings:
 
 - `BIRDNET_INVITE_EMAIL_ENABLED=true`
@@ -226,7 +234,7 @@ Notes:
 
 - The app entrypoint reads `PORT` automatically in Spaces.
 - Keep user/project bootstrap files private if they contain sensitive assignments.
-- Use `/data` paths in Spaces to keep projects, invites, ACL, and validations across redeploys.
+- Use Supabase or persistent Space storage to keep projects, invites, ACL, and validations across redeploys. The free Space filesystem is ephemeral.
 - Collaborative access is token-per-user: each collaborator logs in with their own Hugging Face token.
 - Datasets uploaded by `HF_Dataset_Uploader` are read from `index/files.parquet` first; older `index/shards/*.parquet`, CSV, JSONL, and audio-path fallback layouts remain supported.
 
@@ -509,6 +517,9 @@ python -m src.uploader_cli.main start --repo-id alice/birdnet-2026 --segments C:
 - `BIRDNET_EMAILJS_PUBLIC_KEY`
 - `BIRDNET_EMAILJS_ENDPOINT`
 - `BIRDNET_EMAILJS_TIMEOUT_SECONDS`
+- `BIRDNET_STATE_BACKEND`
+- `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY`
 
 ### Uploader CLI Environment Variables
 

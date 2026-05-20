@@ -27,6 +27,9 @@ class RuntimeConfig:
     emailjs_public_key: str | None = None
     emailjs_endpoint: str = "https://api.emailjs.com/api/v1.0/email/send"
     emailjs_timeout_seconds: int = 20
+    state_backend: str = "filesystem"
+    supabase_url: str | None = None
+    supabase_service_role_key: str | None = None
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -94,6 +97,10 @@ class RuntimeConfig:
             except ValueError:
                 emailjs_timeout_seconds = 20
 
+        state_backend = (os.getenv("BIRDNET_STATE_BACKEND") or "filesystem").strip().lower() or "filesystem"
+        supabase_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/") or None
+        supabase_service_role_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip() or None
+
         return cls(
             detection_seed_path=detection_seed_path,
             validation_base_dir=validation_base_dir,
@@ -116,4 +123,7 @@ class RuntimeConfig:
             emailjs_public_key=emailjs_public_key,
             emailjs_endpoint=emailjs_endpoint,
             emailjs_timeout_seconds=emailjs_timeout_seconds,
+            state_backend=state_backend,
+            supabase_url=supabase_url,
+            supabase_service_role_key=supabase_service_role_key,
         )

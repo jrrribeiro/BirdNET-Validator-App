@@ -20,6 +20,7 @@ from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection, Project, Role
 from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository, OptimisticLockError
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
+from src.repositories.supabase_state import SupabaseBootstrapStore, SupabaseRestClient, SupabaseStateError, SupabaseValidationRepository
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
 from src.services.validation_service import ValidationService
@@ -954,6 +955,7 @@ def _persist_bootstrap_state(
     invites_path: Path,
     admin_manager: AdminPanelManager,
     auth_service: AuthService,
+    state_store: SupabaseBootstrapStore | None = None,
 ) -> None:
     project_rows = admin_manager.list_projects()
     projects_payload = [
@@ -969,12 +971,15 @@ def _persist_bootstrap_state(
         }
         for project in project_rows
     ]
-    _atomic_write_json(projects_path, projects_payload)
-
     access_payload = auth_service.export_user_access_map(include_inactive=True)
-    _atomic_write_json(user_access_path, access_payload)
-
     invites_payload = auth_service.export_pending_invites_map()
+
+    if state_store is not None:
+        state_store.persist(projects_payload, access_payload, invites_payload)
+        return
+
+    _atomic_write_json(projects_path, projects_payload)
+    _atomic_write_json(user_access_path, access_payload)
     _atomic_write_json(invites_path, invites_payload)
 
 
@@ -985,10 +990,16 @@ def _bootstrap_auth_and_projects(
     projects_file_path: str | None = None,
     user_access_file_path: str | None = None,
     invites_file_path: str | None = None,
+    state_store: SupabaseBootstrapStore | None = None,
 ) -> str:
-    projects = _load_projects_from_file(projects_file_path or runtime_config.projects_file_path)
-    user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
-    pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
+    if state_store is not None:
+        projects = state_store.load_projects()
+        user_access = state_store.load_user_access()
+        pending_invites = state_store.load_pending_invites()
+    else:
+        projects = _load_projects_from_file(projects_file_path or runtime_config.projects_file_path)
+        user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
+        pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
 
     for project in projects:
         _ = admin_manager.register_project(project)
@@ -1036,6 +1047,30 @@ def _bootstrap_auth_and_projects(
         return ""
 
     return emergency_admin_message
+
+
+def _build_supabase_state(runtime_config: RuntimeConfig) -> tuple[SupabaseBootstrapStore | None, SupabaseValidationRepository | None, str]:
+    backend = (runtime_config.state_backend or "filesystem").strip().lower()
+    if backend not in {"supabase", "postgres", "postgresql"}:
+        return None, None, ""
+
+    if not runtime_config.supabase_url or not runtime_config.supabase_service_role_key:
+        return (
+            None,
+            None,
+            "⚠️ BIRDNET_STATE_BACKEND=supabase, but SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing. Falling back to local files.",
+        )
+
+    try:
+        client = SupabaseRestClient(
+            url=runtime_config.supabase_url,
+            service_role_key=runtime_config.supabase_service_role_key,
+        )
+        bootstrap_store = SupabaseBootstrapStore(client)
+        validation_repository = SupabaseValidationRepository(client)
+        return bootstrap_store, validation_repository, "✅ Supabase state backend enabled."
+    except Exception as exc:
+        return None, None, f"⚠️ Could not initialize Supabase state backend: {exc}. Falling back to local files."
 
 
 def _page_to_table(
@@ -2622,6 +2657,7 @@ def create_app() -> gr.Blocks:
     )
 
     projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
+    state_store, supabase_validation_repository, state_backend_message = _build_supabase_state(runtime_config)
     bootstrap_warning = _bootstrap_auth_and_projects(
         auth_service,
         admin_manager,
@@ -2629,6 +2665,7 @@ def create_app() -> gr.Blocks:
         projects_file_path=str(projects_file_path),
         user_access_file_path=str(user_access_file_path),
         invites_file_path=str(invites_file_path),
+        state_store=state_store,
     )
 
     def _current_project_map() -> dict[str, Project]:
@@ -2650,12 +2687,14 @@ def create_app() -> gr.Blocks:
     )
     service_ref: dict[str, DetectionQueueService] = {"queue": queue_service}
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
-    validation_repository = AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
+    validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
     validation_service = ValidationService(validation_repository)
 
     with gr.Blocks(title="BirdNET-Validator-App") as wrapper:
         gr.Markdown("# BirdNET-Validator-App")
         gr.Markdown("**Version with authentication, project-level authorization, and admin panel**")
+        if state_backend_message:
+            gr.Markdown(state_backend_message)
         if bootstrap_warning:
             gr.Markdown(bootstrap_warning)
 
@@ -2718,6 +2757,7 @@ def create_app() -> gr.Blocks:
                     invites_path=invites_file_path,
                     admin_manager=admin_manager,
                     auth_service=auth_service,
+                    state_store=state_store,
                 )
                 return True, ""
             except Exception as exc:

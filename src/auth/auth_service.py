@@ -591,6 +591,8 @@ class AuthService:
                     "invited_by": invite.invited_by,
                     "created_at": invite.created_at.isoformat(),
                     "expires_at": invite.expires_at.isoformat(),
+                    "username": invite.username or "",
+                    "invitee_email": invite.invitee_email or "",
                 }
         return payload
 
@@ -621,8 +623,17 @@ class AuthService:
                     created_at = created_at.replace(tzinfo=UTC)
                 if expires_at.tzinfo is None:
                     expires_at = expires_at.replace(tzinfo=UTC)
+                stored_username = str(invite_payload.get("username", "")).strip()
+                stored_email = str(invite_payload.get("invitee_email", "")).strip()
+                if not stored_username and not stored_email:
+                    if str(username).startswith("email:"):
+                        stored_email = str(username)[len("email:") :]
+                    else:
+                        stored_username = str(username)
+
                 user_invites[str(project_slug)] = ProjectInvite(
-                    username=str(username),
+                    username=stored_username or None,
+                    invitee_email=stored_email or None,
                     project_slug=str(project_slug),
                     role=Role(role_text),
                     invited_by=invited_by,
