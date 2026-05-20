@@ -202,6 +202,37 @@ body,
   border-radius: 8px;
 }
 
+.bn-health-panel {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(220px, 1fr));
+  gap: 10px;
+  margin: 8px 0 14px 0;
+}
+
+.bn-health-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+  border: 1px solid var(--bn-border);
+  background: #ffffff;
+  border-radius: 8px;
+}
+
+.bn-health-label {
+  color: var(--bn-muted);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.bn-health-value {
+  margin-top: 2px;
+  color: var(--bn-text);
+  font-size: 14px;
+  font-weight: 720;
+}
+
 .bn-validation-grid {
   align-items: stretch;
 }
@@ -353,6 +384,10 @@ select {
 
   .bn-project-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bn-health-panel {
+    grid-template-columns: 1fr;
   }
 
   .bn-action-row {

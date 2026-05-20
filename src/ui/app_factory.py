@@ -28,7 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import compact_metric_grid, project_overview_html, section_header_html
+from src.ui.components import compact_metric_grid, project_overview_html, section_header_html, settings_health_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -4583,6 +4583,7 @@ def create_app() -> gr.Blocks:
                     interactive=False,
                     allow_custom_value=True,
                 )
+                refresh_report_btn = gr.Button("Refresh dashboard", variant="primary")
                 report_kpis = gr.HTML(value="")
                 report_species_table = gr.Dataframe(
                     headers=["species", "total", "validated", "remaining", "coverage_pct"],
@@ -4693,7 +4694,7 @@ def create_app() -> gr.Blocks:
                         "",
                         [],
                         [],
-                        "Login and choose a project to view metrics" if s is None else "",
+                        "Login and choose a project, then click Refresh dashboard." if s is None else "Click Refresh dashboard to load project metrics.",
                     ),
                     inputs=[session_state],
                     outputs=[report_project_selector, report_kpis, report_species_table, report_validator_table, report_status],
@@ -4705,10 +4706,60 @@ def create_app() -> gr.Blocks:
                     outputs=[report_project_selector],
                 )
 
-                report_project_selector.change(
+                refresh_report_btn.click(
                     fn=_render_report_dashboard,
                     inputs=[report_project_selector],
                     outputs=[report_kpis, report_species_table, report_validator_table, report_status],
+                )
+
+            # ===== TAB 6: Settings =====
+            with gr.Tab("Settings", id="settings_tab"):
+                gr.HTML(
+                    section_header_html(
+                        "System health",
+                        "Runtime configuration and deployment checks",
+                        "Use this page to confirm the active backend, storage mode, and operational settings without exposing secrets.",
+                    )
+                )
+                settings_health = gr.HTML(value="")
+                settings_status = gr.Markdown(value="")
+                refresh_settings_btn = gr.Button("Refresh health")
+
+                def _render_settings_health():
+                    backend = (runtime_config.state_backend or "filesystem").strip().lower()
+                    supabase_ready = bool(runtime_config.supabase_url and runtime_config.supabase_service_role_key)
+                    state_label = "Supabase" if backend in {"supabase", "postgres", "postgresql"} and supabase_ready else "Filesystem"
+                    state_tone = "ok" if state_label == "Supabase" else "warn"
+                    demo_label = "enabled" if runtime_config.enable_demo_bootstrap else "disabled"
+                    demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
+                    invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
+                    hf_space_label = os.getenv("SPACE_ID") or "local runtime"
+                    health_html = settings_health_html(
+                        [
+                            ("State backend", state_label, state_tone),
+                            ("Supabase URL", "configured" if runtime_config.supabase_url else "missing", "ok" if runtime_config.supabase_url else "warn"),
+                            ("Supabase service role", "configured" if runtime_config.supabase_service_role_key else "missing", "ok" if runtime_config.supabase_service_role_key else "warn"),
+                            ("Demo bootstrap", demo_label, demo_tone),
+                            ("Invite email", invite_email_label, "ok" if invite_email_label == "enabled" else ""),
+                            ("Page size", str(runtime_config.page_size), ""),
+                            ("Validation storage", runtime_config.validation_base_dir, ""),
+                            ("Runtime", hf_space_label, "info"),
+                        ]
+                    )
+                    status_text = (
+                        "Supabase persistence is active."
+                        if state_label == "Supabase"
+                        else "Filesystem persistence is active. On free Spaces, local files are not durable across rebuilds."
+                    )
+                    return health_html, status_text
+
+                wrapper.load(
+                    fn=_render_settings_health,
+                    outputs=[settings_health, settings_status],
+                )
+                refresh_settings_btn.click(
+                    fn=_render_settings_health,
+                    outputs=[settings_health, settings_status],
                 )
 
     return wrapper

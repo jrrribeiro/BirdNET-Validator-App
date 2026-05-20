@@ -63,3 +63,16 @@ def compact_metric_grid(items: list[tuple[str, str, str, str]]) -> str:
             "</div>"
         )
     return "<div class='bn-kpi-grid'>" + "".join(cards) + "</div>"
+
+
+def settings_health_html(items: list[tuple[str, str, str]]) -> str:
+    cards = []
+    for label, value, tone in items:
+        tone_class = f" bn-pill-{tone}" if tone else ""
+        cards.append(
+            "<div class='bn-health-row'>"
+            f"<div><div class='bn-health-label'>{escape(label)}</div><div class='bn-health-value'>{escape(value)}</div></div>"
+            f"<span class='bn-pill{tone_class}'>{escape(tone or 'info')}</span>"
+            "</div>"
+        )
+    return "<div class='bn-health-panel'>" + "".join(cards) + "</div>"
