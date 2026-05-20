@@ -1003,6 +1003,10 @@ def _bootstrap_auth_and_projects(
         user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
         pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
 
+    if runtime_config.enable_demo_bootstrap and not projects and not user_access:
+        projects = _default_projects()
+        user_access = _default_user_access()
+
     for project in projects:
         _ = admin_manager.register_project(project)
 
@@ -1604,15 +1608,6 @@ def _validation_queue_preview(rows: object, selected_index: int) -> str:
     return validation_queue_html(normalized_rows, selected_index)
 
 
-def _paginate_rows(rows: list[list[object]], page: int, page_size: int) -> tuple[list[list[object]], int, int]:
-    total_items = len(rows)
-    total_pages = max(1, ((total_items - 1) // page_size) + 1) if total_items else 1
-    safe_page = max(1, min(page, total_pages))
-    start = (safe_page - 1) * page_size
-    end = start + page_size
-    return rows[start:end], safe_page, total_pages
-
-
 def _extract_species_options_from_queue(
     queue_service: _QueueServiceProtocol,
     project_slug: str,
@@ -1645,28 +1640,6 @@ def _extract_species_options_from_queue(
 
 def _sort_rows_by_confidence_desc(rows: list[list[object]]) -> list[list[object]]:
     return sorted(rows, key=lambda row: float(row[3]) if len(row) > 3 else 0.0, reverse=True)
-
-
-def _fetch_selected_audio_with_title(
-    audio_service: _AudioServiceProtocol,
-    dataset_repo: str,
-    rows: object,
-    selected_index: int,
-    previous_cache_key: str,
-    allow_demo_fallback: bool = False,
-    hf_token: str | None = None,
-) -> tuple[str | None, str, str, str | None, str]:
-    audio_path, cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
-        audio_service=audio_service,
-        dataset_repo=dataset_repo,
-        rows=rows,
-        selected_index=selected_index,
-        previous_cache_key=previous_cache_key,
-        allow_demo_fallback=allow_demo_fallback,
-        hf_token=hf_token,
-    )
-    species_name, confidence_value = _selected_row_species_and_confidence(rows, selected_index)
-    return audio_path, cache_key, status, spectrogram_path, _spectrogram_title(species_name, confidence_value)
 
 
 def _select_and_fetch_audio_with_title(
@@ -2052,78 +2025,6 @@ def _batch_validate_conflicts(
     return status, "", None, refreshed_rows, refreshed_page
 
 
-def _batch_reapply_all_pending(
-    validation_service: _ValidationServiceProtocol,
-    audio_service: _AudioServiceProtocol,
-    queue_service: _QueueServiceProtocol,
-    snapshot_reader: _ValidationReadRepositoryProtocol,
-    project_slug: str,
-    rows: object,
-    pending_statuses: dict[str, str],
-    validator: str,
-    notes: str,
-    cache_key: str,
-    page: int,
-    scientific_name: str,
-    min_confidence: float,
-    validator_filter: str,
-    status_filter: str,
-    updated_after: object,
-) -> tuple[str, str, str | None, list[list[object]], int]:
-    """Reapply all pending validations (stored conflicts) with current version."""
-    if not pending_statuses:
-        return "No pending validation to reapply", "", None, [], page
-
-    validator_name = validator.strip()
-    if not validator_name:
-        return "Provide validator name", "", None, [], page
-
-    success_count = 0
-    conflict_count = 0
-    failure_count = 0
-
-    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
-
-    for detection_key, status_value in pending_statuses.items():
-        try:
-            current_version = int(snapshot.get(detection_key, {}).get("version", 0))
-
-            _ = validation_service.validate_detection(
-                project_slug=project_slug,
-                detection_key=detection_key,
-                status=status_value,
-                validator=validator_name,
-                notes=notes.strip(),
-                expected_version=current_version,
-            )
-            success_count += 1
-            if cache_key:
-                audio_service.cleanup_after_validation(cache_key=cache_key)
-        except OptimisticLockError:
-            conflict_count += 1
-        except Exception:
-            failure_count += 1
-
-    refreshed_rows, page_status, refreshed_page = _page_to_table(
-        service=queue_service,
-        snapshot_reader=snapshot_reader,
-        project_slug=project_slug,
-        page=page,
-        scientific_name=scientific_name,
-        min_confidence=min_confidence,
-        validator_filter=validator_filter,
-        status_filter=status_filter,
-        updated_after=updated_after,
-        show_conflicts_only=False,
-    )
-    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
-
-    summary = f"Reapplied {len(pending_statuses)} validations: {success_count} success, {conflict_count} new conflicts, {failure_count} failures"
-    status = f"{summary} | {page_status}"
-
-    return status, "", None, refreshed_rows, refreshed_page
-
-
 def create_app() -> gr.Blocks:
     """Build the BirdNET Validator app with multi-project auth integration.
     
@@ -2191,7 +2092,7 @@ def create_app() -> gr.Blocks:
         [project["project_slug"] for project in admin_manager.list_projects()],
         seed_file_path=runtime_config.detection_seed_path,
         project_map=_current_project_map(),
-        allow_demo_defaults=False,
+        allow_demo_defaults=runtime_config.enable_demo_bootstrap,
     )
     service_ref: dict[str, DetectionQueueService] = {"queue": queue_service}
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))

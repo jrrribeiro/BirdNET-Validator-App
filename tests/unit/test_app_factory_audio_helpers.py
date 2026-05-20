@@ -847,6 +847,34 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
     assert warning == ""
 
 
+def test_bootstrap_auth_and_projects_uses_demo_bootstrap_when_enabled(tmp_path: Path) -> None:
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=True,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+    )
+    auth_service = AuthService()
+    from src.services.invite_email_notifier import EmailJSInviteEmailNotifier
+    notifier = EmailJSInviteEmailNotifier("", "", "", "", timeout_seconds=20)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=notifier)
+
+    warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+
+    assert warning == ""
+    assert auth_service.login("demo_user") is not None
+    assert auth_service.login("admin_user") is not None
+    assert any(p["project_slug"] == "demo-project" for p in admin_manager.list_projects())
+
+
 def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_path: Path) -> None:
     projects_file = tmp_path / "projects.json"
     projects_file.write_text(
