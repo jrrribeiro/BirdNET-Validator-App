@@ -28,6 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
+from src.ui.theme import APP_CSS, app_header_html
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -1186,14 +1187,13 @@ def _get_project_detection_count(service: _QueueServiceProtocol, project_slug: s
 
 def _build_queue_badge(service: _QueueServiceProtocol, project_slug: str | None) -> str:
     if not project_slug:
-        return "<div style='display:inline-block;padding:6px 10px;border-radius:999px;background:#f3f4f6;color:#374151;font-weight:600;'>Queue: --</div>"
+        return "<span class='bn-pill'>Queue: --</span>"
 
     total = _get_project_detection_count(service, project_slug)
     return (
-        "<div style='display:inline-block;padding:6px 10px;border-radius:999px;"
-        "background:#e0f2fe;color:#0c4a6e;font-weight:700;'>"
+        "<span class='bn-pill bn-pill-ok'>"
         f"Queue: {total}"
-        "</div>"
+        "</span>"
     )
 
 
@@ -1450,18 +1450,29 @@ def _build_validation_summary_cards(rows: object) -> str:
     total = len(normalized_rows)
     positive = 0
     negative = 0
+    uncertain = 0
+    skipped = 0
     for row in normalized_rows:
         status_value = str(row[6]).strip().lower() if len(row) > 6 else ""
         if status_value == "positive":
             positive += 1
         elif status_value == "negative":
             negative += 1
+        elif status_value == "uncertain":
+            uncertain += 1
+        elif status_value == "skip":
+            skipped += 1
+
+    reviewed = positive + negative + uncertain + skipped
+    pending = max(0, total - reviewed)
+    reviewed_pct = round((reviewed / total) * 100, 1) if total else 0.0
 
     return (
-        "<div style='display:grid;grid-template-columns:repeat(3,minmax(120px,1fr));gap:12px;margin:4px 0 12px 0;'>"
-        f"<div style='padding:10px 14px;border-radius:10px;background:#ececec;'><div style='font-size:12px;color:#555;'>Total Items</div><div style='font-size:24px;font-weight:700;color:#222;'>{total}</div></div>"
-        f"<div style='padding:10px 14px;border-radius:10px;background:#e7f4ea;'><div style='font-size:12px;color:#3f6c49;'>Positive</div><div style='font-size:24px;font-weight:700;color:#215d2f;'>{positive}</div></div>"
-        f"<div style='padding:10px 14px;border-radius:10px;background:#fdeaea;'><div style='font-size:12px;color:#7b3a3a;'>Negative</div><div style='font-size:24px;font-weight:700;color:#6f1f1f;'>{negative}</div></div>"
+        "<div class='bn-kpi-grid'>"
+        f"<div class='bn-kpi-card bn-kpi-info'><div class='bn-kpi-label'>Queue page</div><div class='bn-kpi-value'>{total}</div><div class='bn-kpi-hint'>loaded items</div></div>"
+        f"<div class='bn-kpi-card bn-kpi-positive'><div class='bn-kpi-label'>Accepted</div><div class='bn-kpi-value'>{positive}</div><div class='bn-kpi-hint'>positive validations</div></div>"
+        f"<div class='bn-kpi-card bn-kpi-negative'><div class='bn-kpi-label'>Rejected</div><div class='bn-kpi-value'>{negative}</div><div class='bn-kpi-hint'>negative validations</div></div>"
+        f"<div class='bn-kpi-card bn-kpi-warning'><div class='bn-kpi-label'>Reviewed</div><div class='bn-kpi-value'>{reviewed_pct}%</div><div class='bn-kpi-hint'>{pending} pending on page</div></div>"
         "</div>"
     )
 
@@ -2690,9 +2701,8 @@ def create_app() -> gr.Blocks:
     validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
     validation_service = ValidationService(validation_repository)
 
-    with gr.Blocks(title="BirdNET-Validator-App") as wrapper:
-        gr.Markdown("# BirdNET-Validator-App")
-        gr.Markdown("**Version with authentication, project-level authorization, and admin panel**")
+    with gr.Blocks(title="BirdNET-Validator-App", css=APP_CSS, elem_classes=["bn-shell"]) as wrapper:
+        gr.HTML(app_header_html(state_backend_message))
         if state_backend_message:
             gr.Markdown(state_backend_message)
         if bootstrap_warning:
@@ -2763,9 +2773,16 @@ def create_app() -> gr.Blocks:
             except Exception as exc:
                 return False, str(exc)
 
-        with gr.Tabs():
+        with gr.Tabs(elem_classes=["bn-tabs"]):
             # ===== TAB 1: Login =====
-            with gr.Tab("🔐 Login", id="login_tab"):
+            with gr.Tab("Login", id="login_tab"):
+                gr.HTML(
+                    "<div class='bn-panel' style='margin-bottom:12px;'>"
+                    "<div class='bn-brand-kicker'>Secure access</div>"
+                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Sign in with your Hugging Face identity</div>"
+                    "<div class='bn-compact-note'>Your account controls project access, validator attribution, and private dataset access.</div>"
+                    "</div>"
+                )
                 username_input, session_output, login_button, error_message = create_login_page(auth_service)
 
                 # Store session ID when login succeeds
@@ -2782,7 +2799,7 @@ def create_app() -> gr.Blocks:
                 )
 
             # ===== TAB 2: Admin Panel =====
-            with gr.Tab("⚙️ Admin", id="admin_tab"):
+            with gr.Tab("Admin", id="admin_tab"):
                 admin_info = gr.Markdown(value="⚠️ Login first")
                 admin_scope_info = gr.Markdown(value="")
 
@@ -2803,7 +2820,7 @@ def create_app() -> gr.Blocks:
                         gr.update(visible=True),
                     )
 
-                with gr.Group(visible=False) as admin_controls:
+                with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_controls:
                     gr.Markdown("#### Registered Projects")
 
                     with gr.Row():
@@ -3015,7 +3032,7 @@ def create_app() -> gr.Blocks:
                         outputs=[token_update_message, token_new_value, projects_table],
                     )
 
-                with gr.Group(visible=False) as admin_users_controls:
+                with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_users_controls:
                     gr.Markdown("#### Assign User to Project")
                     with gr.Row():
                         admin_username = gr.Textbox(
@@ -3363,7 +3380,14 @@ def create_app() -> gr.Blocks:
                 )
 
             # ===== TAB 3: Project Selection =====
-            with gr.Tab("📁 Select Project", id="project_tab"):
+            with gr.Tab("Projects", id="project_tab"):
+                gr.HTML(
+                    "<div class='bn-panel' style='margin-bottom:12px;'>"
+                    "<div class='bn-brand-kicker'>Project context</div>"
+                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Choose the dataset you want to validate</div>"
+                    "<div class='bn-compact-note'>Project access is filtered by your role. Invitations can be accepted here before validation starts.</div>"
+                    "</div>"
+                )
                 project_info_display = gr.Markdown(
                     value="⚠️ Login first in the **Login** tab"
                 )
@@ -3401,7 +3425,7 @@ def create_app() -> gr.Blocks:
                                 "1. Go to the **Admin** tab.\n"
                                 "2. Fill **New Project Slug**, **Project Name**, and **HF Dataset Repo ID**.\n"
                                 "3. Click **Create Project**.\n"
-                                "4. Go back to **Select Project** and choose the created project."
+                                "4. Go back to **Projects** and choose the created project."
                             ),
                             None,
                             "",
@@ -3575,10 +3599,18 @@ def create_app() -> gr.Blocks:
                 )
 
             # ===== TAB 4: Validation =====
-            with gr.Tab("✓ Validation", id="validation_tab"):
+            with gr.Tab("Validate", id="validation_tab"):
+                gr.HTML(
+                    "<div class='bn-panel' style='margin-bottom:12px;'>"
+                    "<div class='bn-brand-kicker'>Validation workbench</div>"
+                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Review audio segments with less friction</div>"
+                    "<div class='bn-compact-note'>Load a project, listen to the current segment, review the spectrogram, and keep the queue moving with clear status actions.</div>"
+                    "</div>"
+                )
                 validation_status = gr.Markdown(
                     value="",
                     visible=False,
+                    elem_classes=["bn-status-strip"],
                 )
                 queue_badge = gr.HTML(value="", visible=False)
                 seed_warning_banner = gr.Markdown(value="", visible=False)
@@ -3605,7 +3637,7 @@ def create_app() -> gr.Blocks:
                     if session is None:
                         return "❌ **Not authenticated** — Login first in the **Login** tab"
                     if selected_project is None:
-                        return f"⚠️ **Project not selected** — Select a project in the **Select Project** tab"
+                        return "⚠️ **Project not selected** — Select a project in the **Projects** tab"
                     total_detections = _get_project_detection_count(service_ref["queue"], selected_project)
                     return (
                         f"✅ **Ready to validate** — Project: **{selected_project}** | "
@@ -3647,17 +3679,16 @@ def create_app() -> gr.Blocks:
                     outputs=[queue_badge],
                 )
 
-                gr.Markdown("---")
                 page_state = gr.State(value=1)
                 project_species_state = gr.State(value=[])
                 custom_corrected_species_state = gr.State(value={})
                 favorite_detection_state = gr.State(value={})
 
-                with gr.Row(equal_height=False):
-                    with gr.Column(scale=8):
+                with gr.Row(equal_height=False, elem_classes=["bn-validation-grid"]):
+                    with gr.Column(scale=8, elem_classes=["bn-media-panel"]):
                         validation_summary_cards = gr.HTML(value=_build_validation_summary_cards([]))
 
-                        spectrogram_title = gr.Markdown("### Spectrogram")
+                        spectrogram_title = gr.Markdown("### Segment spectrogram")
                         spectrogram_image = gr.Image(
                             label="",
                             type="filepath",
@@ -3665,12 +3696,12 @@ def create_app() -> gr.Blocks:
                             height=330,
                         )
                         with gr.Row():
-                            audio_player = gr.Audio(label="Selected Audio", type="filepath", autoplay=True)
-                        auto_play_audio = gr.Checkbox(label="Auto-play selected audio", value=True)
+                            audio_player = gr.Audio(label="Selected audio", type="filepath", autoplay=True)
+                        auto_play_audio = gr.Checkbox(label="Auto-play when selecting a row", value=True)
 
-                        with gr.Row():
-                            approve_btn = gr.Button("Positive", variant="primary")
-                            reject_btn = gr.Button("Negative")
+                        with gr.Row(elem_classes=["bn-action-row"]):
+                            approve_btn = gr.Button("Confirm", variant="primary")
+                            reject_btn = gr.Button("Reject")
                             uncertain_btn = gr.Button("Uncertain")
                             skip_btn = gr.Button("Skip")
                             favorite_btn = gr.Button("☆ Favorite", variant="secondary")
@@ -3698,21 +3729,22 @@ def create_app() -> gr.Blocks:
                                 "conflict_flag",
                                 "conflict_severity",
                             ],
-                            label="Detections",
+                            label="Queue",
                             interactive=False,
+                            elem_classes=["bn-dataframe"],
                         )
                         selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
 
-                    with gr.Column(scale=4):
+                    with gr.Column(scale=4, elem_classes=["bn-sidebar-panel"]):
                         dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
                         species_filter = gr.Dropdown(
-                            label="Species to validate",
+                            label="Species",
                             choices=[],
                             value=None,
                             interactive=False,
                         )
 
-                        gr.Markdown("#### Navigation")
+                        gr.Markdown("#### Queue navigation")
                         with gr.Row():
                             prev_btn = gr.Button("←")
                             next_btn = gr.Button("→")
@@ -3727,22 +3759,22 @@ def create_app() -> gr.Blocks:
                         )
                         updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
                         show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
-                        refresh_btn = gr.Button("Apply Filters")
+                        refresh_btn = gr.Button("Apply filters", variant="primary")
 
-                        gr.Markdown("#### Actions")
+                        gr.Markdown("#### Review details")
                         validator_name = gr.Textbox(label="Validator", value="", interactive=False)
                         validation_notes = gr.Textbox(label="Notes", placeholder="Optional", lines=4)
                         keyboard_shortcuts_info = gr.HTML(
-                            value="<div style='font-size:12px;color:#333;padding:8px 10px;background:#f5f5f5;border-radius:6px;margin-bottom:8px;'>"
-                            "<strong>Shortcuts:</strong> ArrowUp=Positive | ArrowDown=Negative | 1=Positive | 2=Negative | 3=Uncertain | 4=Skip"
+                            value="<div class='bn-panel-soft bn-compact-note' style='margin-bottom:8px;'>"
+                            "<strong>Shortcuts:</strong> ArrowUp/1=Confirm | ArrowDown/2=Reject | 3=Uncertain | 4=Skip"
                             "</div>"
                             "<script>"
                             "document.addEventListener('keydown', function(event) {"
                             "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
                             "  const key = event.key;"
                             "  let buttonText = null;"
-                            "  if (key === 'ArrowUp' || key === '1') buttonText = 'Positive';"
-                            "  else if (key === 'ArrowDown' || key === '2') buttonText = 'Negative';"
+                            "  if (key === 'ArrowUp' || key === '1') buttonText = 'Confirm';"
+                            "  else if (key === 'ArrowDown' || key === '2') buttonText = 'Reject';"
                             "  else if (key === '3') buttonText = 'Uncertain';"
                             "  else if (key === '4') buttonText = 'Skip';"
                             "  if (!buttonText) return;"
@@ -4519,8 +4551,14 @@ def create_app() -> gr.Blocks:
                 )
 
             # ===== TAB 5: Report =====
-            with gr.Tab("📊 Report", id="report_tab"):
-                report_header = gr.Markdown("### Validation Dashboard")
+            with gr.Tab("Progress", id="report_tab"):
+                gr.HTML(
+                    "<div class='bn-report-panel' style='margin-bottom:12px;'>"
+                    "<div class='bn-brand-kicker'>Progress dashboard</div>"
+                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Project validation health</div>"
+                    "<div class='bn-compact-note'>Track coverage by status, species, and team activity for the selected project.</div>"
+                    "</div>"
+                )
                 report_project_selector = gr.Dropdown(
                     choices=[],
                     value=None,
@@ -4530,10 +4568,18 @@ def create_app() -> gr.Blocks:
                 )
                 report_kpis = gr.HTML(value="")
                 report_species_table = gr.Dataframe(
-                    headers=["species", "total_recordings", "validated", "remaining"],
+                    headers=["species", "total", "validated", "remaining", "coverage_pct"],
                     value=[],
                     interactive=False,
-                    label="Species Overview",
+                    label="Species overview",
+                    elem_classes=["bn-dataframe"],
+                )
+                report_validator_table = gr.Dataframe(
+                    headers=["validator", "validations"],
+                    value=[],
+                    interactive=False,
+                    label="Validator activity",
+                    elem_classes=["bn-dataframe"],
                 )
                 report_status = gr.Markdown("")
 
@@ -4560,13 +4606,15 @@ def create_app() -> gr.Blocks:
                 def _render_report_dashboard(project_slug: str):
                     slug = (project_slug or "").strip()
                     if not slug:
-                        return "", [], "Select a project to view the dashboard"
+                        return "", [], [], "Select a project to view the dashboard"
 
                     items = _list_project_detections(slug)
                     snapshot = validation_repository.load_current_snapshot(project_slug=slug)
                     total_recordings = len(items)
 
                     species_totals: dict[str, dict[str, int]] = {}
+                    status_totals = {"positive": 0, "negative": 0, "uncertain": 0, "skip": 0}
+                    validator_totals: dict[str, int] = {}
                     validated_recordings = 0
 
                     for item in items:
@@ -4579,28 +4627,44 @@ def create_app() -> gr.Blocks:
                         if status_value and status_value != "pending":
                             counters["validated"] += 1
                             validated_recordings += 1
+                            if status_value in status_totals:
+                                status_totals[status_value] += 1
+                            validator = str(state.get("validator", "")).strip() or "unknown"
+                            validator_totals[validator] = validator_totals.get(validator, 0) + 1
 
                     validated_species = sum(1 for counters in species_totals.values() if counters["validated"] > 0)
                     remaining_recordings = max(0, total_recordings - validated_recordings)
+                    coverage_pct = round((validated_recordings / total_recordings) * 100, 1) if total_recordings else 0.0
 
                     rows = []
                     for species_name, counters in species_totals.items():
                         remaining = max(0, counters["total"] - counters["validated"])
-                        rows.append([species_name, counters["total"], counters["validated"], remaining])
+                        species_coverage = round((counters["validated"] / counters["total"]) * 100, 1) if counters["total"] else 0.0
+                        rows.append([species_name, counters["total"], counters["validated"], remaining, species_coverage])
                     rows.sort(key=lambda row: (-int(row[1]), str(row[0]).lower()))
 
+                    validator_rows = sorted(
+                        [[validator, total] for validator, total in validator_totals.items()],
+                        key=lambda row: (-int(row[1]), str(row[0]).lower()),
+                    )
+
                     kpis_html = (
-                        "<div style='display:grid;grid-template-columns:repeat(3,minmax(160px,1fr));gap:12px;margin:6px 0 12px 0;'>"
-                        f"<div style='padding:10px 14px;border-radius:10px;background:#eef2ff;'><div style='font-size:12px;color:#4f46e5;'>Validated species</div><div style='font-size:24px;font-weight:700;color:#312e81;'>{validated_species}</div></div>"
-                        f"<div style='padding:10px 14px;border-radius:10px;background:#fff7ed;'><div style='font-size:12px;color:#c2410c;'>Recordings remaining</div><div style='font-size:24px;font-weight:700;color:#9a3412;'>{remaining_recordings}</div></div>"
-                        f"<div style='padding:10px 14px;border-radius:10px;background:#ecfdf3;'><div style='font-size:12px;color:#166534;'>Recordings validated</div><div style='font-size:24px;font-weight:700;color:#14532d;'>{validated_recordings}</div></div>"
+                        "<div class='bn-kpi-grid'>"
+                        f"<div class='bn-kpi-card bn-kpi-info'><div class='bn-kpi-label'>Coverage</div><div class='bn-kpi-value'>{coverage_pct}%</div><div class='bn-kpi-hint'>{validated_recordings} of {total_recordings}</div></div>"
+                        f"<div class='bn-kpi-card bn-kpi-warning'><div class='bn-kpi-label'>Remaining</div><div class='bn-kpi-value'>{remaining_recordings}</div><div class='bn-kpi-hint'>segments pending</div></div>"
+                        f"<div class='bn-kpi-card bn-kpi-positive'><div class='bn-kpi-label'>Confirmed</div><div class='bn-kpi-value'>{status_totals['positive']}</div><div class='bn-kpi-hint'>accepted segments</div></div>"
+                        f"<div class='bn-kpi-card bn-kpi-negative'><div class='bn-kpi-label'>Rejected</div><div class='bn-kpi-value'>{status_totals['negative']}</div><div class='bn-kpi-hint'>negative segments</div></div>"
+                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Uncertain</div><div class='bn-kpi-value'>{status_totals['uncertain']}</div><div class='bn-kpi-hint'>needs review</div></div>"
+                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Skipped</div><div class='bn-kpi-value'>{status_totals['skip']}</div><div class='bn-kpi-hint'>not reviewed</div></div>"
+                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Species touched</div><div class='bn-kpi-value'>{validated_species}</div><div class='bn-kpi-hint'>with validation</div></div>"
+                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Validators</div><div class='bn-kpi-value'>{len(validator_totals)}</div><div class='bn-kpi-hint'>active in project</div></div>"
                         "</div>"
                     )
                     status_text = (
                         f"Project: **{slug}** | Total recordings: **{total_recordings}** | "
                         f"Validated: **{validated_recordings}** | Remaining: **{remaining_recordings}**"
                     )
-                    return kpis_html, rows, status_text
+                    return kpis_html, rows, validator_rows, status_text
 
                 session_state.change(
                     fn=lambda s: (
@@ -4611,10 +4675,11 @@ def create_app() -> gr.Blocks:
                         ),
                         "",
                         [],
+                        [],
                         "Login and choose a project to view metrics" if s is None else "",
                     ),
                     inputs=[session_state],
-                    outputs=[report_project_selector, report_kpis, report_species_table, report_status],
+                    outputs=[report_project_selector, report_kpis, report_species_table, report_validator_table, report_status],
                 )
 
                 selected_project_state.change(
@@ -4626,7 +4691,7 @@ def create_app() -> gr.Blocks:
                 report_project_selector.change(
                     fn=_render_report_dashboard,
                     inputs=[report_project_selector],
-                    outputs=[report_kpis, report_species_table, report_status],
+                    outputs=[report_kpis, report_species_table, report_validator_table, report_status],
                 )
 
     return wrapper
