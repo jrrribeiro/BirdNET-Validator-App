@@ -28,7 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import compact_metric_grid, inline_hint_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html
+from src.ui.components import compact_metric_grid, inline_hint_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html, validation_queue_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -1597,6 +1597,11 @@ def _selected_segment_card(rows: object, selected_index: int) -> str:
         return selected_segment_html(None)
     safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
     return selected_segment_html(normalized_rows[safe_index], safe_index, len(normalized_rows))
+
+
+def _validation_queue_preview(rows: object, selected_index: int) -> str:
+    normalized_rows = _normalize_rows(rows)
+    return validation_queue_html(normalized_rows, selected_index)
 
 
 def _paginate_rows(rows: list[list[object]], page: int, page_size: int) -> tuple[list[list[object]], int, int]:
@@ -3723,22 +3728,23 @@ def create_app() -> gr.Blocks:
 
                         table = gr.Dataframe(
                             headers=[
-                                "detection_key",
-                                "audio_id",
-                                "scientific_name",
-                                "confidence",
-                                "start_time",
-                                "end_time",
-                                "validation_status",
-                                "version",
-                                "conflict_flag",
-                                "conflict_severity",
+                                "Key",
+                                "Audio",
+                                "Species",
+                                "Confidence",
+                                "Start",
+                                "End",
+                                "Status",
+                                "Version",
+                                "Conflict",
+                                "Severity",
                             ],
                             label="Queue",
                             interactive=False,
                             elem_classes=["bn-dataframe"],
                         )
                         selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
+                        queue_preview = gr.HTML(value=validation_queue_html([]))
 
                     with gr.Column(scale=4, elem_classes=["bn-sidebar-panel"]):
                         dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
@@ -4230,11 +4236,19 @@ def create_app() -> gr.Blocks:
                     fn=lambda rows, idx: _selected_segment_card(rows, int(idx)),
                     inputs=[table, selected_index],
                     outputs=[selected_segment_card],
+                ).then(
+                    fn=lambda rows, idx: _validation_queue_preview(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[queue_preview],
                 )
                 table.change(
                     fn=lambda rows, idx: _selected_segment_card(rows, int(idx)),
                     inputs=[table, selected_index],
                     outputs=[selected_segment_card],
+                ).then(
+                    fn=lambda rows, idx: _validation_queue_preview(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[queue_preview],
                 )
 
                 auto_play_audio.change(

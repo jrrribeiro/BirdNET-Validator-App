@@ -302,6 +302,103 @@ body,
   word-break: break-word;
 }
 
+.bn-queue-preview {
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--bn-border);
+  background: #fbfcfe;
+  border-radius: 8px;
+}
+
+.bn-queue-preview-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+  color: var(--bn-muted);
+  font-size: 12px;
+  font-weight: 760;
+  text-transform: uppercase;
+}
+
+.bn-queue-card {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+}
+
+.bn-queue-card + .bn-queue-card {
+  margin-top: 4px;
+}
+
+.bn-queue-card-selected {
+  border-color: var(--bn-primary);
+  background: #eef8fb;
+}
+
+.bn-queue-card-index {
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: #ffffff;
+  border: 1px solid var(--bn-border);
+  color: var(--bn-primary-dark);
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.bn-queue-card-main {
+  min-width: 0;
+}
+
+.bn-queue-card-species {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bn-text);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.bn-queue-card-audio {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--bn-muted);
+  font-size: 11px;
+}
+
+.bn-queue-card-meta {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.bn-queue-card-meta span {
+  padding: 4px 7px;
+  border: 1px solid var(--bn-border);
+  background: #ffffff;
+  border-radius: 999px;
+  color: var(--bn-muted);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.bn-queue-footnote,
+.bn-empty-mini {
+  margin-top: 8px;
+  color: var(--bn-muted);
+  font-size: 12px;
+}
+
 .bn-health-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
@@ -351,6 +448,11 @@ body,
 .bn-media-panel .gradio-image,
 .bn-media-panel .gradio-audio {
   border-radius: 8px !important;
+}
+
+.bn-media-panel [data-testid="image"],
+.bn-media-panel [data-testid="audio"] {
+  max-width: 100%;
 }
 
 .bn-action-row button {
@@ -456,6 +558,14 @@ body,
   font-size: 13px !important;
 }
 
+.bn-dataframe {
+  overflow-x: auto !important;
+}
+
+.bn-dataframe table {
+  min-width: 920px !important;
+}
+
 .bn-dataframe th {
   background: #f1f5f9 !important;
   color: #344054 !important;
@@ -498,6 +608,18 @@ select {
     display: grid !important;
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
   }
+
+  .bn-validation-grid {
+    gap: 12px !important;
+  }
+
+  .bn-media-panel,
+  .bn-sidebar-panel,
+  .bn-report-panel,
+  .bn-admin-panel,
+  .bn-panel {
+    padding: 12px;
+  }
 }
 
 @media (max-width: 560px) {
@@ -511,6 +633,49 @@ select {
 
   .bn-brand-title {
     font-size: 22px;
+  }
+
+  .bn-app-header {
+    padding: 14px;
+  }
+
+  .bn-selected-card {
+    padding: 12px;
+  }
+
+  .bn-selected-topline {
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .bn-selected-species {
+    font-size: 18px;
+  }
+
+  .bn-selected-meta {
+    grid-template-columns: 1fr;
+  }
+
+  .bn-action-row {
+    grid-template-columns: 1fr !important;
+  }
+
+  .bn-action-row button {
+    width: 100% !important;
+    min-height: 48px !important;
+  }
+
+  .bn-queue-card {
+    grid-template-columns: 28px minmax(0, 1fr);
+  }
+
+  .bn-queue-card-meta {
+    grid-column: 2;
+    justify-content: flex-start;
+  }
+
+  .bn-dataframe table {
+    min-width: 780px !important;
   }
 }
 """

@@ -137,3 +137,62 @@ def selected_segment_html(row: list[object] | None, selected_index: int | None =
         "</div>"
         "</div>"
     )
+
+
+def validation_queue_html(rows: object, selected_index: int | None = None, *, limit: int = 8) -> str:
+    if hasattr(rows, "values"):
+        normalized_rows = [list(item) for item in rows.values.tolist()]
+    else:
+        normalized_rows = [list(item) for item in rows] if rows else []
+
+    if not normalized_rows:
+        return (
+            "<div class='bn-queue-preview'>"
+            "<div class='bn-queue-preview-head'>"
+            "<span>Queue preview</span><span>0 loaded</span>"
+            "</div>"
+            "<div class='bn-empty-mini'>Select a species and apply filters to load segments.</div>"
+            "</div>"
+        )
+
+    safe_selected = max(0, min(int(selected_index or 0), len(normalized_rows) - 1))
+    cards: list[str] = []
+    for idx, row in enumerate(normalized_rows[:limit]):
+        def cell(index: int, default: str = "") -> str:
+            if len(row) <= index:
+                return default
+            value = str(row[index] or "").strip()
+            if index == 2 and value.startswith("▶ "):
+                value = value[2:].strip()
+            return value or default
+
+        species = cell(2, "Unknown species")
+        confidence = cell(3, "0")
+        status = cell(6, "pending")
+        audio_id = cell(1, "unknown audio")
+        selected_class = " bn-queue-card-selected" if idx == safe_selected else ""
+        cards.append(
+            f"<div class='bn-queue-card{selected_class}'>"
+            f"<div class='bn-queue-card-index'>{idx + 1}</div>"
+            "<div class='bn-queue-card-main'>"
+            f"<div class='bn-queue-card-species'>{escape(species)}</div>"
+            f"<div class='bn-queue-card-audio'>{escape(audio_id)}</div>"
+            "</div>"
+            "<div class='bn-queue-card-meta'>"
+            f"<span>{escape(confidence)}</span>"
+            f"<span>{escape(status)}</span>"
+            "</div>"
+            "</div>"
+        )
+
+    remaining = max(0, len(normalized_rows) - limit)
+    remaining_text = f"+{remaining} more on this page" if remaining else "all loaded rows shown"
+    return (
+        "<div class='bn-queue-preview'>"
+        "<div class='bn-queue-preview-head'>"
+        f"<span>Queue preview</span><span>{safe_selected + 1}/{len(normalized_rows)}</span>"
+        "</div>"
+        + "".join(cards)
+        + f"<div class='bn-queue-footnote'>{escape(remaining_text)}</div>"
+        "</div>"
+    )
