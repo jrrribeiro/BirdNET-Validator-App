@@ -68,22 +68,32 @@ jobs:
           PY
 
 
-      - name: Push to Hugging Face Space
+      - name: Upload repository to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          HF_USERNAME="$(python - <<'PY'
+          python - <<'PY'
           import os
           from huggingface_hub import HfApi
 
-          whoami = HfApi(token=os.environ["HF_TOKEN"]).whoami()
-          print(whoami["name"])
+          token = os.environ["HF_TOKEN"]
+          space_id = os.environ["HF_SPACE_ID"]
+
+          api = HfApi(token=token)
+          api.upload_folder(
+              repo_id=space_id,
+              repo_type="space",
+              folder_path=".",
+              path_in_repo=".",
+              commit_message="Sync app from GitHub Actions",
+              delete_patterns=["*"],
+              ignore_patterns=[
+                  ".git/*",
+                  ".github/*",
+                  ".pytest_cache/*",
+                  ".venv*/*",
+                  "**/__pycache__/*",
+                  "*.pyc",
+              ],
+          )
           PY
-          )"
-          if [ -z "$HF_USERNAME" ]; then
-            echo "::error::Could not resolve Hugging Face username from HF_TOKEN."
-            exit 1
-          fi
-          git config --global user.name "github-actions"
-          git config --global user.email "actions@github.com"
-          git push "https://${HF_USERNAME}:${HF_TOKEN}@huggingface.co/spaces/${HF_SPACE_ID}.git" HEAD:main --force
