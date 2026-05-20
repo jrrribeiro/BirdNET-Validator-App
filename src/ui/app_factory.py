@@ -28,6 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
+from src.ui.components import compact_metric_grid, project_overview_html, section_header_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -1468,12 +1469,14 @@ def _build_validation_summary_cards(rows: object) -> str:
     reviewed_pct = round((reviewed / total) * 100, 1) if total else 0.0
 
     return (
-        "<div class='bn-kpi-grid'>"
-        f"<div class='bn-kpi-card bn-kpi-info'><div class='bn-kpi-label'>Queue page</div><div class='bn-kpi-value'>{total}</div><div class='bn-kpi-hint'>loaded items</div></div>"
-        f"<div class='bn-kpi-card bn-kpi-positive'><div class='bn-kpi-label'>Accepted</div><div class='bn-kpi-value'>{positive}</div><div class='bn-kpi-hint'>positive validations</div></div>"
-        f"<div class='bn-kpi-card bn-kpi-negative'><div class='bn-kpi-label'>Rejected</div><div class='bn-kpi-value'>{negative}</div><div class='bn-kpi-hint'>negative validations</div></div>"
-        f"<div class='bn-kpi-card bn-kpi-warning'><div class='bn-kpi-label'>Reviewed</div><div class='bn-kpi-value'>{reviewed_pct}%</div><div class='bn-kpi-hint'>{pending} pending on page</div></div>"
-        "</div>"
+        compact_metric_grid(
+            [
+                ("Queue page", str(total), "loaded items", "info"),
+                ("Accepted", str(positive), "positive validations", "positive"),
+                ("Rejected", str(negative), "negative validations", "negative"),
+                ("Reviewed", f"{reviewed_pct}%", f"{pending} pending on page", "warning"),
+            ]
+        )
     )
 
 
@@ -2777,11 +2780,11 @@ def create_app() -> gr.Blocks:
             # ===== TAB 1: Login =====
             with gr.Tab("Login", id="login_tab"):
                 gr.HTML(
-                    "<div class='bn-panel' style='margin-bottom:12px;'>"
-                    "<div class='bn-brand-kicker'>Secure access</div>"
-                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Sign in with your Hugging Face identity</div>"
-                    "<div class='bn-compact-note'>Your account controls project access, validator attribution, and private dataset access.</div>"
-                    "</div>"
+                    section_header_html(
+                        "Secure access",
+                        "Sign in with your Hugging Face identity",
+                        "Your account controls project access, validator attribution, and private dataset access.",
+                    )
                 )
                 username_input, session_output, login_button, error_message = create_login_page(auth_service)
 
@@ -2800,6 +2803,13 @@ def create_app() -> gr.Blocks:
 
             # ===== TAB 2: Admin Panel =====
             with gr.Tab("Admin", id="admin_tab"):
+                gr.HTML(
+                    section_header_html(
+                        "Administration",
+                        "Manage projects, teams, invites, and private dataset access",
+                        "Administrative actions are scoped by project role. Keep dataset tokens restricted to the projects that need them.",
+                    )
+                )
                 admin_info = gr.Markdown(value="⚠️ Login first")
                 admin_scope_info = gr.Markdown(value="")
 
@@ -2932,6 +2942,7 @@ def create_app() -> gr.Blocks:
                         value=_project_rows(),
                         headers=["project_slug", "name", "dataset_repo_id", "visibility", "owner_username", "dataset_token_set", "active"],
                         interactive=False,
+                        elem_classes=["bn-dataframe"],
                     )
                     refresh_projects_btn = gr.Button("🔄 Refresh List")
 
@@ -3236,6 +3247,7 @@ def create_app() -> gr.Blocks:
                         value=[],
                         headers=["username", "project_slug", "role", "invited_by", "expires_at", "expires_in"],
                         interactive=False,
+                        elem_classes=["bn-dataframe"],
                     )
                     pending_invites_message = gr.Markdown()
                     with gr.Row():
@@ -3382,12 +3394,13 @@ def create_app() -> gr.Blocks:
             # ===== TAB 3: Project Selection =====
             with gr.Tab("Projects", id="project_tab"):
                 gr.HTML(
-                    "<div class='bn-panel' style='margin-bottom:12px;'>"
-                    "<div class='bn-brand-kicker'>Project context</div>"
-                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Choose the dataset you want to validate</div>"
-                    "<div class='bn-compact-note'>Project access is filtered by your role. Invitations can be accepted here before validation starts.</div>"
-                    "</div>"
+                    section_header_html(
+                        "Project context",
+                        "Choose the dataset you want to validate",
+                        "Project access is filtered by your role. Invitations can be accepted here before validation starts.",
+                    )
                 )
+                project_overview = gr.HTML(value=project_overview_html([], []))
                 project_info_display = gr.Markdown(
                     value="⚠️ Login first in the **Login** tab"
                 )
@@ -3410,6 +3423,7 @@ def create_app() -> gr.Blocks:
                     if session is None:
                         return (
                             gr.Dropdown(choices=[], value=None, interactive=False),
+                            project_overview_html([], []),
                             "❌ Not authenticated. Login first.",
                             None,
                             "",
@@ -3419,6 +3433,7 @@ def create_app() -> gr.Blocks:
                     if not projects:
                         return (
                             gr.Dropdown(choices=[], value=None, interactive=False),
+                            project_overview_html(_project_rows(), []),
                             (
                                 "ℹ️ **No projects available yet**\n\n"
                                 "To get started:\n"
@@ -3438,6 +3453,7 @@ def create_app() -> gr.Blocks:
                     dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
                     return (
                         gr.Dropdown(choices=projects, value=selected, interactive=True),
+                        project_overview_html(_project_rows(), projects, selected),
                         f"📁 **Project:** {selected} | **Your Role:** {role_label}",
                         selected,
                         dataset_repo_id,
@@ -3531,7 +3547,7 @@ def create_app() -> gr.Blocks:
                 session_state.change(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_info_display, selected_project_state, selected_dataset_repo_state],
+                    outputs=[project_selector, project_overview, project_info_display, selected_project_state, selected_dataset_repo_state],
                 )
 
                 session_state.change(
@@ -3553,7 +3569,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_info_display, selected_project_state, selected_dataset_repo_state],
+                    outputs=[project_selector, project_overview, project_info_display, selected_project_state, selected_dataset_repo_state],
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
@@ -3567,7 +3583,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=update_project_selector,
                     inputs=[session_state],
-                    outputs=[project_selector, project_info_display, selected_project_state, selected_dataset_repo_state],
+                    outputs=[project_selector, project_overview, project_info_display, selected_project_state, selected_dataset_repo_state],
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
@@ -3589,23 +3605,23 @@ def create_app() -> gr.Blocks:
                     if session and selected:
                         selected_project = admin_manager.get_project(selected)
                         dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
-                        return selected, dataset_repo_id
-                    return None, ""
+                        return selected, dataset_repo_id, project_overview_html(_project_rows(), session.authorized_projects, selected)
+                    return None, "", project_overview_html([], [])
 
                 project_selector.change(
                     fn=update_selected_project,
                     inputs=[project_selector, session_state],
-                    outputs=[selected_project_state, selected_dataset_repo_state],
+                    outputs=[selected_project_state, selected_dataset_repo_state, project_overview],
                 )
 
             # ===== TAB 4: Validation =====
             with gr.Tab("Validate", id="validation_tab"):
                 gr.HTML(
-                    "<div class='bn-panel' style='margin-bottom:12px;'>"
-                    "<div class='bn-brand-kicker'>Validation workbench</div>"
-                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Review audio segments with less friction</div>"
-                    "<div class='bn-compact-note'>Load a project, listen to the current segment, review the spectrogram, and keep the queue moving with clear status actions.</div>"
-                    "</div>"
+                    section_header_html(
+                        "Validation workbench",
+                        "Review audio segments with less friction",
+                        "Load a project, listen to the current segment, review the spectrogram, and keep the queue moving with clear status actions.",
+                    )
                 )
                 validation_status = gr.Markdown(
                     value="",
@@ -4553,11 +4569,12 @@ def create_app() -> gr.Blocks:
             # ===== TAB 5: Report =====
             with gr.Tab("Progress", id="report_tab"):
                 gr.HTML(
-                    "<div class='bn-report-panel' style='margin-bottom:12px;'>"
-                    "<div class='bn-brand-kicker'>Progress dashboard</div>"
-                    "<div style='font-size:22px;font-weight:780;color:var(--bn-text);margin-top:2px;'>Project validation health</div>"
-                    "<div class='bn-compact-note'>Track coverage by status, species, and team activity for the selected project.</div>"
-                    "</div>"
+                    section_header_html(
+                        "Progress dashboard",
+                        "Project validation health",
+                        "Track coverage by status, species, and team activity for the selected project.",
+                        class_name="bn-report-panel",
+                    )
                 )
                 report_project_selector = gr.Dropdown(
                     choices=[],
@@ -4648,17 +4665,17 @@ def create_app() -> gr.Blocks:
                         key=lambda row: (-int(row[1]), str(row[0]).lower()),
                     )
 
-                    kpis_html = (
-                        "<div class='bn-kpi-grid'>"
-                        f"<div class='bn-kpi-card bn-kpi-info'><div class='bn-kpi-label'>Coverage</div><div class='bn-kpi-value'>{coverage_pct}%</div><div class='bn-kpi-hint'>{validated_recordings} of {total_recordings}</div></div>"
-                        f"<div class='bn-kpi-card bn-kpi-warning'><div class='bn-kpi-label'>Remaining</div><div class='bn-kpi-value'>{remaining_recordings}</div><div class='bn-kpi-hint'>segments pending</div></div>"
-                        f"<div class='bn-kpi-card bn-kpi-positive'><div class='bn-kpi-label'>Confirmed</div><div class='bn-kpi-value'>{status_totals['positive']}</div><div class='bn-kpi-hint'>accepted segments</div></div>"
-                        f"<div class='bn-kpi-card bn-kpi-negative'><div class='bn-kpi-label'>Rejected</div><div class='bn-kpi-value'>{status_totals['negative']}</div><div class='bn-kpi-hint'>negative segments</div></div>"
-                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Uncertain</div><div class='bn-kpi-value'>{status_totals['uncertain']}</div><div class='bn-kpi-hint'>needs review</div></div>"
-                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Skipped</div><div class='bn-kpi-value'>{status_totals['skip']}</div><div class='bn-kpi-hint'>not reviewed</div></div>"
-                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Species touched</div><div class='bn-kpi-value'>{validated_species}</div><div class='bn-kpi-hint'>with validation</div></div>"
-                        f"<div class='bn-kpi-card'><div class='bn-kpi-label'>Validators</div><div class='bn-kpi-value'>{len(validator_totals)}</div><div class='bn-kpi-hint'>active in project</div></div>"
-                        "</div>"
+                    kpis_html = compact_metric_grid(
+                        [
+                            ("Coverage", f"{coverage_pct}%", f"{validated_recordings} of {total_recordings}", "info"),
+                            ("Remaining", str(remaining_recordings), "segments pending", "warning"),
+                            ("Confirmed", str(status_totals["positive"]), "accepted segments", "positive"),
+                            ("Rejected", str(status_totals["negative"]), "negative segments", "negative"),
+                            ("Uncertain", str(status_totals["uncertain"]), "needs review", ""),
+                            ("Skipped", str(status_totals["skip"]), "not reviewed", ""),
+                            ("Species touched", str(validated_species), "with validation", ""),
+                            ("Validators", str(len(validator_totals)), "active in project", ""),
+                        ]
                     )
                     status_text = (
                         f"Project: **{slug}** | Total recordings: **{total_recordings}** | "

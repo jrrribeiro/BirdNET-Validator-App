@@ -60,6 +60,14 @@ body,
   color: var(--bn-text);
 }
 
+.bn-section-title {
+  margin-top: 2px;
+  font-size: 22px;
+  line-height: 1.18;
+  font-weight: 780;
+  color: var(--bn-text);
+}
+
 .bn-brand-subtitle {
   margin-top: 4px;
   color: var(--bn-muted);
@@ -93,6 +101,12 @@ body,
   color: var(--bn-positive);
 }
 
+.bn-pill-info {
+  border-color: #bfdbfe;
+  background: #eff6ff;
+  color: var(--bn-info);
+}
+
 .bn-pill-warn {
   border-color: #fed7aa;
   background: #fff7ed;
@@ -124,6 +138,68 @@ body,
   border: 1px solid var(--bn-border);
   border-radius: 8px;
   padding: 12px;
+}
+
+.bn-empty-state {
+  padding: 18px;
+  border: 1px dashed var(--bn-border-strong);
+  background: #ffffff;
+  border-radius: 8px;
+}
+
+.bn-empty-title {
+  color: var(--bn-text);
+  font-size: 16px;
+  font-weight: 760;
+  margin-bottom: 4px;
+}
+
+.bn-project-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 8px 0 14px 0;
+}
+
+.bn-project-card {
+  min-height: 132px;
+  padding: 14px;
+  border: 1px solid var(--bn-border);
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(20, 32, 51, 0.05);
+}
+
+.bn-project-card-selected {
+  border-color: var(--bn-primary);
+  box-shadow: 0 0 0 2px rgba(31, 111, 139, 0.12);
+}
+
+.bn-project-name {
+  color: var(--bn-text);
+  font-size: 16px;
+  font-weight: 780;
+}
+
+.bn-project-slug {
+  margin: 2px 0 8px 0;
+  color: var(--bn-primary-dark);
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.bn-card-pills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.bn-control-band {
+  padding: 12px;
+  border: 1px solid var(--bn-border);
+  background: #fbfcfe;
+  border-radius: 8px;
 }
 
 .bn-validation-grid {
@@ -275,6 +351,10 @@ select {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .bn-project-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .bn-action-row {
     display: grid !important;
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
@@ -283,6 +363,10 @@ select {
 
 @media (max-width: 560px) {
   .bn-kpi-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bn-project-grid {
     grid-template-columns: 1fr;
   }
 
