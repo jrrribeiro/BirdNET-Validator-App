@@ -238,6 +238,10 @@ body,
   border-radius: 8px;
 }
 
+.bn-spacer {
+  height: 10px;
+}
+
 .bn-inline-hint {
   padding: 9px 11px;
   border: 1px solid var(--bn-border);

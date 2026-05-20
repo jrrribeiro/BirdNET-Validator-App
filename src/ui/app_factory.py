@@ -2212,12 +2212,9 @@ def build_demo_app(project_slug: str = "demo-project") -> gr.Blocks:
         conflict_detection_key_state = gr.State(value="")
         status = gr.Textbox(label="Status", interactive=False)
 
-        # Keyboard shortcuts: 1=positive, 2=negative, 3=uncertain, 4=skip, R=reapply
+        # Keyboard shortcuts are injected without visible helper text to keep the workbench compact.
         keyboard_shortcuts_info = gr.HTML(
-            value="<div style='font-size: 12px; color: #666; padding: 8px; background-color: #f5f5f5; border-radius: 4px; margin-bottom: 10px;'>"
-            "<strong>Keyboard shortcuts:</strong> 1=Positive | 2=Negative | 3=Uncertain | 4=Skip | R=Reapply"
-            "</div>"
-            "<script>"
+            value="<script>"
             "document.addEventListener('keydown', function(event) {"
             "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
             "  const key = event.key.toLowerCase();"
@@ -2823,7 +2820,7 @@ def create_app() -> gr.Blocks:
                         "Administrative actions are scoped by project role. Keep dataset tokens restricted to the projects that need them.",
                     )
                 )
-                admin_info = gr.Markdown(value="⚠️ Login first")
+                admin_info = gr.Markdown(value="Login required")
                 admin_scope_info = gr.Markdown(value="")
                 admin_overview = gr.HTML(value=admin_overview_html(username=None, total_projects=0, admin_projects=0, validator_projects=0, pending_invites=0))
 
@@ -2854,13 +2851,13 @@ def create_app() -> gr.Blocks:
                     """Show admin panel or access denied message."""
                     if session is None:
                         return (
-                            "❌ **Not authenticated** — Login first in the **Login** tab.",
+                            "**Not authenticated** - Login first in the **Login** tab.",
                             gr.update(visible=False),
                         )
                     admin_projects = _admin_projects_for_session(session)
                     return (
                         (
-                            f"✅ **Admin Panel** — Welcome, {session.username}. "
+                            f"**Admin workspace** - Welcome, {session.username}. "
                             f"You are admin in {len(admin_projects)} project(s). "
                             "You can always create a new project and become its admin."
                         ),
@@ -2905,7 +2902,7 @@ def create_app() -> gr.Blocks:
 
                     def create_project(session, slug: str, name: str, repo_id: str, visibility: str, project_token: str):
                         if session is None:
-                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
+                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
 
                         slug = (slug or "").strip()
                         name = (name or "").strip()
@@ -2913,9 +2910,9 @@ def create_app() -> gr.Blocks:
                         visibility_value = (visibility or "collaborative").strip().lower()
                         project_token_value = (project_token or "").strip() or None
                         if not slug or not name or not repo_id:
-                            return "⚠️ Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
+                            return "Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
                         if visibility_value not in {"private", "collaborative"}:
-                            return "⚠️ Visibility must be private or collaborative.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
+                            return "Visibility must be private or collaborative.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
 
                         created = admin_manager.register_project(
                             Project(
@@ -2932,7 +2929,7 @@ def create_app() -> gr.Blocks:
                         if not created:
                             admin_projects = _admin_projects_for_session(session)
                             return (
-                                f"⚠️ Project '{slug}' already exists.",
+                                f"Project '{slug}' already exists.",
                                 _project_rows(),
                                 gr.update(choices=admin_projects),
                                 gr.update(),
@@ -2963,9 +2960,9 @@ def create_app() -> gr.Blocks:
 
                         return (
                             (
-                                f"✅ Project '{slug}' created successfully."
+                                f"Project '{slug}' created successfully."
                                 if persisted
-                                else f"✅ Project '{slug}' created, but could not persist bootstrap files: {persist_error}"
+                                else f"Project '{slug}' created, but could not persist bootstrap files: {persist_error}"
                             ),
                             _project_rows(),
                             gr.update(choices=admin_projects, value=slug),
@@ -2990,7 +2987,7 @@ def create_app() -> gr.Blocks:
                     )
                     refresh_projects_btn = gr.Button("Refresh List")
 
-                    gr.Markdown("<div style='height:8px;'></div>")
+                    gr.HTML("<div class='bn-spacer'></div>")
 
                     def _render_admin_scope_info(session, selected_admin_project: str):
                         if session is None:
@@ -3001,24 +2998,24 @@ def create_app() -> gr.Blocks:
                             admin_projects = _admin_projects_for_session(session)
                             if not admin_projects:
                                 return (
-                                    "ℹ️ You are authenticated, but currently not admin of any existing project. "
+                                    "You are authenticated, but currently not admin of any existing project. "
                                     "Create a project to become admin of it."
                                 )
                             return (
-                                f"ℹ️ Select a project to manage. "
+                                f"Select a project to manage. "
                                 f"You are admin in {len(admin_projects)} project(s): {', '.join(admin_projects)}"
                             )
 
                         role = auth_service.get_user_role_for_project(session.username, selected)
                         role_label = role.value.upper() if role is not None else "NO ACCESS"
                         if role == Role.admin:
-                            return f"✅ Effective role on project '{selected}': {role_label}"
+                            return f"Effective role on project '{selected}': {role_label}"
                         if role == Role.validator:
                             return (
-                                f"⚠️ Effective role on project '{selected}': {role_label}. "
+                                f"Effective role on project '{selected}': {role_label}. "
                                 "Management actions require ADMIN for this project."
                             )
-                        return f"❌ You do not have access to project '{selected}'."
+                        return f"You do not have access to project '{selected}'."
 
                     def refresh_projects(session):
                         if session is None:
@@ -3056,26 +3053,26 @@ def create_app() -> gr.Blocks:
 
                     def update_project_token(session, project_slug: str, new_token: str, clear_token: bool):
                         if session is None:
-                            return "❌ Access denied. Login required.", gr.update(), gr.update()
+                            return "Access denied. Login required.", gr.update(), gr.update()
                         if not _is_admin_for_project(session, project_slug):
-                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update()
+                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update()
                         project = admin_manager.get_project(project_slug)
                         if project is None:
-                            return "⚠️ Select a valid project.", gr.update(), gr.update()
+                            return "Select a valid project.", gr.update(), gr.update()
 
                         if bool(clear_token):
                             project.dataset_token = None
-                            message = f"✅ Project token cleared for {project_slug}"
+                            message = f"Project token cleared for {project_slug}"
                         else:
                             candidate = (new_token or "").strip()
                             if not candidate:
-                                return "⚠️ Provide a token or select clear token.", gr.update(), gr.update()
+                                return "Provide a token or select clear token.", gr.update(), gr.update()
                             project.dataset_token = candidate
-                            message = f"✅ Project token updated for {project_slug}"
+                            message = f"Project token updated for {project_slug}"
 
                         persisted, persist_error = _persist_admin_state()
                         if not persisted:
-                            message = f"{message} | ⚠️ Persistence failed: {persist_error}"
+                            message = f"{message} | Persistence failed: {persist_error}"
 
                         refreshed_service, refreshed_warning = _build_detection_repository(
                             _project_slugs(),
@@ -3159,9 +3156,9 @@ def create_app() -> gr.Blocks:
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None:
-                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
+                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
                         if not _is_admin_for_project(session, project):
-                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
+                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
                         success, msg = admin_manager.assign_user_to_project(
                             session.username,
                             username,
@@ -3170,7 +3167,7 @@ def create_app() -> gr.Blocks:
                         )
                         if success:
                             persisted, persist_error = _persist_admin_state()
-                            final_message = msg if persisted else f"{msg} | ⚠️ Persistence failed: {persist_error}"
+                            final_message = msg if persisted else f"{msg} | Persistence failed: {persist_error}"
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
 
@@ -3183,9 +3180,9 @@ def create_app() -> gr.Blocks:
 
                     def invite_user(session, mode: str, username: str, invite_email: str, project: str, role: str):
                         if session is None:
-                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
+                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
                         if not _is_admin_for_project(session, project):
-                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
+                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
 
                         final_username = None if mode == "Email only" else (username or None)
                         final_email = None if mode == "Internal app only" else (invite_email or None)
@@ -3200,7 +3197,7 @@ def create_app() -> gr.Blocks:
                         )
                         if success:
                             persisted, persist_error = _persist_admin_state()
-                            final_message = msg if persisted else f"{msg} | ⚠️ Persistence failed: {persist_error}"
+                            final_message = msg if persisted else f"{msg} | Persistence failed: {persist_error}"
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
 
@@ -3210,7 +3207,7 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 
-                    gr.Markdown("<div style='height:8px;'></div>")
+                    gr.HTML("<div class='bn-spacer'></div>")
 
                     with gr.Group(elem_classes=["bn-panel-soft", "bn-danger-zone"]):
                         gr.Markdown("#### Danger Zone")
@@ -3224,9 +3221,9 @@ def create_app() -> gr.Blocks:
 
                     def delete_project(session, project_slug: str):
                         if session is None:
-                            return "❌ Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
                         if not _is_admin_for_project(session, project_slug):
-                            return "❌ Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
 
                         success, msg = admin_manager.delete_project(session.username, project_slug)
                         if not success:
@@ -3234,7 +3231,7 @@ def create_app() -> gr.Blocks:
 
                         persisted, persist_error = _persist_admin_state()
                         if not persisted:
-                            msg = f"{msg} | ⚠️ Persistence failed: {persist_error}"
+                            msg = f"{msg} | Persistence failed: {persist_error}"
 
                         refreshed_service, refreshed_warning = _build_detection_repository(
                             _project_slugs(),
@@ -3270,7 +3267,7 @@ def create_app() -> gr.Blocks:
                         ],
                     )
 
-                    gr.Markdown("<div style='height:8px;'></div>")
+                    gr.HTML("<div class='bn-spacer'></div>")
 
                     gr.HTML(
                         section_header_html(
@@ -3296,7 +3293,7 @@ def create_app() -> gr.Blocks:
                     )
                     pending_invites_message = gr.Markdown()
                     with gr.Row():
-                        refresh_pending_invites_btn = gr.Button("Refresh Pending Invites")
+                        refresh_pending_invites_btn = gr.Button("Refresh pending invites")
                         revoke_invite_btn = gr.Button("Revoke Invite")
 
                     def _pending_invites_rows(project_filter: str, session):
@@ -3352,14 +3349,14 @@ def create_app() -> gr.Blocks:
 
                     def revoke_invite(session, username: str, project_slug: str, project_filter: str):
                         if session is None:
-                            return "❌ Access denied. Login required.", _pending_invites_rows(project_filter, session)
+                            return "Access denied. Login required.", _pending_invites_rows(project_filter, session)
                         if not _is_admin_for_project(session, project_slug):
-                            return "❌ Access denied. You must be admin of the selected project.", _pending_invites_rows(project_filter, session)
+                            return "Access denied. You must be admin of the selected project.", _pending_invites_rows(project_filter, session)
                         success, msg = admin_manager.revoke_invite(username=username, project_slug=project_slug)
                         if success:
                             persisted, persist_error = _persist_admin_state()
                             if not persisted:
-                                msg = f"{msg} | ⚠️ Persistence failed: {persist_error}"
+                                msg = f"{msg} | Persistence failed: {persist_error}"
                         return msg, _pending_invites_rows(project_filter, session)
 
                     revoke_invite_btn.click(
@@ -3453,7 +3450,7 @@ def create_app() -> gr.Blocks:
                 )
                 project_overview = gr.HTML(value=project_overview_html([], []))
                 project_info_display = gr.Markdown(
-                    value="⚠️ Login first in the **Login** tab"
+                    value="Login first in the **Login** tab"
                 )
                 project_context_display = gr.HTML(value=project_context_html(None))
                 project_selector = gr.Dropdown(
@@ -3466,7 +3463,7 @@ def create_app() -> gr.Blocks:
                 invitations_overview = gr.HTML(value=invite_panel_html(0))
                 invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
                 with gr.Row():
-                    refresh_invites_btn = gr.Button("Refresh Invites")
+                    refresh_invites_btn = gr.Button("Refresh invites")
                     accept_invite_btn = gr.Button("Accept Invite", variant="primary")
                     accept_all_invites_btn = gr.Button("Accept All")
                     reject_invite_btn = gr.Button("Reject Invite")
@@ -3477,7 +3474,7 @@ def create_app() -> gr.Blocks:
                         return (
                             gr.Dropdown(choices=[], value=None, interactive=False),
                             project_overview_html([], []),
-                            "❌ Not authenticated. Login first.",
+                            "Not authenticated. Login first.",
                             project_context_html(None),
                             None,
                             "",
@@ -3489,7 +3486,7 @@ def create_app() -> gr.Blocks:
                             gr.Dropdown(choices=[], value=None, interactive=False),
                             project_overview_html(_project_rows(), []),
                             (
-                                "ℹ️ **No projects available yet**\n\n"
+                                "**No projects available yet**\n\n"
                                 "To get started:\n"
                                 "1. Go to the **Admin** tab.\n"
                                 "2. Fill **New Project Slug**, **Project Name**, and **HF Dataset Repo ID**.\n"
@@ -3510,7 +3507,7 @@ def create_app() -> gr.Blocks:
                     return (
                         gr.Dropdown(choices=projects, value=selected, interactive=True),
                         project_overview_html(_project_rows(), projects, selected),
-                        f"📁 **Project:** {selected} | **Your Role:** {role_label}",
+                        f"**Project:** {selected} | **Your Role:** {role_label}",
                         project_context_html(project_row, role_label),
                         selected,
                         dataset_repo_id,
@@ -3568,10 +3565,10 @@ def create_app() -> gr.Blocks:
 
                 def _accept_invite(session, selected_option: str):
                     if session is None:
-                        return "❌ Login first", session
+                        return "Login first", session
                     project_slug, _, _ = _parse_invite_option(selected_option)
                     if not project_slug:
-                        return "⚠️ Select an invite", session
+                        return "Select an invite", session
                     success, message = auth_service.accept_project_invite(session.username, project_slug)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if success:
@@ -3580,10 +3577,10 @@ def create_app() -> gr.Blocks:
 
                 def _reject_invite(session, selected_option: str):
                     if session is None:
-                        return "❌ Login first", session
+                        return "Login first", session
                     project_slug, _, _ = _parse_invite_option(selected_option)
                     if not project_slug:
-                        return "⚠️ Select an invite", session
+                        return "Select an invite", session
                     success, message = auth_service.reject_project_invite(session.username, project_slug)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if success:
@@ -3592,7 +3589,7 @@ def create_app() -> gr.Blocks:
 
                 def _accept_all_invites(session):
                     if session is None:
-                        return "❌ Login first", session
+                        return "Login first", session
                     accepted, failed, message = auth_service.accept_all_project_invites(session.username)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if accepted > 0:
@@ -3712,12 +3709,12 @@ def create_app() -> gr.Blocks:
                 def get_validation_status(session, selected_project, dataset_repo_id):
                     """Show status message based on login/project state."""
                     if session is None:
-                        return "❌ **Not authenticated** — Login first in the **Login** tab"
+                        return "**Not authenticated** - Login first in the **Login** tab"
                     if selected_project is None:
-                        return "⚠️ **Project not selected** — Select a project in the **Projects** tab"
+                        return "**Project not selected** - Select a project in the **Projects** tab"
                     total_detections = _get_project_detection_count(service_ref["queue"], selected_project)
                     return (
-                        f"✅ **Ready to validate** — Project: **{selected_project}** | "
+                        f"**Ready to validate** - Project: **{selected_project}** | "
                         f"User: **{session.username}** | Dataset: **{dataset_repo_id or 'not set'}** | "
                         f"Loaded detections: **{total_detections}**"
                     )
@@ -3782,7 +3779,7 @@ def create_app() -> gr.Blocks:
                             reject_btn = gr.Button("Reject")
                             uncertain_btn = gr.Button("Uncertain")
                             skip_btn = gr.Button("Skip")
-                            favorite_btn = gr.Button("☆ Favorite", variant="secondary")
+                            favorite_btn = gr.Button("Favorite", variant="secondary")
 
                         corrected_species_input = gr.Dropdown(
                             label="Corrected species",
@@ -3825,8 +3822,8 @@ def create_app() -> gr.Blocks:
 
                         gr.Markdown("#### Queue navigation")
                         with gr.Row():
-                            prev_btn = gr.Button("←")
-                            next_btn = gr.Button("→")
+                            prev_btn = gr.Button("Previous")
+                            next_btn = gr.Button("Next")
 
                         with gr.Group(elem_classes=["bn-filter-panel"]):
                             gr.Markdown("#### Filters")
@@ -3845,10 +3842,7 @@ def create_app() -> gr.Blocks:
                         validator_name = gr.Textbox(label="Validator", value="", interactive=False)
                         validation_notes = gr.Textbox(label="Notes", placeholder="Optional", lines=4)
                         keyboard_shortcuts_info = gr.HTML(
-                            value="<div class='bn-panel-soft bn-compact-note' style='margin-bottom:8px;'>"
-                            "<strong>Shortcuts:</strong> ArrowUp/1=Confirm | ArrowDown/2=Reject | 3=Uncertain | 4=Skip"
-                            "</div>"
-                            "<script>"
+                            value="<script>"
                             "document.addEventListener('keydown', function(event) {"
                             "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
                             "  const key = event.key;"
@@ -4140,7 +4134,7 @@ def create_app() -> gr.Blocks:
                 ):
                     normalized_rows = _normalize_rows(rows)
                     if not project_slug or not normalized_rows:
-                        return "No detection selected to favorite", favorite_map, gr.update(value="☆ Favorite", variant="secondary")
+                        return "No detection selected to favorite", favorite_map, gr.update(value="Favorite", variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
                     detection_key = str(normalized_rows[safe_idx][0]).strip()
@@ -4149,11 +4143,11 @@ def create_app() -> gr.Blocks:
                     if detection_key in project_favs:
                         project_favs.remove(detection_key)
                         action = "removed from favorites"
-                        button_update = gr.update(value="☆ Favorite", variant="secondary")
+                        button_update = gr.update(value="Favorite", variant="secondary")
                     else:
                         project_favs.add(detection_key)
                         action = "added to favorites"
-                        button_update = gr.update(value="★ Favorited", variant="primary")
+                        button_update = gr.update(value="Favorited", variant="primary")
                     updated_map[project_slug] = sorted(project_favs)
                     return f"Detection {detection_key} {action}", updated_map, button_update
 
@@ -4165,14 +4159,14 @@ def create_app() -> gr.Blocks:
                 ):
                     normalized_rows = _normalize_rows(rows)
                     if not project_slug or not normalized_rows:
-                        return gr.update(value="☆ Favorite", variant="secondary")
+                        return gr.update(value="Favorite", variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
                     detection_key = str(normalized_rows[safe_idx][0]).strip()
                     favs = set((favorite_map or {}).get(project_slug, []))
                     if detection_key in favs:
-                        return gr.update(value="★ Favorited", variant="primary")
-                    return gr.update(value="☆ Favorite", variant="secondary")
+                        return gr.update(value="Favorited", variant="primary")
+                    return gr.update(value="Favorite", variant="secondary")
 
                 def on_table_select(project_slug: str, repo: str, rows: object, cache_key: str, session, evt: gr.SelectData):
                     return _select_and_fetch_audio_with_title(
