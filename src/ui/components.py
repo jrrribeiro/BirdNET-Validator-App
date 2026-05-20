@@ -81,3 +81,59 @@ def settings_health_html(items: list[tuple[str, str, str]]) -> str:
 def inline_hint_html(text: str, tone: str = "info") -> str:
     tone_class = f" bn-hint-{tone}" if tone else ""
     return f"<div class='bn-inline-hint{tone_class}'>{escape(text)}</div>"
+
+
+def selected_segment_html(row: list[object] | None, selected_index: int | None = None, total_rows: int | None = None) -> str:
+    if not row:
+        return (
+            "<div class='bn-selected-card'>"
+            "<div class='bn-brand-kicker'>Selected segment</div>"
+            "<div class='bn-empty-title'>No segment loaded</div>"
+            "<div class='bn-compact-note'>Choose a species and apply filters to load the validation queue.</div>"
+            "</div>"
+        )
+
+    def cell(index: int, default: str = "") -> str:
+        if len(row) <= index:
+            return default
+        value = str(row[index] or "").strip()
+        if index == 2 and value.startswith("▶ "):
+            value = value[2:].strip()
+        return value or default
+
+    detection_key = cell(0, "unknown")
+    audio_id = cell(1, "unknown audio")
+    species = cell(2, "Unknown species")
+    confidence = cell(3, "0")
+    start_time = cell(4, "0")
+    end_time = cell(5, "0")
+    status = cell(6, "pending")
+    version = cell(7, "0")
+    conflict = cell(8, "")
+    position = ""
+    if selected_index is not None and total_rows:
+        position = f"{int(selected_index) + 1}/{int(total_rows)}"
+
+    conflict_badge = "<span class='bn-pill bn-pill-warn'>conflict</span>" if conflict else ""
+    return (
+        "<div class='bn-selected-card'>"
+        "<div class='bn-selected-topline'>"
+        "<div>"
+        "<div class='bn-brand-kicker'>Selected segment</div>"
+        f"<div class='bn-selected-species'>{escape(species)}</div>"
+        "</div>"
+        f"<span class='bn-pill bn-pill-info'>{escape(position or 'queue')}</span>"
+        "</div>"
+        "<div class='bn-selected-meta'>"
+        f"<span><strong>Confidence</strong>{escape(confidence)}</span>"
+        f"<span><strong>Time</strong>{escape(start_time)}-{escape(end_time)}s</span>"
+        f"<span><strong>Status</strong>{escape(status)}</span>"
+        f"<span><strong>Version</strong>{escape(version)}</span>"
+        "</div>"
+        f"<div class='bn-selected-audio'>{escape(audio_id)}</div>"
+        "<div class='bn-card-pills'>"
+        f"<span class='bn-pill'>key: {escape(detection_key)}</span>"
+        f"{conflict_badge}"
+        "</div>"
+        "</div>"
+    )

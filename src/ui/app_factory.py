@@ -28,7 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import compact_metric_grid, inline_hint_html, project_overview_html, section_header_html, settings_health_html
+from src.ui.components import compact_metric_grid, inline_hint_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -1589,6 +1589,14 @@ def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
         marked_rows.append(updated)
 
     return marked_rows
+
+
+def _selected_segment_card(rows: object, selected_index: int) -> str:
+    normalized_rows = _normalize_rows(rows)
+    if not normalized_rows:
+        return selected_segment_html(None)
+    safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
+    return selected_segment_html(normalized_rows[safe_index], safe_index, len(normalized_rows))
 
 
 def _paginate_rows(rows: list[list[object]], page: int, page_size: int) -> tuple[list[list[object]], int, int]:
@@ -3683,6 +3691,7 @@ def create_app() -> gr.Blocks:
                 with gr.Row(equal_height=False, elem_classes=["bn-validation-grid"]):
                     with gr.Column(scale=8, elem_classes=["bn-media-panel"]):
                         validation_summary_cards = gr.HTML(value=_build_validation_summary_cards([]))
+                        selected_segment_card = gr.HTML(value=selected_segment_html(None))
 
                         spectrogram_title = gr.Markdown("### Segment spectrogram")
                         spectrogram_image = gr.Image(
@@ -4215,6 +4224,17 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
+                )
+
+                selected_index.change(
+                    fn=lambda rows, idx: _selected_segment_card(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[selected_segment_card],
+                )
+                table.change(
+                    fn=lambda rows, idx: _selected_segment_card(rows, int(idx)),
+                    inputs=[table, selected_index],
+                    outputs=[selected_segment_card],
                 )
 
                 auto_play_audio.change(

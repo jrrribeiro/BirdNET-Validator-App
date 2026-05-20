@@ -247,6 +247,61 @@ body,
   background: #fffafa !important;
 }
 
+.bn-selected-card {
+  padding: 14px;
+  border: 1px solid var(--bn-border);
+  background: linear-gradient(180deg, #ffffff 0%, #f8fbfc 100%);
+  border-radius: 8px;
+  margin: 0 0 12px 0;
+}
+
+.bn-selected-topline {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.bn-selected-species {
+  margin-top: 2px;
+  color: var(--bn-text);
+  font-size: 21px;
+  line-height: 1.15;
+  font-weight: 820;
+}
+
+.bn-selected-meta {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(90px, 1fr));
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.bn-selected-meta span {
+  padding: 8px 10px;
+  border: 1px solid var(--bn-border);
+  background: #ffffff;
+  border-radius: 7px;
+  color: var(--bn-text);
+  font-size: 13px;
+  font-weight: 720;
+}
+
+.bn-selected-meta strong {
+  display: block;
+  color: var(--bn-muted);
+  font-size: 11px;
+  font-weight: 720;
+  margin-bottom: 2px;
+}
+
+.bn-selected-audio {
+  margin-top: 10px;
+  color: var(--bn-muted);
+  font-size: 12px;
+  word-break: break-word;
+}
+
 .bn-health-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
@@ -433,6 +488,10 @@ select {
 
   .bn-health-panel {
     grid-template-columns: 1fr;
+  }
+
+  .bn-selected-meta {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .bn-action-row {
