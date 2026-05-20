@@ -28,7 +28,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import admin_overview_html, compact_metric_grid, inline_hint_html, invite_panel_html, project_context_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html, validation_queue_html
+from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, project_context_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html, validation_queue_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -4668,6 +4668,7 @@ def create_app() -> gr.Blocks:
                 )
                 refresh_report_btn = gr.Button("Refresh dashboard", variant="primary")
                 report_kpis = gr.HTML(value="")
+                report_coverage_bars = gr.HTML(value=coverage_bars_html([]))
                 report_species_table = gr.Dataframe(
                     headers=["species", "total", "validated", "remaining", "coverage_pct"],
                     value=[],
@@ -4714,7 +4715,7 @@ def create_app() -> gr.Blocks:
                 def _render_report_dashboard(project_slug: str):
                     slug = (project_slug or "").strip()
                     if not slug:
-                        return "", [], [], [], "Select a project to view the dashboard"
+                        return "", coverage_bars_html([]), [], [], [], "Select a project to view the dashboard"
 
                     items = _list_project_detections(slug)
                     snapshot = validation_repository.load_current_snapshot(project_slug=slug)
@@ -4784,7 +4785,7 @@ def create_app() -> gr.Blocks:
                         f"Project: **{slug}** | Total recordings: **{total_recordings}** | "
                         f"Validated: **{validated_recordings}** | Remaining: **{remaining_recordings}**"
                     )
-                    return kpis_html, rows, validator_rows, recent_rows, status_text
+                    return kpis_html, coverage_bars_html(rows), rows, validator_rows, recent_rows, status_text
 
                 session_state.change(
                     fn=lambda s: (
@@ -4794,13 +4795,14 @@ def create_app() -> gr.Blocks:
                             interactive=bool(s is not None and s.authorized_projects),
                         ),
                         "",
+                        coverage_bars_html([]),
                         [],
                         [],
                         [],
                         "Login and choose a project, then click Refresh dashboard." if s is None else "Click Refresh dashboard to load project metrics.",
                     ),
                     inputs=[session_state],
-                    outputs=[report_project_selector, report_kpis, report_species_table, report_validator_table, report_recent_table, report_status],
+                    outputs=[report_project_selector, report_kpis, report_coverage_bars, report_species_table, report_validator_table, report_recent_table, report_status],
                 )
 
                 selected_project_state.change(
@@ -4812,7 +4814,7 @@ def create_app() -> gr.Blocks:
                 refresh_report_btn.click(
                     fn=_render_report_dashboard,
                     inputs=[report_project_selector],
-                    outputs=[report_kpis, report_species_table, report_validator_table, report_recent_table, report_status],
+                    outputs=[report_kpis, report_coverage_bars, report_species_table, report_validator_table, report_recent_table, report_status],
                 )
 
             # ===== TAB 6: Settings =====

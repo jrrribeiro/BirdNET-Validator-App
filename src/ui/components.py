@@ -145,6 +145,52 @@ def invite_panel_html(invite_count: int) -> str:
     )
 
 
+def coverage_bars_html(rows: list[list[object]], *, limit: int = 12) -> str:
+    if not rows:
+        return (
+            "<div class='bn-coverage-panel'>"
+            "<div class='bn-queue-preview-head'><span>Coverage by species</span><span>0 species</span></div>"
+            "<div class='bn-empty-mini'>Refresh the dashboard after selecting a project.</div>"
+            "</div>"
+        )
+
+    cards: list[str] = []
+    for row in rows[:limit]:
+        species = str(row[0] if len(row) > 0 else "Unknown species")
+        total = int(row[1] or 0) if len(row) > 1 else 0
+        validated = int(row[2] or 0) if len(row) > 2 else 0
+        remaining = int(row[3] or 0) if len(row) > 3 else max(0, total - validated)
+        try:
+            pct = float(row[4] if len(row) > 4 else 0.0)
+        except Exception:
+            pct = 0.0
+        pct = max(0.0, min(100.0, pct))
+        cards.append(
+            "<div class='bn-coverage-row'>"
+            "<div class='bn-coverage-row-head'>"
+            f"<span>{escape(species)}</span>"
+            f"<strong>{pct:.1f}%</strong>"
+            "</div>"
+            "<div class='bn-coverage-track'>"
+            f"<div class='bn-coverage-fill' style='width:{pct:.1f}%;'></div>"
+            "</div>"
+            f"<div class='bn-coverage-meta'>{validated} validated · {remaining} remaining · {total} total</div>"
+            "</div>"
+        )
+
+    remaining_species = max(0, len(rows) - limit)
+    footer = f"<div class='bn-queue-footnote'>+{remaining_species} species in the table below</div>" if remaining_species else ""
+    return (
+        "<div class='bn-coverage-panel'>"
+        "<div class='bn-queue-preview-head'>"
+        f"<span>Coverage by species</span><span>{len(rows)} species</span>"
+        "</div>"
+        + "".join(cards)
+        + footer
+        + "</div>"
+    )
+
+
 def settings_health_html(items: list[tuple[str, str, str]]) -> str:
     cards = []
     for label, value, tone in items:

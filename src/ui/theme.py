@@ -435,6 +435,63 @@ body,
   font-size: 12px;
 }
 
+.bn-coverage-panel {
+  padding: 12px;
+  margin: 8px 0 14px 0;
+  border: 1px solid var(--bn-border);
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 4px 14px rgba(20, 32, 51, 0.04);
+}
+
+.bn-coverage-row {
+  padding: 9px 0;
+}
+
+.bn-coverage-row + .bn-coverage-row {
+  border-top: 1px solid #eef2f6;
+}
+
+.bn-coverage-row-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  color: var(--bn-text);
+  font-size: 13px;
+  font-weight: 760;
+}
+
+.bn-coverage-row-head span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bn-coverage-row-head strong {
+  color: var(--bn-primary-dark);
+  font-size: 12px;
+}
+
+.bn-coverage-track {
+  height: 8px;
+  margin-top: 7px;
+  overflow: hidden;
+  background: #edf2f7;
+  border-radius: 999px;
+}
+
+.bn-coverage-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--bn-primary) 0%, var(--bn-positive) 100%);
+  border-radius: 999px;
+}
+
+.bn-coverage-meta {
+  margin-top: 5px;
+  color: var(--bn-muted);
+  font-size: 11px;
+}
+
 .bn-health-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
