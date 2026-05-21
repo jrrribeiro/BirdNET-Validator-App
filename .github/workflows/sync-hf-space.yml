@@ -47,23 +47,6 @@ jobs:
             exit 1
           fi
 
-      - name: Verify Hugging Face Space exists
-        env:
-          HF_TOKEN: ${{ secrets.HF_TOKEN }}
-        run: |
-          python - <<'PY'
-          import os
-          from huggingface_hub import HfApi
-
-          token = os.environ["HF_TOKEN"]
-          space_id = os.environ["HF_SPACE_ID"]
-
-          api = HfApi(token=token)
-          api.space_info(repo_id=space_id)
-          print(f"Verified existing Hugging Face Space: {space_id}")
-          PY
-
-
       - name: Upload repository to Hugging Face Space
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
