@@ -44,8 +44,3 @@ class Validation(BaseModel):
     validator: str = Field(min_length=1)
 
 
-class IndexManifest(BaseModel):
-    schema_version: str = "1.0.0"
-    project_slug: str
-    total_detections: int = Field(ge=0)
-    total_audio_files: int = Field(ge=0)

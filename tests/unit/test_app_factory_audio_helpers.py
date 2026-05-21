@@ -27,6 +27,7 @@ from src.ui.app_factory import (
     _load_projects_from_file,
     _load_user_access_from_file,
     _bootstrap_auth_and_projects,
+    _resolve_project_fetch_token,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
@@ -847,6 +848,34 @@ def test_bootstrap_auth_and_projects_warns_when_not_configured(tmp_path: Path) -
     assert warning == ""
 
 
+def test_bootstrap_auth_and_projects_uses_demo_bootstrap_when_enabled(tmp_path: Path) -> None:
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=True,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+    )
+    auth_service = AuthService()
+    from src.services.invite_email_notifier import EmailJSInviteEmailNotifier
+    notifier = EmailJSInviteEmailNotifier("", "", "", "", timeout_seconds=20)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=notifier)
+
+    warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+
+    assert warning == ""
+    assert auth_service.login("demo_user") is not None
+    assert auth_service.login("admin_user") is not None
+    assert any(p["project_slug"] == "demo-project" for p in admin_manager.list_projects())
+
+
 def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_path: Path) -> None:
     projects_file = tmp_path / "projects.json"
     projects_file.write_text(
@@ -962,6 +991,104 @@ def test_load_dataset_detections_for_project_reads_jsonl(monkeypatch: pytest.Mon
     assert {item.scientific_name for item in detections} == {"Species A", "Species B"}
 
 
+def test_load_dataset_detections_for_project_uses_fallback_hf_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.ui import app_factory as module
+
+    observed_tokens: list[str | None] = []
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            observed_tokens.append(token)
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            return ["detections.jsonl"]
+
+    metadata_file = tmp_path / "detections.jsonl"
+    metadata_file.write_text(
+        json.dumps(
+            {
+                "audio_id": "audio_0001",
+                "scientific_name": "Species A",
+                "confidence": 0.92,
+                "start_time": 1.0,
+                "end_time": 2.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_download(**kwargs):
+        observed_tokens.append(kwargs.get("token"))
+        if kwargs.get("filename") != "detections.jsonl":
+            raise FileNotFoundError(str(kwargs.get("filename")))
+        return str(metadata_file)
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+    monkeypatch.setattr(module, "hf_hub_download", fake_download)
+
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/project-a",
+        active=True,
+    )
+    detections, warning = module._load_dataset_detections_for_project(project, hf_token="hf_session")
+
+    assert warning == ""
+    assert len(detections) == 1
+    assert observed_tokens[-2:] == ["hf_session", "hf_session"]
+
+
+def test_load_dataset_detections_for_project_reports_missing_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import app_factory as module
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            raise RuntimeError("401 Client Error")
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/private-project",
+        active=True,
+    )
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert detections == []
+    assert "No Hugging Face token is configured" in warning
+    assert "Admin > Project token management" in warning
+
+
+def test_resolve_project_fetch_token_uses_session_then_project_then_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/project-a",
+        dataset_token="hf_project",
+        active=True,
+    )
+
+    assert _resolve_project_fetch_token(project, "hf_session") == "hf_session"
+    assert _resolve_project_fetch_token(project, None) == "hf_project"
+
+    project.dataset_token = None
+    monkeypatch.setenv("HF_TOKEN", "hf_env")
+
+    assert _resolve_project_fetch_token(project, None) == "hf_env"
+
+
 def test_build_detection_repository_prefers_dataset_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.ui import app_factory as module
 
@@ -975,7 +1102,7 @@ def test_build_detection_repository_prefers_dataset_rows(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         module,
         "_load_dataset_detections_for_project",
-        lambda project_obj: (
+        lambda project_obj, hf_token=None: (
             [
                 Detection(
                     detection_key="0000000000002222",
@@ -1175,3 +1302,86 @@ def test_load_dataset_detections_for_project_uses_files_parquet_index(
     assert detections[0].confidence == 0.85
     assert detections[0].start_time == 0.0
     assert detections[0].end_time == 3.0
+
+
+def test_load_dataset_detections_for_project_reads_known_files_index_before_repo_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.ui import app_factory as module
+
+    files_index = tmp_path / "files.parquet"
+    pd.DataFrame.from_records(
+        [
+            {
+                "stored_path": "audio/Accipiter_striatus/shard-000000/example.wav",
+                "original_relative_path": "Accipiter striatus/example.wav",
+                "logical_group": "Accipiter striatus",
+                "filename": "example.wav",
+                "size": 123,
+            }
+        ]
+    ).to_parquet(files_index, index=False)
+
+    class TreeApiShouldNotRun:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            raise AssertionError("tree discovery should not run when index/files.parquet is available")
+
+    def fake_download(repo_id: str, repo_type: str, filename: str, token: str | None = None) -> str:
+        _ = repo_id
+        _ = repo_type
+        _ = token
+        if filename == "index/files.parquet":
+            return str(files_index)
+        raise FileNotFoundError(filename)
+
+    monkeypatch.setattr(module, "HfApi", TreeApiShouldNotRun)
+    monkeypatch.setattr(module, "hf_hub_download", fake_download)
+
+    project = Project(
+        project_slug="ppbio-rabeca",
+        name="PPBIO RABECA",
+        dataset_repo_id="jrrribeiro/PPBIO-RABECA",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert warning == ""
+    assert len(detections) == 1
+    assert detections[0].audio_id == "Accipiter_striatus/shard-000000/example.wav"
+
+
+def test_load_dataset_detections_for_project_explains_tree_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import app_factory as module
+
+    monkeypatch.setattr(module, "_load_detections_from_known_files_index", lambda **kwargs: ([], ""))
+
+    class RateLimitedHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            raise RuntimeError("429 Client Error: Too Many Requests")
+
+    monkeypatch.setattr(module, "HfApi", RateLimitedHfApi)
+
+    project = Project(
+        project_slug="ppbio-rabeca",
+        name="PPBIO RABECA",
+        dataset_repo_id="jrrribeiro/PPBIO-RABECA",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert detections == []
+    assert "rate-limited dataset discovery" in warning
+    assert "fast HF_Dataset_Uploader index path" in warning

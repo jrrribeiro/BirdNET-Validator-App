@@ -1,10 +1,6 @@
 from typing import Protocol
 
-from src.domain.models import Detection, Project, User, Validation
-
-
-class ProjectRepository(Protocol):
-    def get_project(self, project_slug: str) -> Project: ...
+from src.domain.models import Detection, Validation
 
 
 class DetectionRepository(Protocol):
@@ -31,5 +27,3 @@ class ValidationRepository(Protocol):
     def save_validation(self, project_slug: str, item: Validation, expected_version: int | None = None) -> int: ...
 
 
-class AuthRepository(Protocol):
-    def authenticate(self, username: str) -> User: ...
