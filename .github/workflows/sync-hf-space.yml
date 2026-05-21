@@ -71,7 +71,6 @@ jobs:
                   folder_path=".",
                   path_in_repo=".",
                   commit_message="Sync app from GitHub Actions",
-                  delete_patterns=["*"],
                   ignore_patterns=[
                       ".git/*",
                       ".github/*",
