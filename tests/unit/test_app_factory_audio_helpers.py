@@ -1024,6 +1024,8 @@ def test_load_dataset_detections_for_project_uses_fallback_hf_token(
 
     def fake_download(**kwargs):
         observed_tokens.append(kwargs.get("token"))
+        if kwargs.get("filename") != "detections.jsonl":
+            raise FileNotFoundError(str(kwargs.get("filename")))
         return str(metadata_file)
 
     monkeypatch.setattr(module, "HfApi", FakeHfApi)
@@ -1039,7 +1041,7 @@ def test_load_dataset_detections_for_project_uses_fallback_hf_token(
 
     assert warning == ""
     assert len(detections) == 1
-    assert observed_tokens == ["hf_session", "hf_session"]
+    assert observed_tokens[-2:] == ["hf_session", "hf_session"]
 
 
 def test_load_dataset_detections_for_project_reports_missing_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1300,3 +1302,86 @@ def test_load_dataset_detections_for_project_uses_files_parquet_index(
     assert detections[0].confidence == 0.85
     assert detections[0].start_time == 0.0
     assert detections[0].end_time == 3.0
+
+
+def test_load_dataset_detections_for_project_reads_known_files_index_before_repo_tree(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.ui import app_factory as module
+
+    files_index = tmp_path / "files.parquet"
+    pd.DataFrame.from_records(
+        [
+            {
+                "stored_path": "audio/Accipiter_striatus/shard-000000/example.wav",
+                "original_relative_path": "Accipiter striatus/example.wav",
+                "logical_group": "Accipiter striatus",
+                "filename": "example.wav",
+                "size": 123,
+            }
+        ]
+    ).to_parquet(files_index, index=False)
+
+    class TreeApiShouldNotRun:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            raise AssertionError("tree discovery should not run when index/files.parquet is available")
+
+    def fake_download(repo_id: str, repo_type: str, filename: str, token: str | None = None) -> str:
+        _ = repo_id
+        _ = repo_type
+        _ = token
+        if filename == "index/files.parquet":
+            return str(files_index)
+        raise FileNotFoundError(filename)
+
+    monkeypatch.setattr(module, "HfApi", TreeApiShouldNotRun)
+    monkeypatch.setattr(module, "hf_hub_download", fake_download)
+
+    project = Project(
+        project_slug="ppbio-rabeca",
+        name="PPBIO RABECA",
+        dataset_repo_id="jrrribeiro/PPBIO-RABECA",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert warning == ""
+    assert len(detections) == 1
+    assert detections[0].audio_id == "Accipiter_striatus/shard-000000/example.wav"
+
+
+def test_load_dataset_detections_for_project_explains_tree_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import app_factory as module
+
+    monkeypatch.setattr(module, "_load_detections_from_known_files_index", lambda **kwargs: ([], ""))
+
+    class RateLimitedHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            raise RuntimeError("429 Client Error: Too Many Requests")
+
+    monkeypatch.setattr(module, "HfApi", RateLimitedHfApi)
+
+    project = Project(
+        project_slug="ppbio-rabeca",
+        name="PPBIO RABECA",
+        dataset_repo_id="jrrribeiro/PPBIO-RABECA",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert detections == []
+    assert "rate-limited dataset discovery" in warning
+    assert "fast HF_Dataset_Uploader index path" in warning

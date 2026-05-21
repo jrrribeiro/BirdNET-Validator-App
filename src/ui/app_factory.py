@@ -270,10 +270,30 @@ def _load_dataset_detections_for_project(project: Project, hf_token: str | None 
         return [], ""
 
     token = _project_dataset_token(project, hf_token)
+    fast_index_detections, fast_index_warning = _load_detections_from_known_files_index(
+        project=project,
+        dataset_repo=dataset_repo,
+        token=token,
+    )
+    if fast_index_detections:
+        return fast_index_detections, fast_index_warning
+
     try:
         api = HfApi(token=token)
         repo_files = api.list_repo_files(repo_id=dataset_repo, repo_type="dataset")
     except Exception as exc:
+        if _is_hf_rate_limit_error(exc):
+            token_hint = (
+                " Login with a Hugging Face token or store a project token with dataset read access."
+                if token is None
+                else " The current token was still rate-limited by Hugging Face."
+            )
+            return [], (
+                f"⚠️ Hugging Face rate-limited dataset discovery for {dataset_repo}: {exc}\n\n"
+                "The app first tried the fast HF_Dataset_Uploader index path, but it was unavailable. "
+                "Legacy dataset discovery falls back to the Hub tree API, which has stricter limits."
+                f"{token_hint} Retry after the Hub rate-limit window resets."
+            )
         token_hint = (
             " No Hugging Face token is configured for this project/session."
             if token is None
@@ -378,6 +398,60 @@ def _load_dataset_detections_for_project(project: Project, hf_token: str | None 
         )
 
     return parsed, ""
+
+
+def _is_hf_rate_limit_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return "429" in message or "too many requests" in message or "rate limit" in message
+
+
+def _load_detections_from_known_files_index(
+    project: Project,
+    dataset_repo: str,
+    token: str | None,
+) -> tuple[list[Detection], str]:
+    """Load the uploader index through direct file downloads before repo tree discovery."""
+    try:
+        import pandas as pd  # type: ignore[import-not-found]
+    except Exception:
+        return [], ""
+
+    index_warning = ""
+    for files_index_path in ["index/files.parquet", "files.parquet", "metadata/files.parquet"]:
+        try:
+            downloaded = _download_dataset_metadata_file(dataset_repo, files_index_path, token)
+            frame = pd.read_parquet(downloaded)
+        except Exception:
+            continue
+
+        rows = frame.to_dict(orient="records")
+        rows = _try_merge_known_detection_csv(dataset_repo, token, rows, pd)
+        parsed = _parse_detection_metadata_payload(rows, project.project_slug)
+        if parsed:
+            return parsed, ""
+
+        index_warning = (
+            f"⚠️ Dataset {dataset_repo} has {files_index_path}, but no valid audio rows were parsed "
+            f"for project {project.project_slug}."
+        )
+
+    return [], index_warning
+
+
+def _try_merge_known_detection_csv(
+    dataset_repo: str,
+    token: str | None,
+    file_rows: list[dict[str, object]],
+    pandas_module,
+) -> list[dict[str, object]]:
+    for detections_csv_path in ["index/detections.csv", "detections.csv", "metadata/detections.csv"]:
+        try:
+            csv_path = _download_dataset_metadata_file(dataset_repo, detections_csv_path, token)
+            detections_frame = pandas_module.read_csv(csv_path)
+            return _merge_files_index_with_detection_rows(file_rows, detections_frame.to_dict(orient="records"))
+        except Exception:
+            continue
+    return file_rows
 
 
 def _load_detections_from_files_index(
