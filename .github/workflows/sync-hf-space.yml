@@ -53,26 +53,70 @@ jobs:
         run: |
           python - <<'PY'
           import os
+          import sys
+          import time
           from huggingface_hub import HfApi
+          from huggingface_hub.utils import HfHubHTTPError
 
           token = os.environ["HF_TOKEN"]
           space_id = os.environ["HF_SPACE_ID"]
 
           api = HfApi(token=token)
-          api.upload_folder(
-              repo_id=space_id,
-              repo_type="space",
-              folder_path=".",
-              path_in_repo=".",
-              commit_message="Sync app from GitHub Actions",
-              delete_patterns=["*"],
-              ignore_patterns=[
-                  ".git/*",
-                  ".github/*",
-                  ".pytest_cache/*",
-                  ".venv*/*",
-                  "**/__pycache__/*",
-                  "*.pyc",
-              ],
-          )
+          retry_delays = [30, 90, 180]
+
+          def upload():
+              api.upload_folder(
+                  repo_id=space_id,
+                  repo_type="space",
+                  folder_path=".",
+                  path_in_repo=".",
+                  commit_message="Sync app from GitHub Actions",
+                  delete_patterns=["*"],
+                  ignore_patterns=[
+                      ".git/*",
+                      ".github/*",
+                      ".pytest_cache/*",
+                      ".venv*/*",
+                      "**/__pycache__/*",
+                      "*.pyc",
+                  ],
+              )
+
+          for attempt in range(len(retry_delays) + 1):
+              try:
+                  upload()
+                  print(f"Uploaded GitHub main to Hugging Face Space {space_id}.")
+                  break
+              except HfHubHTTPError as exc:
+                  status = getattr(exc.response, "status_code", None)
+                  if status in {401, 403}:
+                      print(
+                          "::error::HF_TOKEN cannot write to the target Space. "
+                          "Create a write token for the Space owner and update the "
+                          "GitHub Actions HF_TOKEN secret.",
+                          file=sys.stderr,
+                      )
+                      raise
+                  if status == 404:
+                      print(
+                          f"::error::Target Space {space_id} was not found for HF_TOKEN.",
+                          file=sys.stderr,
+                      )
+                      raise
+
+                  transient = status == 429 or status is not None and status >= 500
+                  if not transient or attempt == len(retry_delays):
+                      print(
+                          f"::error::Hugging Face upload failed with HTTP status {status}.",
+                          file=sys.stderr,
+                      )
+                      raise
+
+                  delay = retry_delays[attempt]
+                  print(
+                      f"::warning::Hugging Face upload returned HTTP {status}; "
+                      f"retrying in {delay} seconds.",
+                      file=sys.stderr,
+                  )
+                  time.sleep(delay)
           PY
