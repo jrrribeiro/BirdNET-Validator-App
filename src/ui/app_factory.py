@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import wave
+from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
 from typing import Protocol
@@ -244,17 +245,41 @@ def _parse_detection_metadata_payload(payload: object, project_slug: str) -> lis
     return parsed
 
 
-def _load_dataset_detections_for_project(project: Project) -> tuple[list[Detection], str]:
+def _env_hf_token() -> str | None:
+    token = (
+        os.getenv("BIRDNET_HF_TOKEN")
+        or os.getenv("HF_TOKEN")
+        or os.getenv("HUGGING_FACE_HUB_TOKEN")
+        or os.getenv("HUGGINGFACE_HUB_TOKEN")
+        or ""
+    ).strip()
+    return token or None
+
+
+def _project_dataset_token(project: Project, fallback_token: str | None = None) -> str | None:
+    return (project.dataset_token or "").strip() or (fallback_token or "").strip() or _env_hf_token()
+
+
+def _load_dataset_detections_for_project(project: Project, hf_token: str | None = None) -> tuple[list[Detection], str]:
     dataset_repo = project.dataset_repo_id.strip()
     if not dataset_repo:
         return [], ""
 
-    token = (project.dataset_token or "").strip() or None
+    token = _project_dataset_token(project, hf_token)
     try:
         api = HfApi(token=token)
         repo_files = api.list_repo_files(repo_id=dataset_repo, repo_type="dataset")
     except Exception as exc:
-        return [], f"⚠️ Could not list files for dataset {dataset_repo}: {exc}"
+        token_hint = (
+            " No Hugging Face token is configured for this project/session."
+            if token is None
+            else " The configured token could not access this dataset."
+        )
+        return [], (
+            f"⚠️ Could not list files for dataset {dataset_repo}: {exc}\n\n"
+            f"{token_hint} If the dataset is private or gated, add a project token in Admin > Project token management "
+            "or login with a Hugging Face token that has dataset read access."
+        )
 
     if not repo_files:
         return [], f"⚠️ Dataset {dataset_repo} has no files."
@@ -615,6 +640,7 @@ def _seed_service_for_projects(
     seed_file_path: str | None = None,
     project_map: dict[str, Project] | None = None,
     allow_demo_defaults: bool = True,
+    hf_token: str | None = None,
 ) -> tuple[DetectionQueueService, list[str]]:
     repo = InMemoryDetectionRepository()
     detected_by_project = _load_seed_detections(seed_file_path)
@@ -624,7 +650,7 @@ def _seed_service_for_projects(
         project = (project_map or {}).get(project_slug)
         dataset_items: list[Detection] = []
         if project is not None and project.active:
-            dataset_items, dataset_warning = _load_dataset_detections_for_project(project)
+            dataset_items, dataset_warning = _load_dataset_detections_for_project(project, hf_token=hf_token)
             if dataset_warning:
                 warnings.append(dataset_warning)
 
@@ -648,6 +674,7 @@ def _build_detection_repository(
     seed_file_path: str | None,
     project_map: dict[str, Project] | None = None,
     allow_demo_defaults: bool = True,
+    hf_token: str | None = None,
 ) -> tuple[DetectionQueueService, str]:
     warning = _validate_seed_file(seed_file_path)
     service, dataset_warnings = _seed_service_for_projects(
@@ -655,6 +682,7 @@ def _build_detection_repository(
         seed_file_path=seed_file_path,
         project_map=project_map,
         allow_demo_defaults=allow_demo_defaults,
+        hf_token=hf_token,
     )
 
     warnings = [item for item in [warning, *dataset_warnings] if item.strip()]
@@ -2157,6 +2185,23 @@ def create_app() -> gr.Blocks:
             role = auth_service.get_user_role_for_project(session.username, slug)
             return role == Role.admin
 
+        def _refresh_session_copy(session):
+            if session is None:
+                return None
+            refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
+            return replace(refreshed, authorized_projects=list(refreshed.authorized_projects))
+
+        def _rebuild_queue_service(hf_token: str | None = None) -> str:
+            refreshed_service, refreshed_warning = _build_detection_repository(
+                _project_slugs(),
+                seed_file_path=runtime_config.detection_seed_path,
+                project_map=_project_map(),
+                allow_demo_defaults=runtime_config.enable_demo_bootstrap,
+                hf_token=hf_token,
+            )
+            service_ref["queue"] = refreshed_service
+            return refreshed_warning
+
         def _persist_admin_state() -> tuple[bool, str]:
             try:
                 _persist_bootstrap_state(
@@ -2293,7 +2338,7 @@ def create_app() -> gr.Blocks:
                         name = (name or "").strip()
                         repo_id = (repo_id or "").strip()
                         visibility_value = (visibility or "collaborative").strip().lower()
-                        project_token_value = (project_token or "").strip() or None
+                        project_token_value = (project_token or "").strip() or _session_hf_token(session) or None
                         if not slug or not name or not repo_id:
                             return "Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
                         if visibility_value not in {"private", "collaborative"}:
@@ -2332,15 +2377,8 @@ def create_app() -> gr.Blocks:
                         # Project creator is always admin of the project.
                         auth_service.upsert_user_project_role(session.username, slug, Role.admin)
                         persisted, persist_error = _persist_admin_state()
-
-                        refreshed_service, refreshed_warning = _build_detection_repository(
-                            _project_slugs(),
-                            seed_file_path=runtime_config.detection_seed_path,
-                            project_map=_project_map(),
-                            allow_demo_defaults=False,
-                        )
-                        service_ref["queue"] = refreshed_service
-                        refreshed_session = auth_service.refresh_session_authorizations(session.session_id) or session
+                        refreshed_warning = _rebuild_queue_service()
+                        refreshed_session = _refresh_session_copy(session)
                         admin_projects = _admin_projects_for_session(refreshed_session)
 
                         return (
@@ -2459,13 +2497,7 @@ def create_app() -> gr.Blocks:
                         if not persisted:
                             message = f"{message} | Persistence failed: {persist_error}"
 
-                        refreshed_service, refreshed_warning = _build_detection_repository(
-                            _project_slugs(),
-                            seed_file_path=runtime_config.detection_seed_path,
-                            project_map=_project_map(),
-                            allow_demo_defaults=False,
-                        )
-                        service_ref["queue"] = refreshed_service
+                        refreshed_warning = _rebuild_queue_service()
                         if refreshed_warning:
                             message = f"{message} | {refreshed_warning}"
 
@@ -2618,14 +2650,8 @@ def create_app() -> gr.Blocks:
                         if not persisted:
                             msg = f"{msg} | Persistence failed: {persist_error}"
 
-                        refreshed_service, refreshed_warning = _build_detection_repository(
-                            _project_slugs(),
-                            seed_file_path=runtime_config.detection_seed_path,
-                            project_map=_project_map(),
-                            allow_demo_defaults=False,
-                        )
-                        service_ref["queue"] = refreshed_service
-                        refreshed_session = auth_service.refresh_session_authorizations(session.session_id) or session
+                        refreshed_warning = _rebuild_queue_service()
+                        refreshed_session = _refresh_session_copy(session)
 
                         admin_projects = _admin_projects_for_session(refreshed_session)
                         return (
@@ -2756,7 +2782,7 @@ def create_app() -> gr.Blocks:
                         outputs=[pending_invites_table],
                     )
 
-                create_project_btn.click(
+                create_project_event = create_project_btn.click(
                     fn=create_project,
                     inputs=[session_state, create_project_slug, create_project_name, create_project_repo, create_project_visibility, create_project_token],
                     outputs=[
@@ -2808,9 +2834,9 @@ def create_app() -> gr.Blocks:
 
                 session_state.change(
                     fn=lambda s: (
-                        gr.update(choices=_admin_projects_for_session(s), value=None),
-                        gr.update(choices=_admin_projects_for_session(s), value=None),
-                        gr.update(choices=_admin_projects_for_session(s), value=None),
+                        gr.update(choices=_admin_projects_for_session(s), value=(_admin_projects_for_session(s)[0] if _admin_projects_for_session(s) else None)),
+                        gr.update(choices=_admin_projects_for_session(s), value=(_admin_projects_for_session(s)[0] if _admin_projects_for_session(s) else None)),
+                        gr.update(choices=_admin_projects_for_session(s), value=(_admin_projects_for_session(s)[0] if _admin_projects_for_session(s) else None)),
                         gr.update(choices=["all", *_admin_projects_for_session(s)], value="all"),
                         [],
                     ),
@@ -2857,7 +2883,7 @@ def create_app() -> gr.Blocks:
                     """Update project dropdown when user logs in."""
                     if session is None:
                         return (
-                            gr.Dropdown(choices=[], value=None, interactive=False),
+                            gr.update(choices=[], value=None, interactive=False),
                             project_overview_html([], []),
                             "Not authenticated. Login first.",
                             project_context_html(None),
@@ -2868,7 +2894,7 @@ def create_app() -> gr.Blocks:
                     projects = session.authorized_projects
                     if not projects:
                         return (
-                            gr.Dropdown(choices=[], value=None, interactive=False),
+                            gr.update(choices=[], value=None, interactive=False),
                             project_overview_html(_project_rows(), []),
                             (
                                 "**No projects available yet**\n\n"
@@ -2890,7 +2916,7 @@ def create_app() -> gr.Blocks:
                     dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
                     project_row = next((row for row in _project_rows() if row and str(row[0]) == selected), None)
                     return (
-                        gr.Dropdown(choices=projects, value=selected, interactive=True),
+                        gr.update(choices=projects, value=selected, interactive=True),
                         project_overview_html(_project_rows(), projects, selected),
                         f"**Project:** {selected} | **Your Role:** {role_label}",
                         project_context_html(project_row, role_label),
@@ -3055,6 +3081,24 @@ def create_app() -> gr.Blocks:
                     fn=update_selected_project,
                     inputs=[project_selector, session_state],
                     outputs=[selected_project_state, selected_dataset_repo_state, project_overview, project_context_display],
+                )
+
+                create_project_event.then(
+                    fn=update_project_selector,
+                    inputs=[session_state],
+                    outputs=[project_selector, project_overview, project_info_display, project_context_display, selected_project_state, selected_dataset_repo_state],
+                ).then(
+                    fn=_build_invites_ui,
+                    inputs=[session_state],
+                    outputs=[invitations_info, invitations_overview, invite_selector],
+                ).then(
+                    fn=_render_admin_overview,
+                    inputs=[session_state],
+                    outputs=[admin_overview],
+                ).then(
+                    fn=create_admin_display,
+                    inputs=[session_state],
+                    outputs=[admin_info, admin_controls],
                 )
 
             # ===== TAB 4: Validation =====
@@ -3342,9 +3386,11 @@ def create_app() -> gr.Blocks:
                         only_conflicts,
                     )
 
-                def refresh_for_selected_project(project_slug: str):
+                def refresh_for_selected_project(project_slug: str, session):
                     if not project_slug:
                         return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
+
+                    warning = _rebuild_queue_service(_session_hf_token(session))
 
                     species_options = _extract_species_options_from_queue(
                         queue_service=service_ref["queue"],
@@ -3355,7 +3401,7 @@ def create_app() -> gr.Blocks:
                     return (
                         gr.update(choices=species_options, value=None, interactive=True),
                         [],
-                        "Select a species to start validation",
+                        warning or "Select a species to start validation",
                         1,
                         None,
                         None,
@@ -3614,7 +3660,7 @@ def create_app() -> gr.Blocks:
                 )
                 project_change_event = selected_project_state.change(
                     fn=refresh_for_selected_project,
-                    inputs=[selected_project_state],
+                    inputs=[selected_project_state, session_state],
                     outputs=[species_filter, table, status, page_state, audio_player, spectrogram_image, spectrogram_title, validation_summary_cards, corrected_species_input, project_species_state],
                 )
 

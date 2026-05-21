@@ -990,6 +990,84 @@ def test_load_dataset_detections_for_project_reads_jsonl(monkeypatch: pytest.Mon
     assert {item.scientific_name for item in detections} == {"Species A", "Species B"}
 
 
+def test_load_dataset_detections_for_project_uses_fallback_hf_token(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.ui import app_factory as module
+
+    observed_tokens: list[str | None] = []
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            observed_tokens.append(token)
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            return ["detections.jsonl"]
+
+    metadata_file = tmp_path / "detections.jsonl"
+    metadata_file.write_text(
+        json.dumps(
+            {
+                "audio_id": "audio_0001",
+                "scientific_name": "Species A",
+                "confidence": 0.92,
+                "start_time": 1.0,
+                "end_time": 2.0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    def fake_download(**kwargs):
+        observed_tokens.append(kwargs.get("token"))
+        return str(metadata_file)
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+    monkeypatch.setattr(module, "hf_hub_download", fake_download)
+
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/project-a",
+        active=True,
+    )
+    detections, warning = module._load_dataset_detections_for_project(project, hf_token="hf_session")
+
+    assert warning == ""
+    assert len(detections) == 1
+    assert observed_tokens == ["hf_session", "hf_session"]
+
+
+def test_load_dataset_detections_for_project_reports_missing_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.ui import app_factory as module
+
+    class FakeHfApi:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            raise RuntimeError("401 Client Error")
+
+    monkeypatch.setattr(module, "HfApi", FakeHfApi)
+
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/private-project",
+        active=True,
+    )
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert detections == []
+    assert "No Hugging Face token is configured" in warning
+    assert "Admin > Project token management" in warning
+
+
 def test_build_detection_repository_prefers_dataset_rows(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.ui import app_factory as module
 
@@ -1003,7 +1081,7 @@ def test_build_detection_repository_prefers_dataset_rows(monkeypatch: pytest.Mon
     monkeypatch.setattr(
         module,
         "_load_dataset_detections_for_project",
-        lambda project_obj: (
+        lambda project_obj, hf_token=None: (
             [
                 Detection(
                     detection_key="0000000000002222",

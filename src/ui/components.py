@@ -25,7 +25,23 @@ def project_overview_html(project_rows: list[dict], authorized_projects: list[st
             "</div>"
         )
 
-    rows_by_slug = {str(row.get("project_slug", "")): row for row in project_rows}
+    def normalize_project_row(row: object) -> dict:
+        if isinstance(row, dict):
+            return row
+        if isinstance(row, (list, tuple)):
+            return {
+                "project_slug": row[0] if len(row) > 0 else "",
+                "name": row[1] if len(row) > 1 else "",
+                "dataset_repo_id": row[2] if len(row) > 2 else "",
+                "visibility": row[3] if len(row) > 3 else "collaborative",
+                "owner_username": row[4] if len(row) > 4 else "",
+                "dataset_token_set": str(row[5]).strip().lower() == "yes" if len(row) > 5 else False,
+                "active": str(row[6]).strip().lower() == "yes" if len(row) > 6 else True,
+            }
+        return {}
+
+    normalized_project_rows = [normalize_project_row(row) for row in project_rows]
+    rows_by_slug = {str(row.get("project_slug", "")): row for row in normalized_project_rows}
     cards: list[str] = []
     for slug in authorized_projects:
         row = rows_by_slug.get(slug, {})

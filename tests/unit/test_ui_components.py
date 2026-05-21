@@ -1,6 +1,7 @@
 from src.ui.components import (
     admin_overview_html,
     coverage_bars_html,
+    project_overview_html,
     project_context_html,
     validation_queue_html,
 )
@@ -46,6 +47,19 @@ def test_project_context_html_renders_project_metadata():
     assert "jrrribeiro/ppbio" in html
     assert "ADMIN" in html
     assert "token set" in html
+
+
+def test_project_overview_html_accepts_table_rows():
+    html = project_overview_html(
+        [["ppbio", "PPBIO", "jrrribeiro/ppbio", "collaborative", "jonathan", "yes", "yes"]],
+        ["ppbio"],
+        "ppbio",
+    )
+
+    assert "PPBIO" in html
+    assert "jrrribeiro/ppbio" in html
+    assert "token set" in html
+    assert "bn-project-card-selected" in html
 
 
 def test_admin_overview_html_handles_locked_and_authenticated_states():
