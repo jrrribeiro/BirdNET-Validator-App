@@ -27,6 +27,7 @@ from src.ui.app_factory import (
     _load_projects_from_file,
     _load_user_access_from_file,
     _bootstrap_auth_and_projects,
+    _resolve_project_fetch_token,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
@@ -1066,6 +1067,24 @@ def test_load_dataset_detections_for_project_reports_missing_token(monkeypatch: 
     assert detections == []
     assert "No Hugging Face token is configured" in warning
     assert "Admin > Project token management" in warning
+
+
+def test_resolve_project_fetch_token_uses_session_then_project_then_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="org/project-a",
+        dataset_token="hf_project",
+        active=True,
+    )
+
+    assert _resolve_project_fetch_token(project, "hf_session") == "hf_session"
+    assert _resolve_project_fetch_token(project, None) == "hf_project"
+
+    project.dataset_token = None
+    monkeypatch.setenv("HF_TOKEN", "hf_env")
+
+    assert _resolve_project_fetch_token(project, None) == "hf_env"
 
 
 def test_build_detection_repository_prefers_dataset_rows(monkeypatch: pytest.MonkeyPatch) -> None:

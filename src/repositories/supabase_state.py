@@ -91,6 +91,8 @@ class SupabaseBootstrapStore:
     def load_projects(self) -> list[Project]:
         projects: list[Project] = []
         for row in self._client.select("projects", query={"order": "project_slug.asc"}):
+            if not bool(row.get("active", True)):
+                continue
             try:
                 projects.append(
                     Project(
@@ -158,6 +160,20 @@ class SupabaseBootstrapStore:
             if str(project.get("project_slug") or "").strip()
         ]
         self._client.upsert("projects", project_rows, on_conflict="project_slug")
+
+        active_project_slugs = {
+            str(project.get("project_slug") or "").strip()
+            for project in projects
+            if str(project.get("project_slug") or "").strip()
+        }
+        for row in self._client.select("projects"):
+            project_slug = str(row.get("project_slug") or "").strip()
+            if project_slug and project_slug not in active_project_slugs:
+                self._client.patch(
+                    "projects",
+                    {"active": False, "updated_at": datetime.now(UTC).isoformat()},
+                    query={"project_slug": SupabaseRestClient.eq(project_slug)},
+                )
 
         access_rows = []
         seen_access: set[tuple[str, str]] = set()

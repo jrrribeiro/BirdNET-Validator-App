@@ -260,6 +260,10 @@ def _project_dataset_token(project: Project, fallback_token: str | None = None) 
     return (project.dataset_token or "").strip() or (fallback_token or "").strip() or _env_hf_token()
 
 
+def _resolve_project_fetch_token(project: Project | None, session_token: str | None = None) -> str | None:
+    return (session_token or "").strip() or ((project.dataset_token or "").strip() if project is not None else "") or _env_hf_token()
+
+
 def _load_dataset_detections_for_project(project: Project, hf_token: str | None = None) -> tuple[list[Detection], str]:
     dataset_repo = project.dataset_repo_id.strip()
     if not dataset_repo:
@@ -2476,12 +2480,12 @@ def create_app() -> gr.Blocks:
 
                     def update_project_token(session, project_slug: str, new_token: str, clear_token: bool):
                         if session is None:
-                            return "Access denied. Login required.", gr.update(), gr.update()
+                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), gr.update()
                         if not _is_admin_for_project(session, project_slug):
-                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update()
+                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), gr.update()
                         project = admin_manager.get_project(project_slug)
                         if project is None:
-                            return "Select a valid project.", gr.update(), gr.update()
+                            return "Select a valid project.", gr.update(), gr.update(), gr.update(), gr.update()
 
                         if bool(clear_token):
                             project.dataset_token = None
@@ -2489,7 +2493,7 @@ def create_app() -> gr.Blocks:
                         else:
                             candidate = (new_token or "").strip()
                             if not candidate:
-                                return "Provide a token or select clear token.", gr.update(), gr.update()
+                                return "Provide a token or select clear token.", gr.update(), gr.update(), gr.update(), gr.update()
                             project.dataset_token = candidate
                             message = f"Project token updated for {project_slug}"
 
@@ -2501,12 +2505,12 @@ def create_app() -> gr.Blocks:
                         if refreshed_warning:
                             message = f"{message} | {refreshed_warning}"
 
-                        return message, gr.update(value=""), _project_rows()
+                        return message, gr.update(value=""), gr.update(value=False), _project_rows(), refreshed_warning
 
                     token_update_btn.click(
                         fn=update_project_token,
                         inputs=[session_state, token_project_select, token_new_value, token_clear_checkbox],
-                        outputs=[token_update_message, token_new_value, projects_table],
+                        outputs=[token_update_message, token_new_value, token_clear_checkbox, projects_table, seed_warning_state],
                     )
 
                 with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_users_controls:
@@ -2618,7 +2622,7 @@ def create_app() -> gr.Blocks:
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
 
-                    invite_btn.click(
+                    invite_event = invite_btn.click(
                         fn=invite_user,
                         inputs=[session_state, invite_mode, admin_username, admin_invite_email, admin_project, admin_role],
                         outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
@@ -2758,6 +2762,12 @@ def create_app() -> gr.Blocks:
                         outputs=[pending_invites_table],
                     )
 
+                    invite_event.then(
+                        fn=_pending_invites_rows,
+                        inputs=[pending_invites_filter_project, session_state],
+                        outputs=[pending_invites_table],
+                    )
+
                     def revoke_invite(session, username: str, project_slug: str, project_filter: str):
                         if session is None:
                             return "Access denied. Login required.", _pending_invites_rows(project_filter, session)
@@ -2837,11 +2847,12 @@ def create_app() -> gr.Blocks:
                         gr.update(choices=_admin_projects_for_session(s), value=(_admin_projects_for_session(s)[0] if _admin_projects_for_session(s) else None)),
                         gr.update(choices=_admin_projects_for_session(s), value=(_admin_projects_for_session(s)[0] if _admin_projects_for_session(s) else None)),
                         gr.update(choices=_admin_projects_for_session(s), value=(_admin_projects_for_session(s)[0] if _admin_projects_for_session(s) else None)),
+                        gr.update(choices=_admin_projects_for_session(s), value=(_admin_projects_for_session(s)[0] if _admin_projects_for_session(s) else None)),
                         gr.update(choices=["all", *_admin_projects_for_session(s)], value="all"),
                         [],
                     ),
                     inputs=[session_state],
-                    outputs=[admin_project, token_project_select, pending_invite_project, pending_invites_filter_project, pending_invites_table],
+                    outputs=[admin_project, token_project_select, pending_invite_project, delete_project_slug, pending_invites_filter_project, pending_invites_table],
                 )
 
                 admin_project.change(
@@ -3300,17 +3311,8 @@ def create_app() -> gr.Blocks:
 
                 def _project_fetch_token(project_slug: str, session) -> str | None:
                     session_token = _session_hf_token(session)
-                    if session_token:
-                        return session_token
-
                     project = admin_manager.get_project(project_slug) if project_slug else None
-                    if project is not None and project.visibility == "private":
-                        if session is None or session.username != (project.owner_username or "").strip():
-                            return None
-                        project_token = (project.dataset_token or "").strip()
-                        if project_token:
-                            return project_token
-                    return None
+                    return _resolve_project_fetch_token(project, session_token)
 
                 def refresh(
                     project_slug: str,
