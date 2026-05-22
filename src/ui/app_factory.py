@@ -2628,7 +2628,7 @@ def create_app() -> gr.Blocks:
                         gr.update(visible=True),
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-project-section"]) as admin_controls:
+                with gr.Column(visible=False, elem_classes=["bn-admin-section", "bn-admin-project-section"]) as admin_controls:
                     with gr.Group(elem_classes=["bn-admin-panel"]):
                         gr.HTML(
                             section_header_html(
@@ -2788,7 +2788,7 @@ def create_app() -> gr.Blocks:
                         outputs=[projects_table],
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-token-section"]) as admin_token_controls:
+                with gr.Column(visible=False, elem_classes=["bn-admin-section", "bn-admin-token-section"]) as admin_token_controls:
                     with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-token-panel"]):
                         gr.HTML(
                             section_header_html(
@@ -2878,7 +2878,7 @@ def create_app() -> gr.Blocks:
                         gr.update(choices=admin_projects, value=None),
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-delete-section"]) as admin_delete_controls:
+                with gr.Column(visible=False, elem_classes=["bn-admin-section", "bn-admin-delete-section"]) as admin_delete_controls:
                     with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-delete-panel"]):
                         gr.HTML(
                             section_header_html(
@@ -2899,7 +2899,7 @@ def create_app() -> gr.Blocks:
                         elem_classes=["bn-admin-action", "bn-admin-action-red", "bn-delete-project-action"],
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-access-section"]) as admin_users_controls:
+                with gr.Column(visible=False, elem_classes=["bn-admin-section", "bn-admin-access-section"]) as admin_users_controls:
                     with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-access-panel"]):
                         gr.HTML(
                             section_header_html(
@@ -3023,7 +3023,7 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-pending-section"]) as admin_pending_controls:
+                with gr.Column(visible=False, elem_classes=["bn-admin-section", "bn-admin-pending-section"]) as admin_pending_controls:
                     with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-pending-panel"]):
                         gr.HTML(
                             section_header_html(
