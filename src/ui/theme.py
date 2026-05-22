@@ -608,7 +608,7 @@ body,
   border: 0 !important;
   box-shadow: none !important;
   padding: 0 !important;
-  background: #ffffff !important;
+  background: var(--bn-bg) !important;
   gap: 8px !important;
 }
 
@@ -620,7 +620,7 @@ body,
 .bn-admin-action-row .block,
 .bn-admin-action-row .form,
 .bn-admin-action {
-  background: #ffffff !important;
+  background: var(--bn-bg) !important;
 }
 
 .bn-admin-access-section,
