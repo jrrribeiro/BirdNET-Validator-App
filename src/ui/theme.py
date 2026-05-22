@@ -588,6 +588,12 @@ body,
 
 .bn-admin-panel .block:has(button),
 .bn-admin-panel .form:has(button),
+.bn-admin-section,
+.bn-admin-section .block:has(button),
+.bn-admin-section .form:has(button),
+.bn-admin-action-row,
+.bn-admin-action-row .block,
+.bn-admin-action-row .form,
 .bn-report-panel .block:has(button),
 .bn-report-panel .form:has(button),
 .bn-clean-button-row,
@@ -604,19 +610,27 @@ body,
   padding: 12px !important;
 }
 
-.bn-admin-access-panel,
-.bn-admin-pending-panel {
+.bn-admin-section {
+  border: 0 !important;
+  box-shadow: none !important;
+  padding: 0 !important;
+  background: transparent !important;
+  gap: 8px !important;
+}
+
+.bn-admin-access-section,
+.bn-admin-pending-section {
   width: 100% !important;
 }
 
-.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) {
+.column:has(> .bn-admin-access-section):has(> .bn-admin-pending-section) {
   display: grid !important;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   align-items: start;
   gap: 14px !important;
 }
 
-.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > :not(.bn-admin-access-panel):not(.bn-admin-pending-panel) {
+.column:has(> .bn-admin-access-section):has(> .bn-admin-pending-section) > :not(.bn-admin-access-section):not(.bn-admin-pending-section) {
   grid-column: 1 / -1;
 }
 
@@ -651,45 +665,54 @@ button.bn-clean-action.secondary:hover {
   background: #bfdbfe !important;
 }
 
-.bn-admin-panel button.secondary:not(.bn-delete-project-action),
-.bn-admin-panel button.lg.secondary:not(.bn-delete-project-action) {
-  border: 1px solid #93c5fd !important;
+.bn-admin-action button,
+button.bn-admin-action {
+  min-height: 48px !important;
   border-radius: 8px !important;
-  background: #dbeafe !important;
-  color: #075985 !important;
-  font-weight: 760 !important;
+  font-weight: 790 !important;
 }
 
-.bn-admin-panel button.secondary:not(.bn-delete-project-action):hover,
-.bn-admin-panel button.lg.secondary:not(.bn-delete-project-action):hover {
+.bn-admin-action-orange button,
+button.bn-admin-action-orange {
+  border-color: #f97316 !important;
+  background: #f97316 !important;
+  color: #ffffff !important;
+}
+
+.bn-admin-action-orange button:hover,
+button.bn-admin-action-orange:hover {
+  border-color: #ea580c !important;
+  background: #ea580c !important;
+}
+
+.bn-admin-action-blue button,
+button.bn-admin-action-blue {
+  border-color: #93c5fd !important;
+  background: #dbeafe !important;
+  color: #075985 !important;
+}
+
+.bn-admin-action-blue button:hover,
+button.bn-admin-action-blue:hover {
   border-color: #60a5fa !important;
   background: #bfdbfe !important;
 }
 
-.bn-delete-project-panel {
-  padding: 14px !important;
-  border: 1px solid #fecaca !important;
-  border-radius: 8px !important;
-  background: #fffafa !important;
+.bn-admin-action-red button,
+button.bn-admin-action-red {
+  border-color: #dc2626 !important;
+  background: #dc2626 !important;
+  color: #ffffff !important;
 }
 
-.bn-delete-project-panel h3 {
-  margin: 0 0 10px 0 !important;
-  color: #991b1b !important;
-}
-
-.bn-delete-project-panel .bn-inline-hint {
-  margin-bottom: 12px;
-  border-radius: 8px;
-  background: #fff1f2;
+.bn-admin-action-red button:hover,
+button.bn-admin-action-red:hover {
+  border-color: #b91c1c !important;
+  background: #b91c1c !important;
 }
 
 .bn-delete-project-action button {
-  width: 100% !important;
-  margin-top: 2px !important;
   min-height: 54px !important;
-  border-radius: 8px !important;
-  font-weight: 790 !important;
 }
 
 .bn-report-download-panel,
@@ -890,14 +913,14 @@ select {
     padding: 12px;
   }
 
-  .bn-admin-access-panel,
-  .bn-admin-pending-panel {
+  .bn-admin-access-section,
+  .bn-admin-pending-section {
     display: block !important;
     width: 100% !important;
     margin-left: 0 !important;
   }
 
-  .column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) {
+  .column:has(> .bn-admin-access-section):has(> .bn-admin-pending-section) {
     grid-template-columns: 1fr;
   }
 

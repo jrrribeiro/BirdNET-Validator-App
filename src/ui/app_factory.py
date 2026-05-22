@@ -2628,41 +2628,57 @@ def create_app() -> gr.Blocks:
                         gr.update(visible=True),
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_controls:
-                    gr.HTML(
-                        section_header_html(
-                            "Projects",
-                            "Project management",
-                            "Create project records and review the datasets registered in this validator workspace.",
-                            class_name="bn-panel-soft",
+                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-project-section"]) as admin_controls:
+                    with gr.Group(elem_classes=["bn-admin-panel"]):
+                        gr.HTML(
+                            section_header_html(
+                                "Projects",
+                                "Project management",
+                                "Create project records and review the datasets registered in this validator workspace.",
+                                class_name="bn-panel-soft",
+                            )
                         )
-                    )
+                        with gr.Row():
+                            create_project_slug = gr.Textbox(
+                                label="New Project Slug",
+                                placeholder="ex: amazonas-2026",
+                            )
+                            create_project_name = gr.Textbox(
+                                label="Project Name",
+                                placeholder="ex: Amazonas Survey 2026",
+                            )
+                            create_project_repo = gr.Textbox(
+                                label="HF Dataset Repo ID",
+                                placeholder="ex: birdnet/amazonas-2026-dataset",
+                            )
+                            create_project_visibility = gr.Dropdown(
+                                label="Visibility",
+                                choices=["private", "collaborative"],
+                                value="collaborative",
+                            )
+                            create_project_token = gr.Textbox(
+                                label="Project HF Token (optional)",
+                                placeholder="hf_xxx...",
+                                type="password",
+                            )
 
-                    with gr.Row():
-                        create_project_slug = gr.Textbox(
-                            label="New Project Slug",
-                            placeholder="ex: amazonas-2026",
-                        )
-                        create_project_name = gr.Textbox(
-                            label="Project Name",
-                            placeholder="ex: Amazonas Survey 2026",
-                        )
-                        create_project_repo = gr.Textbox(
-                            label="HF Dataset Repo ID",
-                            placeholder="ex: birdnet/amazonas-2026-dataset",
-                        )
-                        create_project_visibility = gr.Dropdown(
-                            label="Visibility",
-                            choices=["private", "collaborative"],
-                            value="collaborative",
-                        )
-                        create_project_token = gr.Textbox(
-                            label="Project HF Token (optional)",
-                            placeholder="hf_xxx...",
-                            type="password",
+                        create_project_message = gr.Markdown()
+                        projects_table = gr.Dataframe(
+                            value=_project_rows(),
+                            headers=["Project", "Name", "Dataset", "Visibility", "Owner", "Token", "Active"],
+                            interactive=False,
+                            elem_classes=["bn-dataframe"],
                         )
 
-                    create_project_message = gr.Markdown()
+                    with gr.Row(elem_classes=["bn-admin-action-row"]):
+                        create_project_btn = gr.Button(
+                            "Create Project",
+                            elem_classes=["bn-admin-action", "bn-admin-action-orange"],
+                        )
+                        refresh_projects_btn = gr.Button(
+                            "Refresh List",
+                            elem_classes=["bn-admin-action", "bn-admin-action-blue"],
+                        )
 
                     def create_project(session, slug: str, name: str, repo_id: str, visibility: str, project_token: str):
                         if session is None:
@@ -2735,15 +2751,6 @@ def create_app() -> gr.Blocks:
                             refreshed_session,
                         )
 
-                    create_project_btn = gr.Button("Create Project", variant="primary")
-                    projects_table = gr.Dataframe(
-                        value=_project_rows(),
-                        headers=["Project", "Name", "Dataset", "Visibility", "Owner", "Token", "Active"],
-                        interactive=False,
-                        elem_classes=["bn-dataframe"],
-                    )
-                    refresh_projects_btn = gr.Button("Refresh List", elem_classes=["bn-soft-action"])
-
                     gr.HTML("<div class='bn-spacer'></div>")
 
                     def _render_admin_scope_info(session, selected_admin_project: str):
@@ -2781,28 +2788,32 @@ def create_app() -> gr.Blocks:
                         outputs=[projects_table],
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-token-panel"]) as admin_token_controls:
-                    gr.HTML(
-                        section_header_html(
-                            "Access",
-                            "Project token management",
-                            "Store or clear dataset tokens without exposing them in the interface.",
-                            class_name="bn-panel-soft",
+                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-token-section"]) as admin_token_controls:
+                    with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-token-panel"]):
+                        gr.HTML(
+                            section_header_html(
+                                "Access",
+                                "Project token management",
+                                "Store or clear dataset tokens without exposing them in the interface.",
+                                class_name="bn-panel-soft",
+                            )
                         )
+                        with gr.Row():
+                            token_project_select = gr.Dropdown(
+                                choices=_project_slugs(),
+                                label="Project",
+                            )
+                            token_new_value = gr.Textbox(
+                                label="New token",
+                                placeholder="hf_xxx...",
+                                type="password",
+                            )
+                            token_clear_checkbox = gr.Checkbox(label="Clear token", value=False)
+                        token_update_message = gr.Markdown()
+                    token_update_btn = gr.Button(
+                        "Update Project Token",
+                        elem_classes=["bn-admin-action", "bn-admin-action-orange"],
                     )
-                    with gr.Row():
-                        token_project_select = gr.Dropdown(
-                            choices=_project_slugs(),
-                            label="Project",
-                        )
-                        token_new_value = gr.Textbox(
-                            label="New token",
-                            placeholder="hf_xxx...",
-                            type="password",
-                        )
-                        token_clear_checkbox = gr.Checkbox(label="Clear token", value=False)
-                    token_update_message = gr.Markdown()
-                    token_update_btn = gr.Button("Update Project Token", elem_classes=["bn-soft-action"])
 
                     def update_project_token(session, project_slug: str, new_token: str, clear_token: bool):
                         if session is None:
@@ -2867,60 +2878,73 @@ def create_app() -> gr.Blocks:
                         gr.update(choices=admin_projects, value=None),
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-delete-panel"]) as admin_delete_controls:
-                    gr.HTML(
-                        section_header_html(
-                            "Project",
-                            "Delete project",
-                            "Remove a project from this validator workspace without deleting its Hugging Face dataset.",
-                            class_name="bn-panel-soft",
+                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-delete-section"]) as admin_delete_controls:
+                    with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-delete-panel"]):
+                        gr.HTML(
+                            section_header_html(
+                                "Project",
+                                "Delete project",
+                                "Remove a project from this validator workspace without deleting its Hugging Face dataset.",
+                                class_name="bn-panel-soft",
+                            )
                         )
-                    )
-                    with gr.Group(elem_classes=["bn-delete-project-panel"]):
                         gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites.", "danger"))
                         delete_project_slug = gr.Dropdown(
                             choices=_project_slugs(),
                             label="Project to delete",
                         )
-                        delete_project_btn = gr.Button(
-                            "Delete Project",
-                            variant="stop",
-                            elem_classes=["bn-delete-project-action"],
-                        )
-                    delete_project_message = gr.Markdown()
-
-                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-access-panel"]) as admin_users_controls:
-                    gr.HTML(
-                        section_header_html(
-                            "Team",
-                            "User access and invitations",
-                            "Assign known users directly or send invites when access should be accepted later.",
-                            class_name="bn-panel-soft",
-                        )
-                    )
-                    gr.HTML(
-                        inline_hint_html(
-                            "Assign immediately when you know the Hugging Face username. Use invites when you want the user to accept access later or receive email instructions."
-                        )
+                        delete_project_message = gr.Markdown()
+                    delete_project_btn = gr.Button(
+                        "Delete Project",
+                        elem_classes=["bn-admin-action", "bn-admin-action-red", "bn-delete-project-action"],
                     )
 
-                    invite_mode = gr.Radio(
-                        choices=["Internal app only", "Email only", "Both"],
-                        value="Both",
-                        label="Invite Method",
-                    )
+                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-access-section"]) as admin_users_controls:
+                    with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-access-panel"]):
+                        gr.HTML(
+                            section_header_html(
+                                "Team",
+                                "User access and invitations",
+                                "Assign known users directly or send invites when access should be accepted later.",
+                                class_name="bn-panel-soft",
+                            )
+                        )
+                        gr.HTML(
+                            inline_hint_html(
+                                "Assign immediately when you know the Hugging Face username. Use invites when you want the user to accept access later or receive email instructions."
+                            )
+                        )
 
-                    with gr.Column():
-                        admin_username = gr.Textbox(
-                            label="HF Username (for internal app invite)",
-                            placeholder="validator_001",
-                            visible=True,
+                        invite_mode = gr.Radio(
+                            choices=["Internal app only", "Email only", "Both"],
+                            value="Both",
+                            label="Invite Method",
                         )
-                        admin_invite_email = gr.Textbox(
-                            label="Email Address (for email notification)",
-                            placeholder="validator@example.org",
-                            visible=True,
-                        )
+
+                        with gr.Column():
+                            admin_username = gr.Textbox(
+                                label="HF Username (for internal app invite)",
+                                placeholder="validator_001",
+                                visible=True,
+                            )
+                            admin_invite_email = gr.Textbox(
+                                label="Email Address (for email notification)",
+                                placeholder="validator@example.org",
+                                visible=True,
+                            )
+
+                        with gr.Row():
+                            admin_project = gr.Dropdown(
+                                choices=_project_slugs(),
+                                label="Project",
+                            )
+                            admin_role = gr.Dropdown(
+                                choices=["admin", "validator"],
+                                value="validator",
+                                label="Role",
+                            )
+
+                        admin_message = gr.Markdown()
 
                     # Update visibility based on invite mode
                     def update_invite_fields(mode: str):
@@ -2937,19 +2961,15 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_username, admin_invite_email],
                     )
 
-                    with gr.Row():
-                        admin_project = gr.Dropdown(
-                            choices=_project_slugs(),
-                            label="Project",
+                    with gr.Row(elem_classes=["bn-admin-action-row"]):
+                        invite_btn = gr.Button(
+                            "Send Invite",
+                            elem_classes=["bn-admin-action", "bn-admin-action-orange"],
                         )
-                        admin_role = gr.Dropdown(
-                            choices=["admin", "validator"],
-                            value="validator",
-                            label="Role",
+                        assign_btn = gr.Button(
+                            "Assign",
+                            elem_classes=["bn-admin-action", "bn-admin-action-blue"],
                         )
-
-                    admin_message = gr.Markdown()
-                    invite_btn = gr.Button("Send Invite", elem_classes=["bn-soft-action"])
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None:
@@ -2968,7 +2988,6 @@ def create_app() -> gr.Blocks:
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
 
-                    assign_btn = gr.Button("Assign", variant="primary")
                     assign_btn.click(
                         fn=assign_user,
                         inputs=[session_state, admin_username, admin_project, admin_role],
@@ -3004,34 +3023,41 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-pending-panel"]) as admin_pending_controls:
-                    gr.HTML(
-                        section_header_html(
-                            "Invites",
-                            "Pending access requests",
-                            "Review outstanding invitations and revoke stale access before onboarding more validators.",
-                            class_name="bn-panel-soft",
-                        )
-                    )
-                    with gr.Group(elem_classes=["bn-card-body"]):
-                        with gr.Row():
-                            pending_invites_filter_project = gr.Dropdown(
-                                choices=["all", *_project_slugs()],
-                                value="all",
-                                label="Filter by project",
+                with gr.Group(visible=False, elem_classes=["bn-admin-section", "bn-admin-pending-section"]) as admin_pending_controls:
+                    with gr.Group(elem_classes=["bn-admin-panel", "bn-admin-pending-panel"]):
+                        gr.HTML(
+                            section_header_html(
+                                "Invites",
+                                "Pending access requests",
+                                "Review outstanding invitations and revoke stale access before onboarding more validators.",
+                                class_name="bn-panel-soft",
                             )
-                            pending_invite_username = gr.Textbox(label="Invite username", placeholder="validator_001")
-                            pending_invite_project = gr.Dropdown(choices=_project_slugs(), label="Invite project")
-                        pending_invites_table = gr.Dataframe(
-                            value=[],
-                            headers=["Username", "Project", "Role", "Invited by", "Expires at", "Expires in"],
-                            interactive=False,
-                            elem_classes=["bn-dataframe"],
                         )
-                        pending_invites_message = gr.Markdown()
-                        with gr.Row():
-                            refresh_pending_invites_btn = gr.Button("Refresh pending invites", elem_classes=["bn-soft-action"])
-                            revoke_invite_btn = gr.Button("Revoke Invite", elem_classes=["bn-soft-action"])
+                        with gr.Group(elem_classes=["bn-card-body"]):
+                            with gr.Row():
+                                pending_invites_filter_project = gr.Dropdown(
+                                    choices=["all", *_project_slugs()],
+                                    value="all",
+                                    label="Filter by project",
+                                )
+                                pending_invite_username = gr.Textbox(label="Invite username", placeholder="validator_001")
+                                pending_invite_project = gr.Dropdown(choices=_project_slugs(), label="Invite project")
+                            pending_invites_table = gr.Dataframe(
+                                value=[],
+                                headers=["Username", "Project", "Role", "Invited by", "Expires at", "Expires in"],
+                                interactive=False,
+                                elem_classes=["bn-dataframe"],
+                            )
+                            pending_invites_message = gr.Markdown()
+                    with gr.Row(elem_classes=["bn-admin-action-row"]):
+                        refresh_pending_invites_btn = gr.Button(
+                            "Refresh pending invites",
+                            elem_classes=["bn-admin-action", "bn-admin-action-orange"],
+                        )
+                        revoke_invite_btn = gr.Button(
+                            "Revoke Invite",
+                            elem_classes=["bn-admin-action", "bn-admin-action-blue"],
+                        )
 
                     def _pending_invites_rows(project_filter: str, session):
                         def _remaining_from_iso(iso_value: str) -> str:
