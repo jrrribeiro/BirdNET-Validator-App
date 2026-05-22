@@ -593,8 +593,7 @@ body,
 }
 
 .bn-admin-access-panel,
-.bn-admin-pending-panel,
-.bn-admin-delete-panel {
+.bn-admin-pending-panel {
   width: 100% !important;
 }
 
@@ -605,12 +604,8 @@ body,
   gap: 14px !important;
 }
 
-.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > :not(.bn-admin-access-panel):not(.bn-admin-pending-panel):not(.bn-admin-delete-panel) {
+.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > :not(.bn-admin-access-panel):not(.bn-admin-pending-panel) {
   grid-column: 1 / -1;
-}
-
-.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > .bn-admin-delete-panel {
-  grid-column: 2;
 }
 
 .bn-soft-action button,
@@ -625,6 +620,21 @@ button.bn-soft-action {
 
 .bn-soft-action button:hover,
 button.bn-soft-action:hover {
+  border-color: #60a5fa !important;
+  background: #bfdbfe !important;
+}
+
+.bn-admin-panel button.secondary:not(.bn-delete-project-action),
+.bn-admin-panel button.lg.secondary:not(.bn-delete-project-action) {
+  border: 1px solid #93c5fd !important;
+  border-radius: 8px !important;
+  background: #dbeafe !important;
+  color: #075985 !important;
+  font-weight: 760 !important;
+}
+
+.bn-admin-panel button.secondary:not(.bn-delete-project-action):hover,
+.bn-admin-panel button.lg.secondary:not(.bn-delete-project-action):hover {
   border-color: #60a5fa !important;
   background: #bfdbfe !important;
 }
@@ -836,8 +846,7 @@ select {
   }
 
   .bn-admin-access-panel,
-  .bn-admin-pending-panel,
-  .bn-admin-delete-panel {
+  .bn-admin-pending-panel {
     display: block !important;
     width: 100% !important;
     margin-left: 0 !important;
@@ -847,9 +856,6 @@ select {
     grid-template-columns: 1fr;
   }
 
-  .column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > .bn-admin-delete-panel {
-    grid-column: auto;
-  }
 }
 
 @media (max-width: 560px) {

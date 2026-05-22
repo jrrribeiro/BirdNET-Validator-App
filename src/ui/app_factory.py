@@ -2479,7 +2479,7 @@ def create_app() -> gr.Blocks:
                         section_header_html(
                             "Projects",
                             "Project management",
-                            "Create project records, manage dataset tokens, and remove projects from the validator workspace.",
+                            "Create project records and review the datasets registered in this validator workspace.",
                             class_name="bn-panel-soft",
                         )
                     )
@@ -2627,6 +2627,7 @@ def create_app() -> gr.Blocks:
                         outputs=[projects_table],
                     )
 
+                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-token-panel"]) as admin_token_controls:
                     gr.HTML(
                         section_header_html(
                             "Access",
@@ -2684,33 +2685,55 @@ def create_app() -> gr.Blocks:
                         outputs=[token_update_message, token_new_value, token_clear_checkbox, projects_table, seed_warning_state],
                     )
 
-                    def delete_project(session, project_slug: str):
-                        if session is None:
-                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
-                        if not _is_admin_for_project(session, project_slug):
-                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                def delete_project(session, project_slug: str):
+                    if session is None:
+                        return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                    if not _is_admin_for_project(session, project_slug):
+                        return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
 
-                        success, msg = admin_manager.delete_project(session.username, project_slug)
-                        if not success:
-                            return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
+                    success, msg = admin_manager.delete_project(session.username, project_slug)
+                    if not success:
+                        return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
 
-                        persisted, persist_error = _persist_admin_state()
-                        if not persisted:
-                            msg = f"{msg} | Persistence failed: {persist_error}"
+                    persisted, persist_error = _persist_admin_state()
+                    if not persisted:
+                        msg = f"{msg} | Persistence failed: {persist_error}"
 
-                        refreshed_warning = _rebuild_queue_service()
-                        refreshed_session = _refresh_session_copy(session)
+                    refreshed_warning = _rebuild_queue_service()
+                    refreshed_session = _refresh_session_copy(session)
 
-                        admin_projects = _admin_projects_for_session(refreshed_session)
-                        return (
-                            msg,
-                            _project_rows(),
-                            gr.update(choices=admin_projects, value=None),
-                            gr.update(choices=admin_projects, value=None),
-                            refreshed_session,
-                            refreshed_warning,
-                            gr.update(choices=admin_projects, value=None),
+                    admin_projects = _admin_projects_for_session(refreshed_session)
+                    return (
+                        msg,
+                        _project_rows(),
+                        gr.update(choices=admin_projects, value=None),
+                        gr.update(choices=admin_projects, value=None),
+                        refreshed_session,
+                        refreshed_warning,
+                        gr.update(choices=admin_projects, value=None),
+                    )
+
+                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-delete-panel"]) as admin_delete_controls:
+                    gr.HTML(
+                        section_header_html(
+                            "Project",
+                            "Delete project",
+                            "Remove a project from this validator workspace without deleting its Hugging Face dataset.",
+                            class_name="bn-panel-soft",
                         )
+                    )
+                    with gr.Group(elem_classes=["bn-delete-project-panel"]):
+                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites.", "danger"))
+                        delete_project_slug = gr.Dropdown(
+                            choices=_project_slugs(),
+                            label="Project to delete",
+                        )
+                        delete_project_btn = gr.Button(
+                            "Delete Project",
+                            variant="stop",
+                            elem_classes=["bn-delete-project-action"],
+                        )
+                    delete_project_message = gr.Markdown()
 
                 with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-access-panel"]) as admin_users_controls:
                     gr.HTML(
@@ -2937,28 +2960,6 @@ def create_app() -> gr.Blocks:
                         outputs=[pending_invites_table],
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-delete-panel"]) as admin_delete_controls:
-                    gr.HTML(
-                        section_header_html(
-                            "Project",
-                            "Delete project",
-                            "Remove a project from this validator workspace without deleting its Hugging Face dataset.",
-                            class_name="bn-panel-soft",
-                        )
-                    )
-                    with gr.Group(elem_classes=["bn-delete-project-panel"]):
-                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites.", "danger"))
-                        delete_project_slug = gr.Dropdown(
-                            choices=_project_slugs(),
-                            label="Project to delete",
-                        )
-                        delete_project_btn = gr.Button(
-                            "Delete Project",
-                            variant="stop",
-                            elem_classes=["bn-delete-project-action"],
-                        )
-                    delete_project_message = gr.Markdown()
-
                     delete_project_btn.click(
                         fn=delete_project,
                         inputs=[session_state, delete_project_slug],
@@ -3016,9 +3017,10 @@ def create_app() -> gr.Blocks:
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
+                        gr.update(visible=bool(s is not None)),
                     ),
                     inputs=[session_state],
-                    outputs=[admin_users_controls, admin_pending_controls, admin_delete_controls],
+                    outputs=[admin_token_controls, admin_delete_controls, admin_users_controls, admin_pending_controls],
                 )
 
                 session_state.change(
