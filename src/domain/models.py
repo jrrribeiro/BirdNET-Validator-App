@@ -34,6 +34,7 @@ class Detection(BaseModel):
     confidence: float = Field(ge=0.0, le=1.0)
     start_time: float = Field(ge=0.0)
     end_time: float = Field(gt=0.0)
+    source_metadata: dict[str, object] = Field(default_factory=dict)
 
 
 class Validation(BaseModel):

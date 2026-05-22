@@ -7,6 +7,7 @@ import pandas as pd
 import pytest
 
 from src.ui.app_factory import (
+    _build_validation_export_rows,
     _build_validation_report,
     _cleanup_selected_audio,
     _advance_to_next_row_with_title,
@@ -31,6 +32,7 @@ from src.ui.app_factory import (
     _load_user_access_from_file,
     _bootstrap_auth_and_projects,
     _resolve_project_fetch_token,
+    _write_validation_export,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
@@ -293,6 +295,126 @@ def test_build_validation_report() -> None:
     assert "Detections with current state: 2" in report
     assert "positive=1" in report
     assert "negative=1" in report
+
+
+def test_build_validation_export_rows_keep_detections_metadata_and_current_validation() -> None:
+    columns, rows = _build_validation_export_rows(
+        [
+            Detection(
+                detection_key="0000000000000002",
+                audio_id="Species B/second.wav",
+                scientific_name="Species B",
+                confidence=0.92,
+                start_time=6.0,
+                end_time=9.0,
+                source_metadata={"Common Name": "Bird B", "Latitude": -3.1},
+            ),
+            Detection(
+                detection_key="0000000000000001",
+                audio_id="Species A/first.wav",
+                scientific_name="Species A",
+                confidence=0.87,
+                start_time=0.0,
+                end_time=3.0,
+                source_metadata={"Common Name": "Bird A", "Latitude": -2.9},
+            ),
+        ],
+        {
+            "0000000000000001": {
+                "status": "positive",
+                "corrected_species": "Corrected species",
+                "notes": "Checked twice",
+                "validator": "scientist",
+                "updated_at": "2026-05-22T12:00:00+00:00",
+                "version": 2,
+            }
+        },
+        project_slug="analysis-project",
+        dataset_repo_id="birds/analysis-project",
+    )
+
+    assert columns[:8] == [
+        "project_slug",
+        "dataset_repo_id",
+        "detection_key",
+        "audio_id",
+        "detection_scientific_name",
+        "detection_confidence",
+        "detection_start_time",
+        "detection_end_time",
+    ]
+    assert columns[8:10] == ["source_Common Name", "source_Latitude"]
+    assert rows[0]["detection_key"] == "0000000000000001"
+    assert rows[0]["validation_status"] == "positive"
+    assert rows[0]["validation_effective_species"] == "Corrected species"
+    assert rows[0]["validation_version"] == 2
+    assert rows[1]["validation_status"] == "pending"
+    assert rows[1]["validation_effective_species"] == "Species B"
+    assert rows[1]["validation_reviewed"] is False
+
+
+def test_write_validation_export_creates_csv_and_xlsx(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.ui.app_factory.tempfile.mkdtemp", lambda prefix: str(tmp_path))
+    detections = [
+        Detection(
+            detection_key="0000000000000001",
+            audio_id="Species A/first.wav",
+            scientific_name="Species A",
+            confidence=0.87,
+            start_time=0.0,
+            end_time=3.0,
+            source_metadata={"source_file": "first.wav"},
+        )
+    ]
+    snapshot = {"0000000000000001": {"status": "negative", "validator": "reviewer", "version": 1}}
+
+    csv_path = _write_validation_export(
+        detections,
+        snapshot,
+        project_slug="analysis-project",
+        dataset_repo_id="birds/analysis-project",
+        file_format="csv",
+    )
+    xlsx_path = _write_validation_export(
+        detections,
+        snapshot,
+        project_slug="analysis-project",
+        dataset_repo_id="birds/analysis-project",
+        file_format="xlsx",
+    )
+
+    csv_frame = pd.read_csv(csv_path)
+    xlsx_frame = pd.read_excel(xlsx_path)
+    assert csv_frame.loc[0, "validation_status"] == "negative"
+    assert csv_frame.loc[0, "source_source_file"] == "first.wav"
+    assert xlsx_frame.loc[0, "validation_validator"] == "reviewer"
+    assert xlsx_frame.loc[0, "dataset_repo_id"] == "birds/analysis-project"
+
+
+def test_write_validation_export_splits_large_xlsx_into_sheets(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("src.ui.app_factory.tempfile.mkdtemp", lambda prefix: str(tmp_path))
+    monkeypatch.setattr("src.ui.app_factory._XLSX_EXPORT_MAX_DATA_ROWS", 1)
+    detections = [
+        Detection(
+            detection_key=f"000000000000000{index}",
+            audio_id=f"Species A/{index}.wav",
+            scientific_name="Species A",
+            confidence=0.87,
+            start_time=0.0,
+            end_time=3.0,
+        )
+        for index in (1, 2)
+    ]
+
+    path = _write_validation_export(
+        detections,
+        {},
+        project_slug="large-analysis-project",
+        dataset_repo_id="birds/large-analysis-project",
+        file_format="xlsx",
+    )
+
+    assert pd.ExcelFile(path).sheet_names == ["validation_data", "validation_data_2"]
 
 
 def test_page_to_table_includes_validation_status() -> None:

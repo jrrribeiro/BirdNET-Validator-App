@@ -20,6 +20,30 @@ class DetectionQueueService:
     def __init__(self, repository: DetectionRepository) -> None:
         self._repository = repository
 
+    def list_all_detections(
+        self,
+        project_slug: str,
+        scientific_name: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ) -> list[Detection]:
+        total_items = self._repository.count_detections(
+            project_slug=project_slug,
+            scientific_name=scientific_name,
+            min_confidence=min_confidence,
+            max_confidence=max_confidence,
+        )
+        if total_items == 0:
+            return []
+        return self._repository.list_detections(
+            project_slug=project_slug,
+            page=1,
+            page_size=total_items,
+            scientific_name=scientific_name,
+            min_confidence=min_confidence,
+            max_confidence=max_confidence,
+        )
+
     def get_page(
         self,
         project_slug: str,

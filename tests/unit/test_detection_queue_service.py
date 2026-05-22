@@ -86,6 +86,16 @@ def test_get_page_with_filters() -> None:
     assert page.items[0].detection_key == "0000000000000001"
 
 
+def test_list_all_detections_returns_filtered_project_items_without_paging() -> None:
+    repo = InMemoryDetectionRepository()
+    repo.seed("ppbio-rabeca", _sample())
+    service = DetectionQueueService(repo)
+
+    items = service.list_all_detections(project_slug="ppbio-rabeca", scientific_name="Species A")
+
+    assert [item.detection_key for item in items] == ["0000000000000001", "0000000000000003"]
+
+
 def test_get_page_requires_positive_page_and_page_size() -> None:
     repo = InMemoryDetectionRepository()
     repo.seed("ppbio-rabeca", _sample())

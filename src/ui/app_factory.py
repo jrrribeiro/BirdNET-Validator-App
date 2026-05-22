@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import wave
+from collections.abc import Mapping
 from dataclasses import replace
 from datetime import date, datetime
 from pathlib import Path
@@ -212,6 +213,7 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
             confidence=confidence,
             start_time=start_time,
             end_time=end_time,
+            source_metadata=dict(raw),
         )
     except Exception:
         return None
@@ -2231,6 +2233,158 @@ def _batch_validate_conflicts(
     status = f"{summary} | {page_status}"
 
     return status, "", None, refreshed_rows, refreshed_page
+
+
+_VALIDATION_EXPORT_BASE_COLUMNS = [
+    "project_slug",
+    "dataset_repo_id",
+    "detection_key",
+    "audio_id",
+    "detection_scientific_name",
+    "detection_confidence",
+    "detection_start_time",
+    "detection_end_time",
+]
+
+_VALIDATION_EXPORT_STATE_COLUMNS = [
+    "validation_status",
+    "validation_corrected_species",
+    "validation_effective_species",
+    "validation_notes",
+    "validation_validator",
+    "validation_updated_at",
+    "validation_version",
+    "validation_reviewed",
+]
+
+_XLSX_EXPORT_MAX_DATA_ROWS = 1_048_575
+
+
+def _export_cell_value(value: object) -> object:
+    if value is None:
+        return ""
+    if isinstance(value, np.generic):
+        value = value.item()
+    if isinstance(value, float) and np.isnan(value):
+        return ""
+    if isinstance(value, Mapping):
+        return json.dumps(dict(value), ensure_ascii=True, sort_keys=True)
+    if isinstance(value, (list, tuple, set)):
+        return json.dumps(list(value), ensure_ascii=True)
+    return value
+
+
+def _source_export_column(raw_key: object) -> str:
+    key = str(raw_key or "").strip()
+    return f"source_{key}" if key else ""
+
+
+def _build_validation_export_rows(
+    detections: list[Detection],
+    snapshot: dict[str, dict[str, object]],
+    *,
+    project_slug: str,
+    dataset_repo_id: str,
+) -> tuple[list[str], list[dict[str, object]]]:
+    """Join complete project detections with their current validation state."""
+    source_columns: list[str] = []
+    for detection in detections:
+        for raw_key in detection.source_metadata:
+            column = _source_export_column(raw_key)
+            if column and column not in source_columns:
+                source_columns.append(column)
+
+    columns = [*_VALIDATION_EXPORT_BASE_COLUMNS, *source_columns, *_VALIDATION_EXPORT_STATE_COLUMNS]
+    rows: list[dict[str, object]] = []
+    sorted_detections = sorted(
+        detections,
+        key=lambda item: (
+            item.scientific_name.lower(),
+            item.audio_id.lower(),
+            item.start_time,
+            item.end_time,
+            item.detection_key,
+        ),
+    )
+    for detection in sorted_detections:
+        state = snapshot.get(detection.detection_key, {})
+        validation_status = str(state.get("status") or "pending").strip() or "pending"
+        corrected_species = str(state.get("corrected_species") or "").strip()
+        row: dict[str, object] = {
+            "project_slug": project_slug,
+            "dataset_repo_id": dataset_repo_id,
+            "detection_key": detection.detection_key,
+            "audio_id": detection.audio_id,
+            "detection_scientific_name": detection.scientific_name,
+            "detection_confidence": detection.confidence,
+            "detection_start_time": detection.start_time,
+            "detection_end_time": detection.end_time,
+            "validation_status": validation_status,
+            "validation_corrected_species": corrected_species,
+            "validation_effective_species": corrected_species or detection.scientific_name,
+            "validation_notes": str(state.get("notes") or ""),
+            "validation_validator": str(state.get("validator") or ""),
+            "validation_updated_at": str(state.get("updated_at") or ""),
+            "validation_version": int(state.get("version") or 0),
+            "validation_reviewed": validation_status.lower() != "pending",
+        }
+        for raw_key, raw_value in detection.source_metadata.items():
+            column = _source_export_column(raw_key)
+            if column:
+                row[column] = _export_cell_value(raw_value)
+        rows.append({column: _export_cell_value(row.get(column, "")) for column in columns})
+    return columns, rows
+
+
+def _write_validation_export(
+    detections: list[Detection],
+    snapshot: dict[str, dict[str, object]],
+    *,
+    project_slug: str,
+    dataset_repo_id: str,
+    file_format: str,
+) -> Path:
+    columns, rows = _build_validation_export_rows(
+        detections,
+        snapshot,
+        project_slug=project_slug,
+        dataset_repo_id=dataset_repo_id,
+    )
+    normalized_format = file_format.lower().strip()
+    if normalized_format not in {"csv", "xlsx"}:
+        raise ValueError("Export format must be csv or xlsx")
+
+    safe_slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", project_slug).strip("-") or "project"
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    output_dir = Path(tempfile.mkdtemp(prefix="birdnet-validation-export-"))
+    output_path = output_dir / f"{safe_slug}-validation-data-{timestamp}.{normalized_format}"
+
+    if normalized_format == "csv":
+        with output_path.open("w", encoding="utf-8", newline="") as file_handle:
+            writer = csv.DictWriter(file_handle, fieldnames=columns)
+            writer.writeheader()
+            writer.writerows(rows)
+        return output_path
+
+    import pandas as pd  # type: ignore[import-not-found]
+
+    with pd.ExcelWriter(output_path, engine="openpyxl") as writer:
+        if not rows:
+            pd.DataFrame(columns=columns).to_excel(
+                writer,
+                sheet_name="validation_data",
+                index=False,
+                freeze_panes=(1, 0),
+            )
+        for chunk_index, start in enumerate(range(0, len(rows), _XLSX_EXPORT_MAX_DATA_ROWS), start=1):
+            sheet_name = "validation_data" if chunk_index == 1 else f"validation_data_{chunk_index}"
+            pd.DataFrame(rows[start : start + _XLSX_EXPORT_MAX_DATA_ROWS], columns=columns).to_excel(
+                writer,
+                sheet_name=sheet_name,
+                index=False,
+                freeze_panes=(1, 0),
+            )
+    return output_path
 
 
 def create_app() -> gr.Blocks:
@@ -4285,26 +4439,61 @@ def create_app() -> gr.Blocks:
                     report_recent_prev_btn = gr.Button("Previous recent page")
                     report_recent_next_btn = gr.Button("Next recent page")
                 report_status = gr.Markdown("")
+                with gr.Group(elem_classes=["bn-report-panel"]):
+                    gr.HTML(
+                        section_header_html(
+                            "Download",
+                            "Complete validation dataset",
+                            "Export every detection with the validation fields already filled in for the selected project.",
+                            class_name="bn-panel-soft",
+                        )
+                    )
+                    with gr.Row():
+                        report_export_csv_btn = gr.Button("Download CSV", variant="primary")
+                        report_export_xlsx_btn = gr.Button("Download XLSX")
+                    report_export_status = gr.Markdown("")
+                    report_export_file = gr.File(
+                        label="Prepared file",
+                        interactive=False,
+                    )
 
                 def _list_project_detections(project_slug: str) -> list[Detection]:
                     if not project_slug:
                         return []
-                    page = 1
-                    collected: list[Detection] = []
-                    while True:
-                        page_obj = service_ref["queue"].get_page(
-                            project_slug=project_slug,
-                            page=page,
-                            page_size=500,
-                            scientific_name=None,
-                            min_confidence=None,
-                            max_confidence=None,
-                        )
-                        collected.extend(page_obj.items)
-                        if not page_obj.has_next:
-                            break
-                        page += 1
-                    return collected
+                    return service_ref["queue"].list_all_detections(project_slug=project_slug)
+
+                def _prepare_report_export(project_slug: str, file_format: str, session):
+                    slug = (project_slug or "").strip()
+                    if session is None:
+                        return None, "Login before exporting project data."
+                    if not slug or slug not in session.authorized_projects:
+                        return None, "Choose an authorized project before exporting."
+
+                    project = _project_map().get(slug)
+                    items = _list_project_detections(slug)
+                    if not items:
+                        return None, f"Project '{slug}' has no detections loaded for export."
+
+                    snapshot = validation_repository.load_current_snapshot(project_slug=slug)
+                    output_path = _write_validation_export(
+                        items,
+                        snapshot,
+                        project_slug=slug,
+                        dataset_repo_id=(project.dataset_repo_id if project is not None else ""),
+                        file_format=file_format,
+                    )
+                    reviewed = sum(
+                        1
+                        for detection in items
+                        if str(snapshot.get(detection.detection_key, {}).get("status") or "pending").lower() != "pending"
+                    )
+                    return (
+                        str(output_path),
+                        (
+                            f"Prepared **{file_format.upper()}** with **{len(items)}** detections and "
+                            f"**{reviewed}** current validations for project **{slug}**."
+                        ),
+                    )
 
                 def _render_report_dashboard(project_slug: str, validator_page: int = 1, recent_page: int = 1):
                     slug = (project_slug or "").strip()
@@ -4474,6 +4663,16 @@ def create_app() -> gr.Blocks:
                     fn=lambda project_slug, validator, page: _render_report_dashboard(project_slug, int(validator), int(page) + 1),
                     inputs=[report_project_selector, report_validator_page, report_recent_page],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
+                )
+                report_export_csv_btn.click(
+                    fn=lambda project_slug, session: _prepare_report_export(project_slug, "csv", session),
+                    inputs=[report_project_selector, session_state],
+                    outputs=[report_export_file, report_export_status],
+                )
+                report_export_xlsx_btn.click(
+                    fn=lambda project_slug, session: _prepare_report_export(project_slug, "xlsx", session),
+                    inputs=[report_project_selector, session_state],
+                    outputs=[report_export_file, report_export_status],
                 )
 
             # ===== TAB 6: Settings =====
