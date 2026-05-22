@@ -1638,12 +1638,7 @@ def _select_and_fetch_audio(
     allow_demo_fallback: bool = False,
     hf_token: str | None = None,
 ) -> tuple[int, str | None, str, str, str | None]:
-    if isinstance(evt.index, tuple):
-        selected_index = int(evt.index[0])
-    elif isinstance(evt.index, int):
-        selected_index = int(evt.index)
-    else:
-        selected_index = 0
+    selected_index = _selected_dataframe_row_index(rows, evt)
 
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
@@ -1655,6 +1650,30 @@ def _select_and_fetch_audio(
         hf_token=hf_token,
     )
     return selected_index, audio_path, updated_cache_key, status, spectrogram_path
+
+
+def _selected_dataframe_row_index(rows: object, evt: gr.SelectData) -> int:
+    normalized_rows = _normalize_rows(rows)
+    if not normalized_rows:
+        return 0
+
+    row_value = getattr(evt, "row_value", None)
+    if isinstance(row_value, (list, tuple)) and row_value:
+        detection_key = str(row_value[0]).strip()
+        if detection_key:
+            return _find_detection_row_index(normalized_rows, detection_key)
+
+    raw_index = getattr(evt, "index", None)
+    if isinstance(raw_index, int):
+        return max(0, min(raw_index, len(normalized_rows) - 1))
+    if isinstance(raw_index, tuple):
+        numeric_candidates = [int(value) for value in raw_index if isinstance(value, int)]
+        # Gradio Dataframe events carry a 2-D cell index. If row_value is not
+        # available, prefer the only coordinate that is a valid table row.
+        valid_candidates = [value for value in numeric_candidates if 0 <= value < len(normalized_rows)]
+        if valid_candidates:
+            return valid_candidates[-1]
+    return 0
 
 
 def _normalize_rows(rows: object) -> list[list[object]]:
@@ -2595,18 +2614,6 @@ def create_app() -> gr.Blocks:
                         outputs=[token_update_message, token_new_value, token_clear_checkbox, projects_table, seed_warning_state],
                     )
 
-                    gr.HTML("<div class='bn-spacer'></div>")
-                    with gr.Group(elem_classes=["bn-delete-project-panel"]):
-                        gr.Markdown("### Delete project")
-                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites. It does not delete the Hugging Face dataset.", "danger"))
-                        with gr.Row(elem_classes=["bn-delete-project-row"]):
-                            delete_project_slug = gr.Dropdown(
-                                choices=_project_slugs(),
-                                label="Project to delete",
-                            )
-                            delete_project_btn = gr.Button("Delete Project", variant="stop", elem_classes=["bn-delete-project-action"])
-                    delete_project_message = gr.Markdown()
-
                     def delete_project(session, project_slug: str):
                         if session is None:
                             return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
@@ -2759,7 +2766,7 @@ def create_app() -> gr.Blocks:
                             class_name="bn-panel-soft",
                         )
                     )
-                    with gr.Group(elem_classes=["bn-panel-soft"]):
+                    with gr.Group(elem_classes=["bn-card-body"]):
                         with gr.Row():
                             pending_invites_filter_project = gr.Dropdown(
                                 choices=["all", *_project_slugs()],
@@ -2860,6 +2867,28 @@ def create_app() -> gr.Blocks:
                         outputs=[pending_invites_table],
                     )
 
+                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-delete-panel"]) as admin_delete_controls:
+                    gr.HTML(
+                        section_header_html(
+                            "Project",
+                            "Delete project",
+                            "Remove a project from this validator workspace without deleting its Hugging Face dataset.",
+                            class_name="bn-panel-soft",
+                        )
+                    )
+                    with gr.Group(elem_classes=["bn-delete-project-panel"]):
+                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites.", "danger"))
+                        delete_project_slug = gr.Dropdown(
+                            choices=_project_slugs(),
+                            label="Project to delete",
+                        )
+                        delete_project_btn = gr.Button(
+                            "Delete Project",
+                            variant="stop",
+                            elem_classes=["bn-delete-project-action"],
+                        )
+                    delete_project_message = gr.Markdown()
+
                     delete_project_btn.click(
                         fn=delete_project,
                         inputs=[session_state, delete_project_slug],
@@ -2913,9 +2942,13 @@ def create_app() -> gr.Blocks:
                 )
 
                 session_state.change(
-                    fn=lambda s: (gr.update(visible=bool(s is not None)), gr.update(visible=bool(s is not None))),
+                    fn=lambda s: (
+                        gr.update(visible=bool(s is not None)),
+                        gr.update(visible=bool(s is not None)),
+                        gr.update(visible=bool(s is not None)),
+                    ),
                     inputs=[session_state],
-                    outputs=[admin_users_controls, admin_pending_controls],
+                    outputs=[admin_users_controls, admin_pending_controls, admin_delete_controls],
                 )
 
                 session_state.change(

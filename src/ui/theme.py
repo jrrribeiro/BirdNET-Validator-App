@@ -580,6 +580,18 @@ body,
   padding: 14px;
 }
 
+.bn-admin-panel .block,
+.bn-admin-panel .form,
+.bn-card-body {
+  background: #ffffff !important;
+}
+
+.bn-card-body {
+  border: 1px solid var(--bn-border) !important;
+  border-radius: 8px !important;
+  padding: 12px !important;
+}
+
 .bn-admin-access-panel,
 .bn-admin-pending-panel {
   width: 100% !important;
@@ -630,12 +642,9 @@ button.bn-soft-action:hover {
   background: #fff1f2;
 }
 
-.bn-delete-project-row {
-  align-items: flex-end !important;
-  gap: 12px !important;
-}
-
 .bn-delete-project-action button {
+  width: 100% !important;
+  margin-top: 2px !important;
   min-height: 54px !important;
   border-radius: 8px !important;
   font-weight: 790 !important;

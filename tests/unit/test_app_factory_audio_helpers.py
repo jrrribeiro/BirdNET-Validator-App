@@ -18,6 +18,7 @@ from src.ui.app_factory import (
     _post_validation_queue_anchor,
     _save_selected_validation,
     _save_selected_validation_with_refresh,
+    _selected_dataframe_row_index,
     _reapply_last_conflict_validation_with_refresh,
     _batch_validate_conflicts,
     create_app,
@@ -427,6 +428,19 @@ def test_find_detection_row_index() -> None:
 
     assert _find_detection_row_index(rows, "dkey_01") == 1
     assert _find_detection_row_index(rows, "missing") == 0
+
+
+def test_selected_dataframe_row_index_prefers_selected_row_value() -> None:
+    class FakeSelectEvent:
+        index = (2, 0)
+        row_value = ["dkey_02", "audio_02", "Species 2"]
+
+    rows = [
+        ["dkey_01", "audio_01", "Species 1"],
+        ["dkey_02", "audio_02", "Species 2"],
+    ]
+
+    assert _selected_dataframe_row_index(rows, FakeSelectEvent()) == 1
 
 
 def test_post_validation_queue_anchor_keeps_next_row_when_saved_row_leaves_filtered_page() -> None:
