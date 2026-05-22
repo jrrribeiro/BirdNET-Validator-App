@@ -588,12 +588,6 @@ body,
 
 .bn-admin-panel .block:has(button),
 .bn-admin-panel .form:has(button),
-.bn-admin-section,
-.bn-admin-section .block:has(button),
-.bn-admin-section .form:has(button),
-.bn-admin-action-row,
-.bn-admin-action-row .block,
-.bn-admin-action-row .form,
 .bn-report-panel .block:has(button),
 .bn-report-panel .form:has(button),
 .bn-clean-button-row,
@@ -614,8 +608,19 @@ body,
   border: 0 !important;
   box-shadow: none !important;
   padding: 0 !important;
-  background: transparent !important;
+  background: #ffffff !important;
   gap: 8px !important;
+}
+
+.bn-admin-section,
+.bn-admin-section .block:has(.bn-admin-action),
+.bn-admin-section .form:has(.bn-admin-action),
+.bn-admin-action-row,
+.bn-admin-action-row > *,
+.bn-admin-action-row .block,
+.bn-admin-action-row .form,
+.bn-admin-action {
+  background: #ffffff !important;
 }
 
 .bn-admin-access-section,
