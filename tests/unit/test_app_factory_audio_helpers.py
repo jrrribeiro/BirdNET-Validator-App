@@ -471,6 +471,27 @@ def test_advance_to_next_row_wraps_after_last_selected_row() -> None:
     assert title == "### Segment spectrogram"
 
 
+def test_advance_to_next_row_wraps_to_first_pending_row() -> None:
+    service = FakeAudioService()
+    rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0, "positive"],
+        ["dkey_02", "audio_02", "sp", 0.8, 1.0, 2.0, "pending"],
+        ["dkey_03", "audio_03", "sp", 0.7, 2.0, 3.0, "positive"],
+    ]
+
+    selected_index, audio_path, cache_key, _, _, _ = _advance_to_next_row_with_title(
+        audio_service=service,
+        dataset_repo="org/dataset",
+        rows=rows,
+        selected_index=2,
+        cache_key="",
+    )
+
+    assert selected_index == 1
+    assert audio_path == "/tmp/audio_02.wav"
+    assert cache_key == "key:audio_02"
+
+
 def test_save_selected_validation_with_refresh_success() -> None:
     audio_service = FakeAudioService()
     validation_service = FakeValidationService()

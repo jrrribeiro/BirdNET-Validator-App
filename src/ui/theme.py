@@ -593,7 +593,8 @@ body,
 }
 
 .bn-admin-access-panel,
-.bn-admin-pending-panel {
+.bn-admin-pending-panel,
+.bn-admin-delete-panel {
   width: 100% !important;
 }
 
@@ -604,8 +605,12 @@ body,
   gap: 14px !important;
 }
 
-.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > :not(.bn-admin-access-panel):not(.bn-admin-pending-panel) {
+.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > :not(.bn-admin-access-panel):not(.bn-admin-pending-panel):not(.bn-admin-delete-panel) {
   grid-column: 1 / -1;
+}
+
+.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > .bn-admin-delete-panel {
+  grid-column: 2;
 }
 
 .bn-soft-action button,
@@ -831,7 +836,8 @@ select {
   }
 
   .bn-admin-access-panel,
-  .bn-admin-pending-panel {
+  .bn-admin-pending-panel,
+  .bn-admin-delete-panel {
     display: block !important;
     width: 100% !important;
     margin-left: 0 !important;
@@ -839,6 +845,10 @@ select {
 
   .column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) {
     grid-template-columns: 1fr;
+  }
+
+  .column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > .bn-admin-delete-panel {
+    grid-column: auto;
   }
 }
 

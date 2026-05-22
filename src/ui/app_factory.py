@@ -1848,7 +1848,7 @@ def _advance_to_next_row_with_title(
 
     safe_index = int(selected_index) + 1
     if safe_index >= len(normalized_rows):
-        safe_index = 0
+        safe_index = _first_pending_row_index(normalized_rows)
     safe_index = max(0, safe_index)
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
@@ -1861,6 +1861,59 @@ def _advance_to_next_row_with_title(
     )
     species_name, confidence_value = _selected_row_species_and_confidence(normalized_rows, safe_index)
     return safe_index, audio_path, updated_cache_key, status, spectrogram_path, _spectrogram_title(species_name, confidence_value)
+
+
+def _first_pending_row_index(rows: object) -> int:
+    normalized_rows = _normalize_rows(rows)
+    for index, row in enumerate(normalized_rows):
+        status_value = str(row[6] if len(row) > 6 else "pending").strip().lower()
+        if status_value in {"", "pending"}:
+            return index
+    return 0
+
+
+def _first_pending_queue_page(
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    scientific_name: str,
+    min_confidence: float,
+    validator_filter: str,
+    status_filter: str,
+    updated_after: object,
+    show_conflicts_only: bool,
+) -> tuple[list[list[object]], int, int] | None:
+    normalized_status_filter = (status_filter or "all").strip().lower()
+    if normalized_status_filter not in {"", "all", "pending"}:
+        return None
+
+    requested_page = 1
+    visited_pages: set[int] = set()
+    while True:
+        page_rows, _, actual_page = _page_to_table(
+            service=queue_service,
+            snapshot_reader=snapshot_reader,
+            project_slug=project_slug,
+            page=requested_page,
+            scientific_name=scientific_name,
+            min_confidence=min_confidence,
+            validator_filter=validator_filter,
+            status_filter=status_filter,
+            updated_after=updated_after,
+            show_conflicts_only=show_conflicts_only,
+        )
+        if actual_page in visited_pages:
+            return None
+        visited_pages.add(actual_page)
+
+        page_rows = _sort_rows_by_confidence_desc(page_rows)
+        pending_index = _first_pending_row_index(page_rows)
+        if page_rows:
+            status_value = str(page_rows[pending_index][6] if len(page_rows[pending_index]) > 6 else "pending").strip().lower()
+            if status_value in {"", "pending"}:
+                return page_rows, actual_page, pending_index
+
+        requested_page = actual_page + 1
 
 
 def _cleanup_selected_audio(audio_service: _AudioServiceProtocol, cache_key: str) -> tuple[str, str | None]:
@@ -1939,6 +1992,8 @@ def _save_selected_validation_with_refresh(
     show_conflicts_only: bool,
     corrected_species: str | None = None,
 ) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
+    prior_rows = _normalize_rows(rows)
+    selected_was_last_row = bool(prior_rows) and int(selected_index) >= len(prior_rows) - 1
     selected_key = ""
     try:
         selected_key = _extract_detection_key(rows=rows, selected_index=selected_index)
@@ -1999,6 +2054,21 @@ def _save_selected_validation_with_refresh(
     else:
         conflict_key = ""
         pending_status_value = ""
+        if selected_was_last_row:
+            first_pending_page = _first_pending_queue_page(
+                queue_service=queue_service,
+                snapshot_reader=snapshot_reader,
+                project_slug=project_slug,
+                scientific_name=scientific_name,
+                min_confidence=min_confidence,
+                validator_filter=validator_filter,
+                status_filter=status_filter,
+                updated_after=updated_after,
+                show_conflicts_only=show_conflicts_only,
+            )
+            if first_pending_page is not None:
+                refreshed_rows, refreshed_page, pending_index = first_pending_page
+                refreshed_index = pending_index - 1
         status = f"{save_status} | {page_status}"
 
     return (
