@@ -618,9 +618,17 @@ body,
 .bn-admin-action-row,
 .bn-admin-action-row > *,
 .bn-admin-action-row .block,
-.bn-admin-action-row .form,
-.bn-admin-action {
+.bn-admin-action-row .form {
   background: var(--bn-bg) !important;
+}
+
+div.row.bn-admin-action-row {
+  background-color: var(--bn-bg) !important;
+  background-image: linear-gradient(var(--bn-bg), var(--bn-bg)) !important;
+}
+
+div.row.bn-admin-action-row > :not(button) {
+  background-color: var(--bn-bg) !important;
 }
 
 .bn-admin-access-section,
