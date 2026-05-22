@@ -207,6 +207,47 @@ def coverage_bars_html(rows: list[list[object]], *, limit: int = 12) -> str:
     )
 
 
+def paged_activity_html(
+    title: str,
+    headers: list[str],
+    rows: list[list[object]],
+    *,
+    page: int = 1,
+    page_size: int = 10,
+    empty_message: str = "No activity yet.",
+) -> str:
+    safe_page_size = max(1, int(page_size))
+    total_rows = len(rows)
+    total_pages = max(1, ((total_rows - 1) // safe_page_size) + 1) if total_rows else 1
+    safe_page = max(1, min(int(page), total_pages))
+    start = (safe_page - 1) * safe_page_size
+    page_rows = rows[start : start + safe_page_size]
+
+    header_html = "".join(f"<th>{escape(str(header))}</th>" for header in headers)
+    if page_rows:
+        body_html = "".join(
+            "<tr>" + "".join(f"<td>{escape(str(value or ''))}</td>" for value in row) + "</tr>"
+            for row in page_rows
+        )
+    else:
+        body_html = (
+            "<tr><td class='bn-activity-empty' "
+            f"colspan='{max(1, len(headers))}'>{escape(empty_message)}</td></tr>"
+        )
+
+    return (
+        "<div class='bn-coverage-panel bn-activity-panel'>"
+        "<div class='bn-queue-preview-head'>"
+        f"<span>{escape(title)}</span><span>{total_rows} records</span>"
+        "</div>"
+        "<div class='bn-activity-table-wrap'><table class='bn-activity-table'>"
+        f"<thead><tr>{header_html}</tr></thead><tbody>{body_html}</tbody>"
+        "</table></div>"
+        f"<div class='bn-queue-footnote'>Page {safe_page}/{total_pages}</div>"
+        "</div>"
+    )
+
+
 def settings_health_html(items: list[tuple[str, str, str]]) -> str:
     cards = []
     for label, value, tone in items:

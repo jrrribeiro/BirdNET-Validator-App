@@ -29,7 +29,7 @@ from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, Invit
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, project_context_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html, validation_queue_html
+from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -1192,7 +1192,7 @@ def _page_to_table(
     page: int,
     scientific_name: str,
     min_confidence: float,
-    page_size: int = 25,
+    page_size: int = 10,
     validator_filter: str = "",
     status_filter: str = "all",
     updated_after: object = None,
@@ -1382,6 +1382,21 @@ def _find_detection_row_index(rows: object, detection_key: str) -> int:
         if str(row[0]).strip() == detection_key:
             return index
     return 0
+
+
+def _post_validation_queue_anchor(rows: object, detection_key: str, previous_index: int) -> int:
+    normalized_rows = _normalize_rows(rows)
+    if not normalized_rows:
+        return 0
+
+    for index, row in enumerate(normalized_rows):
+        if str(row[0]).strip() == detection_key:
+            return index
+
+    # The saved row can disappear under pending/status filters after refresh.
+    # Anchor one row behind its former position so the follow-up advance opens
+    # the row that slid into the saved row's place.
+    return min(int(previous_index), len(normalized_rows)) - 1
 
 
 def _extract_expected_version(rows: object, selected_index: int) -> int:
@@ -1649,9 +1664,9 @@ def _normalize_rows(rows: object) -> list[list[object]]:
 
 
 def _spectrogram_title(species_name: str | None, confidence: float | None) -> str:
-    if not species_name or confidence is None:
-        return "### Spectrogram"
-    return f"### {species_name} - {confidence:.3f}"
+    _ = species_name
+    _ = confidence
+    return "### Segment spectrogram"
 
 
 def _selected_row_species_and_confidence(rows: object, selected_index: int) -> tuple[str | None, float | None]:
@@ -1707,11 +1722,6 @@ def _selected_segment_card(rows: object, selected_index: int) -> str:
         return selected_segment_html(None)
     safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
     return selected_segment_html(normalized_rows[safe_index], safe_index, len(normalized_rows))
-
-
-def _validation_queue_preview(rows: object, selected_index: int) -> str:
-    normalized_rows = _normalize_rows(rows)
-    return validation_queue_html(normalized_rows, selected_index)
 
 
 def _extract_species_options_from_queue(
@@ -1817,7 +1827,10 @@ def _advance_to_next_row_with_title(
     if not normalized_rows:
         return 0, None, cache_key, "No detections available", None, _spectrogram_title(None, None)
 
-    safe_index = max(0, min(int(selected_index) + 1, len(normalized_rows) - 1))
+    safe_index = int(selected_index) + 1
+    if safe_index >= len(normalized_rows):
+        safe_index = 0
+    safe_index = max(0, safe_index)
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
         dataset_repo=dataset_repo,
@@ -1941,7 +1954,7 @@ def _save_selected_validation_with_refresh(
     refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
 
     if selected_key:
-        refreshed_index = _find_detection_row_index(refreshed_rows, selected_key)
+        refreshed_index = _post_validation_queue_anchor(refreshed_rows, selected_key, selected_index)
     else:
         refreshed_index = 0
 
@@ -2207,7 +2220,7 @@ def create_app() -> gr.Blocks:
 
     with gr.Blocks(title="BirdNET-Validator-App", css=APP_CSS, elem_classes=["bn-shell"]) as wrapper:
         gr.HTML(app_header_html(state_backend_message))
-        if state_backend_message:
+        if state_backend_message.startswith("⚠"):
             gr.Markdown(state_backend_message)
         if bootstrap_warning:
             gr.Markdown(bootstrap_warning)
@@ -2376,8 +2389,8 @@ def create_app() -> gr.Blocks:
                     gr.HTML(
                         section_header_html(
                             "Projects",
-                            "Registered datasets",
-                            "Create project records and keep their Hugging Face dataset access aligned.",
+                            "Project management",
+                            "Create project records, manage dataset tokens, and remove projects from the validator workspace.",
                             class_name="bn-panel-soft",
                         )
                     )
@@ -2508,14 +2521,10 @@ def create_app() -> gr.Blocks:
                             )
 
                         role = auth_service.get_user_role_for_project(session.username, selected)
-                        role_label = role.value.upper() if role is not None else "NO ACCESS"
                         if role == Role.admin:
-                            return f"Effective role on project '{selected}': {role_label}"
+                            return ""
                         if role == Role.validator:
-                            return (
-                                f"Effective role on project '{selected}': {role_label}. "
-                                "Management actions require ADMIN for this project."
-                            )
+                            return "Management actions require ADMIN for this project."
                         return f"You do not have access to project '{selected}'."
 
                     def refresh_projects(session):
@@ -2587,7 +2596,47 @@ def create_app() -> gr.Blocks:
                         outputs=[token_update_message, token_new_value, token_clear_checkbox, projects_table, seed_warning_state],
                     )
 
-                with gr.Group(visible=False, elem_classes=["bn-admin-panel"]) as admin_users_controls:
+                    gr.HTML("<div class='bn-spacer'></div>")
+                    with gr.Group(elem_classes=["bn-panel-soft", "bn-danger-zone"]):
+                        gr.Markdown("### Delete project")
+                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites. It does not delete the Hugging Face dataset.", "danger"))
+                        with gr.Row():
+                            delete_project_slug = gr.Dropdown(
+                                choices=_project_slugs(),
+                                label="Project to delete",
+                            )
+                            delete_project_btn = gr.Button("Delete Project", variant="stop")
+                    delete_project_message = gr.Markdown()
+
+                    def delete_project(session, project_slug: str):
+                        if session is None:
+                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                        if not _is_admin_for_project(session, project_slug):
+                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+
+                        success, msg = admin_manager.delete_project(session.username, project_slug)
+                        if not success:
+                            return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
+
+                        persisted, persist_error = _persist_admin_state()
+                        if not persisted:
+                            msg = f"{msg} | Persistence failed: {persist_error}"
+
+                        refreshed_warning = _rebuild_queue_service()
+                        refreshed_session = _refresh_session_copy(session)
+
+                        admin_projects = _admin_projects_for_session(refreshed_session)
+                        return (
+                            msg,
+                            _project_rows(),
+                            gr.update(choices=admin_projects, value=None),
+                            gr.update(choices=admin_projects, value=None),
+                            refreshed_session,
+                            refreshed_warning,
+                            gr.update(choices=admin_projects, value=None),
+                        )
+
+                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-access-panel"]) as admin_users_controls:
                     gr.HTML(
                         section_header_html(
                             "Team",
@@ -2702,62 +2751,7 @@ def create_app() -> gr.Blocks:
                         outputs=[admin_message, admin_username, admin_invite_email, admin_project, admin_role],
                     )
 
-                    gr.HTML("<div class='bn-spacer'></div>")
-
-                    with gr.Group(elem_classes=["bn-panel-soft", "bn-danger-zone"]):
-                        gr.Markdown("### Danger Zone")
-                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites. It does not delete the Hugging Face dataset.", "danger"))
-                        with gr.Row():
-                            delete_project_slug = gr.Dropdown(
-                                choices=_project_slugs(),
-                                label="Project to delete",
-                            )
-                            delete_project_btn = gr.Button("Delete Project", variant="stop")
-
-                    def delete_project(session, project_slug: str):
-                        if session is None:
-                            return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
-                        if not _is_admin_for_project(session, project_slug):
-                            return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
-
-                        success, msg = admin_manager.delete_project(session.username, project_slug)
-                        if not success:
-                            return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
-
-                        persisted, persist_error = _persist_admin_state()
-                        if not persisted:
-                            msg = f"{msg} | Persistence failed: {persist_error}"
-
-                        refreshed_warning = _rebuild_queue_service()
-                        refreshed_session = _refresh_session_copy(session)
-
-                        admin_projects = _admin_projects_for_session(refreshed_session)
-                        return (
-                            msg,
-                            _project_rows(),
-                            gr.update(choices=admin_projects, value=None),
-                            gr.update(choices=admin_projects, value=None),
-                            refreshed_session,
-                            refreshed_warning,
-                            gr.update(choices=admin_projects, value=None),
-                        )
-
-                    delete_project_btn.click(
-                        fn=delete_project,
-                        inputs=[session_state, delete_project_slug],
-                        outputs=[
-                            admin_message,
-                            projects_table,
-                            admin_project,
-                            token_project_select,
-                            session_state,
-                            seed_warning_state,
-                            delete_project_slug,
-                        ],
-                    )
-
-                    gr.HTML("<div class='bn-spacer'></div>")
-
+                with gr.Group(visible=False, elem_classes=["bn-admin-panel", "bn-admin-pending-panel"]) as admin_pending_controls:
                     gr.HTML(
                         section_header_html(
                             "Invites",
@@ -2766,24 +2760,25 @@ def create_app() -> gr.Blocks:
                             class_name="bn-panel-soft",
                         )
                     )
-                    with gr.Row():
-                        pending_invites_filter_project = gr.Dropdown(
-                            choices=["all", *_project_slugs()],
-                            value="all",
-                            label="Filter by project",
+                    with gr.Group(elem_classes=["bn-panel-soft"]):
+                        with gr.Row():
+                            pending_invites_filter_project = gr.Dropdown(
+                                choices=["all", *_project_slugs()],
+                                value="all",
+                                label="Filter by project",
+                            )
+                            pending_invite_username = gr.Textbox(label="Invite username", placeholder="validator_001")
+                            pending_invite_project = gr.Dropdown(choices=_project_slugs(), label="Invite project")
+                        pending_invites_table = gr.Dataframe(
+                            value=[],
+                            headers=["Username", "Project", "Role", "Invited by", "Expires at", "Expires in"],
+                            interactive=False,
+                            elem_classes=["bn-dataframe"],
                         )
-                        pending_invite_username = gr.Textbox(label="Invite username", placeholder="validator_001")
-                        pending_invite_project = gr.Dropdown(choices=_project_slugs(), label="Invite project")
-                    pending_invites_table = gr.Dataframe(
-                        value=[],
-                        headers=["Username", "Project", "Role", "Invited by", "Expires at", "Expires in"],
-                        interactive=False,
-                        elem_classes=["bn-dataframe"],
-                    )
-                    pending_invites_message = gr.Markdown()
-                    with gr.Row():
-                        refresh_pending_invites_btn = gr.Button("Refresh pending invites")
-                        revoke_invite_btn = gr.Button("Revoke Invite")
+                        pending_invites_message = gr.Markdown()
+                        with gr.Row():
+                            refresh_pending_invites_btn = gr.Button("Refresh pending invites")
+                            revoke_invite_btn = gr.Button("Revoke Invite")
 
                     def _pending_invites_rows(project_filter: str, session):
                         def _remaining_from_iso(iso_value: str) -> str:
@@ -2866,6 +2861,20 @@ def create_app() -> gr.Blocks:
                         outputs=[pending_invites_table],
                     )
 
+                    delete_project_btn.click(
+                        fn=delete_project,
+                        inputs=[session_state, delete_project_slug],
+                        outputs=[
+                            delete_project_message,
+                            projects_table,
+                            admin_project,
+                            token_project_select,
+                            session_state,
+                            seed_warning_state,
+                            delete_project_slug,
+                        ],
+                    )
+
                 create_project_event = create_project_btn.click(
                     fn=create_project,
                     inputs=[session_state, create_project_slug, create_project_name, create_project_repo, create_project_visibility, create_project_token],
@@ -2905,9 +2914,9 @@ def create_app() -> gr.Blocks:
                 )
 
                 session_state.change(
-                    fn=lambda s: gr.update(visible=bool(s is not None)),
+                    fn=lambda s: (gr.update(visible=bool(s is not None)), gr.update(visible=bool(s is not None))),
                     inputs=[session_state],
-                    outputs=[admin_users_controls],
+                    outputs=[admin_users_controls, admin_pending_controls],
                 )
 
                 session_state.change(
@@ -3003,7 +3012,7 @@ def create_app() -> gr.Blocks:
                     return (
                         gr.update(choices=projects, value=selected, interactive=True),
                         project_overview_html(_project_rows(), projects, selected),
-                        f"**Project:** {selected} | **Your Role:** {role_label}",
+                        "",
                         project_context_html(project_row, role_label),
                         selected,
                         dataset_repo_id,
@@ -3277,7 +3286,7 @@ def create_app() -> gr.Blocks:
                         validation_summary_cards = gr.HTML(value=_build_validation_summary_cards([]))
                         selected_segment_card = gr.HTML(value=selected_segment_html(None))
 
-                        spectrogram_title = gr.Markdown("### Segment spectrogram")
+                        spectrogram_title = gr.Markdown(_spectrogram_title(None, None))
                         spectrogram_image = gr.Image(
                             label="",
                             type="filepath",
@@ -3318,12 +3327,11 @@ def create_app() -> gr.Blocks:
                                 "Conflict",
                                 "Severity",
                             ],
-                            label="Queue",
+                            label="Validation queue",
                             interactive=False,
                             elem_classes=["bn-dataframe"],
                         )
                         selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
-                        queue_preview = gr.HTML(value=validation_queue_html([]))
 
                     with gr.Column(scale=4, elem_classes=["bn-sidebar-panel"]):
                         dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
@@ -3411,7 +3419,7 @@ def create_app() -> gr.Blocks:
                         page=page,
                         scientific_name=species_name,
                         min_confidence=confidence,
-                        page_size=runtime_config.page_size,
+                        page_size=10,
                         validator_filter=validator_filter_value,
                         status_filter=status_filter_value,
                         updated_after=updated_after_value,
@@ -3805,19 +3813,11 @@ def create_app() -> gr.Blocks:
                     fn=lambda rows, idx: _selected_segment_card(rows, int(idx)),
                     inputs=[table, selected_index],
                     outputs=[selected_segment_card],
-                ).then(
-                    fn=lambda rows, idx: _validation_queue_preview(rows, int(idx)),
-                    inputs=[table, selected_index],
-                    outputs=[queue_preview],
                 )
                 table.change(
                     fn=lambda rows, idx: _selected_segment_card(rows, int(idx)),
                     inputs=[table, selected_index],
                     outputs=[selected_segment_card],
-                ).then(
-                    fn=lambda rows, idx: _validation_queue_preview(rows, int(idx)),
-                    inputs=[table, selected_index],
-                    outputs=[queue_preview],
                 )
 
                 auto_play_audio.change(
@@ -4170,27 +4170,20 @@ def create_app() -> gr.Blocks:
                 refresh_report_btn = gr.Button("Refresh dashboard", variant="primary")
                 report_kpis = gr.HTML(value="")
                 report_coverage_bars = gr.HTML(value=coverage_bars_html([]))
-                report_species_table = gr.Dataframe(
-                    headers=["species", "total", "validated", "remaining", "coverage_pct"],
-                    value=[],
-                    interactive=False,
-                    label="Species overview",
-                    elem_classes=["bn-dataframe"],
+                report_validator_page = gr.State(value=1)
+                report_recent_page = gr.State(value=1)
+                report_validator_table = gr.HTML(
+                    value=paged_activity_html("Validator activity", ["Validator", "Validations"], []),
                 )
-                report_validator_table = gr.Dataframe(
-                    headers=["validator", "validations"],
-                    value=[],
-                    interactive=False,
-                    label="Validator activity",
-                    elem_classes=["bn-dataframe"],
+                with gr.Row():
+                    report_validator_prev_btn = gr.Button("Previous validator page")
+                    report_validator_next_btn = gr.Button("Next validator page")
+                report_recent_table = gr.HTML(
+                    value=paged_activity_html("Recent activity", ["Timestamp", "Validator", "Status", "Detection"], []),
                 )
-                report_recent_table = gr.Dataframe(
-                    headers=["timestamp", "validator", "status", "detection_key"],
-                    value=[],
-                    interactive=False,
-                    label="Recent activity",
-                    elem_classes=["bn-dataframe"],
-                )
+                with gr.Row():
+                    report_recent_prev_btn = gr.Button("Previous recent page")
+                    report_recent_next_btn = gr.Button("Next recent page")
                 report_status = gr.Markdown("")
 
                 def _list_project_detections(project_slug: str) -> list[Detection]:
@@ -4213,10 +4206,18 @@ def create_app() -> gr.Blocks:
                         page += 1
                     return collected
 
-                def _render_report_dashboard(project_slug: str):
+                def _render_report_dashboard(project_slug: str, validator_page: int = 1, recent_page: int = 1):
                     slug = (project_slug or "").strip()
                     if not slug:
-                        return "", coverage_bars_html([]), [], [], [], "Select a project to view the dashboard"
+                        return (
+                            "",
+                            coverage_bars_html([]),
+                            paged_activity_html("Validator activity", ["Validator", "Validations"], []),
+                            paged_activity_html("Recent activity", ["Timestamp", "Validator", "Status", "Detection"], []),
+                            1,
+                            1,
+                            "Select a project to view the dashboard",
+                        )
 
                     items = _list_project_detections(slug)
                     snapshot = validation_repository.load_current_snapshot(project_slug=slug)
@@ -4259,7 +4260,7 @@ def create_app() -> gr.Blocks:
                         key=lambda row: (-int(row[1]), str(row[0]).lower()),
                     )
                     recent_rows = []
-                    for event in sorted(events, key=lambda payload: str(payload.get("timestamp") or payload.get("created_at") or ""), reverse=True)[:15]:
+                    for event in sorted(events, key=lambda payload: str(payload.get("timestamp") or payload.get("created_at") or ""), reverse=True):
                         recent_rows.append(
                             [
                                 str(event.get("timestamp") or event.get("created_at") or ""),
@@ -4268,6 +4269,13 @@ def create_app() -> gr.Blocks:
                                 str(event.get("detection_key") or ""),
                             ]
                         )
+
+                    def clamp_activity_page(activity_rows: list[list[object]], requested_page: int) -> int:
+                        total_pages = max(1, ((len(activity_rows) - 1) // 10) + 1) if activity_rows else 1
+                        return max(1, min(int(requested_page), total_pages))
+
+                    validator_page = clamp_activity_page(validator_rows, validator_page)
+                    recent_page = clamp_activity_page(recent_rows, recent_page)
 
                     kpis_html = compact_metric_grid(
                         [
@@ -4286,7 +4294,25 @@ def create_app() -> gr.Blocks:
                         f"Project: **{slug}** | Total recordings: **{total_recordings}** | "
                         f"Validated: **{validated_recordings}** | Remaining: **{remaining_recordings}**"
                     )
-                    return kpis_html, coverage_bars_html(rows), rows, validator_rows, recent_rows, status_text
+                    return (
+                        kpis_html,
+                        coverage_bars_html(rows),
+                        paged_activity_html(
+                            "Validator activity",
+                            ["Validator", "Validations"],
+                            validator_rows,
+                            page=validator_page,
+                        ),
+                        paged_activity_html(
+                            "Recent activity",
+                            ["Timestamp", "Validator", "Status", "Detection"],
+                            recent_rows,
+                            page=recent_page,
+                        ),
+                        validator_page,
+                        recent_page,
+                        status_text,
+                    )
 
                 session_state.change(
                     fn=lambda s: (
@@ -4297,25 +4323,57 @@ def create_app() -> gr.Blocks:
                         ),
                         "",
                         coverage_bars_html([]),
-                        [],
-                        [],
-                        [],
-                        "Login and choose a project, then click Refresh dashboard." if s is None else "Click Refresh dashboard to load project metrics.",
+                        paged_activity_html("Validator activity", ["Validator", "Validations"], []),
+                        paged_activity_html("Recent activity", ["Timestamp", "Validator", "Status", "Detection"], []),
+                        1,
+                        1,
+                        "Login and choose a project." if s is None else "Choose a project to load project metrics.",
                     ),
                     inputs=[session_state],
-                    outputs=[report_project_selector, report_kpis, report_coverage_bars, report_species_table, report_validator_table, report_recent_table, report_status],
+                    outputs=[report_project_selector, report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
+                )
+
+                report_project_selector.change(
+                    fn=lambda project_slug: _render_report_dashboard(project_slug, 1, 1),
+                    inputs=[report_project_selector],
+                    outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
 
                 selected_project_state.change(
                     fn=lambda p: gr.update(value=p if p else None),
                     inputs=[selected_project_state],
                     outputs=[report_project_selector],
+                ).then(
+                    fn=lambda project_slug: _render_report_dashboard(project_slug, 1, 1),
+                    inputs=[selected_project_state],
+                    outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
 
                 refresh_report_btn.click(
                     fn=_render_report_dashboard,
-                    inputs=[report_project_selector],
-                    outputs=[report_kpis, report_coverage_bars, report_species_table, report_validator_table, report_recent_table, report_status],
+                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
+                )
+
+                report_validator_prev_btn.click(
+                    fn=lambda project_slug, page, recent: _render_report_dashboard(project_slug, max(1, int(page) - 1), int(recent)),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
+                )
+                report_validator_next_btn.click(
+                    fn=lambda project_slug, page, recent: _render_report_dashboard(project_slug, int(page) + 1, int(recent)),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
+                )
+                report_recent_prev_btn.click(
+                    fn=lambda project_slug, validator, page: _render_report_dashboard(project_slug, int(validator), max(1, int(page) - 1)),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
+                )
+                report_recent_next_btn.click(
+                    fn=lambda project_slug, validator, page: _render_report_dashboard(project_slug, int(validator), int(page) + 1),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
 
             # ===== TAB 6: Settings =====

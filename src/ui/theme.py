@@ -496,6 +496,44 @@ body,
   font-size: 11px;
 }
 
+.bn-activity-table-wrap {
+  margin-top: 10px;
+  overflow-x: auto;
+  border: 1px solid var(--bn-border);
+  border-radius: 8px;
+}
+
+.bn-activity-table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  background: #ffffff;
+  color: var(--bn-text);
+  font-size: 13px;
+}
+
+.bn-activity-table th,
+.bn-activity-table td {
+  padding: 9px 11px;
+  border-bottom: 1px solid var(--bn-border);
+  text-align: left;
+  vertical-align: top;
+}
+
+.bn-activity-table th {
+  color: #344054;
+  background: #f1f5f9;
+  font-weight: 750;
+}
+
+.bn-activity-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.bn-activity-empty {
+  color: var(--bn-muted);
+}
+
 .bn-health-panel {
   display: grid;
   grid-template-columns: repeat(2, minmax(220px, 1fr));
@@ -540,6 +578,17 @@ body,
   border-radius: 8px;
   box-shadow: var(--bn-shadow);
   padding: 14px;
+}
+
+.bn-admin-access-panel,
+.bn-admin-pending-panel {
+  display: inline-block !important;
+  width: calc(50% - 8px) !important;
+  vertical-align: top;
+}
+
+.bn-admin-pending-panel {
+  margin-left: 12px !important;
 }
 
 .bn-media-panel .gradio-image,
@@ -720,6 +769,13 @@ select {
   .bn-admin-panel,
   .bn-panel {
     padding: 12px;
+  }
+
+  .bn-admin-access-panel,
+  .bn-admin-pending-panel {
+    display: block !important;
+    width: 100% !important;
+    margin-left: 0 !important;
   }
 }
 

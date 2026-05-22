@@ -9,11 +9,13 @@ import pytest
 from src.ui.app_factory import (
     _build_validation_report,
     _cleanup_selected_audio,
+    _advance_to_next_row_with_title,
     _extract_audio_id,
     _extract_detection_key,
     _find_detection_row_index,
     _fetch_selected_audio,
     _page_to_table,
+    _post_validation_queue_anchor,
     _save_selected_validation,
     _save_selected_validation_with_refresh,
     _reapply_last_conflict_validation_with_refresh,
@@ -425,6 +427,34 @@ def test_find_detection_row_index() -> None:
 
     assert _find_detection_row_index(rows, "dkey_01") == 1
     assert _find_detection_row_index(rows, "missing") == 0
+
+
+def test_post_validation_queue_anchor_keeps_next_row_when_saved_row_leaves_filtered_page() -> None:
+    rows = [["dkey_02", "audio_02"], ["dkey_03", "audio_03"]]
+
+    assert _post_validation_queue_anchor(rows, "dkey_01", previous_index=0) == -1
+    assert _post_validation_queue_anchor(rows, "dkey_02", previous_index=0) == 0
+
+
+def test_advance_to_next_row_wraps_after_last_selected_row() -> None:
+    service = FakeAudioService()
+    rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0],
+        ["dkey_02", "audio_02", "sp", 0.8, 1.0, 2.0],
+    ]
+
+    selected_index, audio_path, cache_key, _, _, title = _advance_to_next_row_with_title(
+        audio_service=service,
+        dataset_repo="org/dataset",
+        rows=rows,
+        selected_index=1,
+        cache_key="",
+    )
+
+    assert selected_index == 0
+    assert audio_path == "/tmp/audio_01.wav"
+    assert cache_key == "key:audio_01"
+    assert title == "### Segment spectrogram"
 
 
 def test_save_selected_validation_with_refresh_success() -> None:

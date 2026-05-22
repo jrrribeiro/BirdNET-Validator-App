@@ -1,6 +1,7 @@
 from src.ui.components import (
     admin_overview_html,
     coverage_bars_html,
+    paged_activity_html,
     project_overview_html,
     project_context_html,
     validation_queue_html,
@@ -35,6 +36,21 @@ def test_coverage_bars_html_renders_species_progress():
     assert "Tinamus major" in html
     assert "25.0%" in html
     assert "width:100.0%;" in html
+
+
+def test_paged_activity_html_limits_rows_and_reports_page():
+    html = paged_activity_html(
+        "Validator activity",
+        ["Validator", "Validations"],
+        [[f"validator-{index}", index] for index in range(12)],
+        page=2,
+        page_size=10,
+    )
+
+    assert "Validator activity" in html
+    assert "validator-10" in html
+    assert "validator-0" not in html
+    assert "Page 2/2" in html
 
 
 def test_project_context_html_renders_project_metadata():
