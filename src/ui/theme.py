@@ -586,6 +586,11 @@ body,
   background: #ffffff !important;
 }
 
+.bn-admin-panel > .styler,
+.bn-admin-panel .styler {
+  background: var(--bn-bg) !important;
+}
+
 .bn-admin-panel .block:has(button),
 .bn-admin-panel .form:has(button),
 .bn-report-panel .block:has(button),
