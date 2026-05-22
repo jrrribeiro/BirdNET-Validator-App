@@ -582,13 +582,63 @@ body,
 
 .bn-admin-access-panel,
 .bn-admin-pending-panel {
-  display: inline-block !important;
-  width: calc(50% - 8px) !important;
-  vertical-align: top;
+  width: 100% !important;
 }
 
-.bn-admin-pending-panel {
-  margin-left: 12px !important;
+.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) {
+  display: grid !important;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: start;
+  gap: 14px !important;
+}
+
+.column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) > :not(.bn-admin-access-panel):not(.bn-admin-pending-panel) {
+  grid-column: 1 / -1;
+}
+
+.bn-soft-action button,
+button.bn-soft-action {
+  min-height: 42px !important;
+  border: 1px solid #93c5fd !important;
+  border-radius: 8px !important;
+  background: #dbeafe !important;
+  color: #075985 !important;
+  font-weight: 760 !important;
+}
+
+.bn-soft-action button:hover,
+button.bn-soft-action:hover {
+  border-color: #60a5fa !important;
+  background: #bfdbfe !important;
+}
+
+.bn-delete-project-panel {
+  padding: 14px !important;
+  border: 1px solid #fecaca !important;
+  border-radius: 8px !important;
+  background: #fffafa !important;
+}
+
+.bn-delete-project-panel h3 {
+  margin: 0 0 10px 0 !important;
+  color: #991b1b !important;
+}
+
+.bn-delete-project-panel .bn-inline-hint {
+  margin-bottom: 12px;
+  border-radius: 8px;
+  background: #fff1f2;
+}
+
+.bn-delete-project-row {
+  align-items: flex-end !important;
+  gap: 12px !important;
+}
+
+.bn-delete-project-action button {
+  min-height: 54px !important;
+  border-radius: 8px !important;
+  font-weight: 790 !important;
 }
 
 .bn-media-panel .gradio-image,
@@ -776,6 +826,10 @@ select {
     display: block !important;
     width: 100% !important;
     margin-left: 0 !important;
+  }
+
+  .column:has(> .bn-admin-access-panel):has(> .bn-admin-pending-panel) {
+    grid-template-columns: 1fr;
   }
 }
 

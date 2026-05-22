@@ -2499,7 +2499,7 @@ def create_app() -> gr.Blocks:
                         interactive=False,
                         elem_classes=["bn-dataframe"],
                     )
-                    refresh_projects_btn = gr.Button("Refresh List")
+                    refresh_projects_btn = gr.Button("Refresh List", elem_classes=["bn-soft-action"])
 
                     gr.HTML("<div class='bn-spacer'></div>")
 
@@ -2538,7 +2538,6 @@ def create_app() -> gr.Blocks:
                         outputs=[projects_table],
                     )
 
-                    gr.HTML(inline_hint_html("Project tokens are optional. Use them only for private datasets or datasets that require owner-level access."))
                     gr.HTML(
                         section_header_html(
                             "Access",
@@ -2559,7 +2558,7 @@ def create_app() -> gr.Blocks:
                         )
                         token_clear_checkbox = gr.Checkbox(label="Clear token", value=False)
                     token_update_message = gr.Markdown()
-                    token_update_btn = gr.Button("Update Project Token")
+                    token_update_btn = gr.Button("Update Project Token", elem_classes=["bn-soft-action"])
 
                     def update_project_token(session, project_slug: str, new_token: str, clear_token: bool):
                         if session is None:
@@ -2597,15 +2596,15 @@ def create_app() -> gr.Blocks:
                     )
 
                     gr.HTML("<div class='bn-spacer'></div>")
-                    with gr.Group(elem_classes=["bn-panel-soft", "bn-danger-zone"]):
+                    with gr.Group(elem_classes=["bn-delete-project-panel"]):
                         gr.Markdown("### Delete project")
                         gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites. It does not delete the Hugging Face dataset.", "danger"))
-                        with gr.Row():
+                        with gr.Row(elem_classes=["bn-delete-project-row"]):
                             delete_project_slug = gr.Dropdown(
                                 choices=_project_slugs(),
                                 label="Project to delete",
                             )
-                            delete_project_btn = gr.Button("Delete Project", variant="stop")
+                            delete_project_btn = gr.Button("Delete Project", variant="stop", elem_classes=["bn-delete-project-action"])
                     delete_project_message = gr.Markdown()
 
                     def delete_project(session, project_slug: str):
@@ -2696,7 +2695,7 @@ def create_app() -> gr.Blocks:
                         )
 
                     admin_message = gr.Markdown()
-                    invite_btn = gr.Button("Send Invite")
+                    invite_btn = gr.Button("Send Invite", elem_classes=["bn-soft-action"])
 
                     def assign_user(session, username: str, project: str, role: str):
                         if session is None:
@@ -2777,8 +2776,8 @@ def create_app() -> gr.Blocks:
                         )
                         pending_invites_message = gr.Markdown()
                         with gr.Row():
-                            refresh_pending_invites_btn = gr.Button("Refresh pending invites")
-                            revoke_invite_btn = gr.Button("Revoke Invite")
+                            refresh_pending_invites_btn = gr.Button("Refresh pending invites", elem_classes=["bn-soft-action"])
+                            revoke_invite_btn = gr.Button("Revoke Invite", elem_classes=["bn-soft-action"])
 
                     def _pending_invites_rows(project_filter: str, session):
                         def _remaining_from_iso(iso_value: str) -> str:
@@ -2953,7 +2952,7 @@ def create_app() -> gr.Blocks:
                         "Project access is filtered by your role. Invitations can be accepted here before validation starts.",
                     )
                 )
-                project_overview = gr.HTML(value=project_overview_html([], []))
+                project_overview = gr.HTML(value=project_overview_html([], []), visible=False)
                 project_info_display = gr.Markdown(
                     value="Login first in the **Login** tab"
                 )
@@ -2968,10 +2967,10 @@ def create_app() -> gr.Blocks:
                 invitations_overview = gr.HTML(value=invite_panel_html(0))
                 invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
                 with gr.Row():
-                    refresh_invites_btn = gr.Button("Refresh invites")
-                    accept_invite_btn = gr.Button("Accept Invite", variant="primary")
-                    accept_all_invites_btn = gr.Button("Accept All")
-                    reject_invite_btn = gr.Button("Reject Invite")
+                    refresh_invites_btn = gr.Button("Refresh invites", elem_classes=["bn-soft-action"])
+                    accept_invite_btn = gr.Button("Accept Invite", elem_classes=["bn-soft-action"])
+                    accept_all_invites_btn = gr.Button("Accept All", elem_classes=["bn-soft-action"])
+                    reject_invite_btn = gr.Button("Reject Invite", elem_classes=["bn-soft-action"])
 
                 def update_project_selector(session):
                     """Update project dropdown when user logs in."""
@@ -3800,10 +3799,6 @@ def create_app() -> gr.Blocks:
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 )
                 table_select_event.then(
-                    fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
-                    inputs=[table, selected_index],
-                    outputs=[table],
-                ).then(
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
