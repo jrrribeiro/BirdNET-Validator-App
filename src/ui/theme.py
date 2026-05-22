@@ -586,6 +586,18 @@ body,
   background: #ffffff !important;
 }
 
+.bn-admin-panel .block:has(button),
+.bn-admin-panel .form:has(button),
+.bn-report-panel .block:has(button),
+.bn-report-panel .form:has(button),
+.bn-clean-button-row,
+.bn-clean-button-row .block,
+.bn-clean-button-row .form,
+.bn-clean-action,
+.bn-soft-action {
+  background: transparent !important;
+}
+
 .bn-card-body {
   border: 1px solid var(--bn-border) !important;
   border-radius: 8px !important;
@@ -620,6 +632,21 @@ button.bn-soft-action {
 
 .bn-soft-action button:hover,
 button.bn-soft-action:hover {
+  border-color: #60a5fa !important;
+  background: #bfdbfe !important;
+}
+
+.bn-clean-action button.secondary,
+button.bn-clean-action.secondary {
+  border: 1px solid #93c5fd !important;
+  border-radius: 8px !important;
+  background: #dbeafe !important;
+  color: #075985 !important;
+  font-weight: 760 !important;
+}
+
+.bn-clean-action button.secondary:hover,
+button.bn-clean-action.secondary:hover {
   border-color: #60a5fa !important;
   background: #bfdbfe !important;
 }
@@ -663,6 +690,24 @@ button.bn-soft-action:hover {
   min-height: 54px !important;
   border-radius: 8px !important;
   font-weight: 790 !important;
+}
+
+.bn-report-download-panel,
+.bn-report-download-panel .block,
+.bn-report-download-panel .form {
+  background: #ffffff !important;
+}
+
+.bn-report-download-panel {
+  margin-top: 12px;
+}
+
+.bn-autodownload-target {
+  position: absolute !important;
+  width: 1px !important;
+  height: 1px !important;
+  overflow: hidden !important;
+  clip-path: inset(50%) !important;
 }
 
 .bn-media-panel .gradio-image,

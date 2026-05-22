@@ -4421,7 +4421,7 @@ def create_app() -> gr.Blocks:
                     interactive=False,
                     allow_custom_value=True,
                 )
-                refresh_report_btn = gr.Button("Refresh dashboard", variant="primary")
+                refresh_report_btn = gr.Button("Refresh dashboard", variant="primary", elem_classes=["bn-clean-action"])
                 report_kpis = gr.HTML(value="")
                 report_coverage_bars = gr.HTML(value=coverage_bars_html([]))
                 report_validator_page = gr.State(value=1)
@@ -4429,17 +4429,17 @@ def create_app() -> gr.Blocks:
                 report_validator_table = gr.HTML(
                     value=paged_activity_html("Validator activity", ["Validator", "Validations"], []),
                 )
-                with gr.Row():
-                    report_validator_prev_btn = gr.Button("Previous validator page")
-                    report_validator_next_btn = gr.Button("Next validator page")
+                with gr.Row(elem_classes=["bn-clean-button-row"]):
+                    report_validator_prev_btn = gr.Button("Previous validator page", elem_classes=["bn-clean-action"])
+                    report_validator_next_btn = gr.Button("Next validator page", elem_classes=["bn-clean-action"])
                 report_recent_table = gr.HTML(
                     value=paged_activity_html("Recent activity", ["Timestamp", "Validator", "Status", "Detection"], []),
                 )
-                with gr.Row():
-                    report_recent_prev_btn = gr.Button("Previous recent page")
-                    report_recent_next_btn = gr.Button("Next recent page")
+                with gr.Row(elem_classes=["bn-clean-button-row"]):
+                    report_recent_prev_btn = gr.Button("Previous recent page", elem_classes=["bn-clean-action"])
+                    report_recent_next_btn = gr.Button("Next recent page", elem_classes=["bn-clean-action"])
                 report_status = gr.Markdown("")
-                with gr.Group(elem_classes=["bn-report-panel"]):
+                with gr.Group(elem_classes=["bn-report-panel", "bn-report-download-panel"]):
                     gr.HTML(
                         section_header_html(
                             "Download",
@@ -4448,13 +4448,19 @@ def create_app() -> gr.Blocks:
                             class_name="bn-panel-soft",
                         )
                     )
-                    with gr.Row():
-                        report_export_csv_btn = gr.Button("Download CSV", variant="primary")
-                        report_export_xlsx_btn = gr.Button("Download XLSX")
+                    with gr.Row(elem_classes=["bn-clean-button-row"]):
+                        report_export_csv_btn = gr.Button("Download CSV", variant="primary", elem_classes=["bn-clean-action"])
+                        report_export_xlsx_btn = gr.Button("Download XLSX", elem_classes=["bn-clean-action"])
                     report_export_status = gr.Markdown("")
-                    report_export_file = gr.File(
-                        label="Prepared file",
-                        interactive=False,
+                    report_export_csv_file = gr.DownloadButton(
+                        "Download prepared CSV",
+                        elem_id="bn-report-export-csv-download",
+                        elem_classes=["bn-autodownload-target"],
+                    )
+                    report_export_xlsx_file = gr.DownloadButton(
+                        "Download prepared XLSX",
+                        elem_id="bn-report-export-xlsx-download",
+                        elem_classes=["bn-autodownload-target"],
                     )
 
                 def _list_project_detections(project_slug: str) -> list[Detection]:
@@ -4664,15 +4670,23 @@ def create_app() -> gr.Blocks:
                     inputs=[report_project_selector, report_validator_page, report_recent_page],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
-                report_export_csv_btn.click(
+                report_export_csv_event = report_export_csv_btn.click(
                     fn=lambda project_slug, session: _prepare_report_export(project_slug, "csv", session),
                     inputs=[report_project_selector, session_state],
-                    outputs=[report_export_file, report_export_status],
+                    outputs=[report_export_csv_file, report_export_status],
                 )
-                report_export_xlsx_btn.click(
+                report_export_csv_event.then(
+                    fn=None,
+                    js="() => document.querySelector('#bn-report-export-csv-download button, #bn-report-export-csv-download')?.click()",
+                )
+                report_export_xlsx_event = report_export_xlsx_btn.click(
                     fn=lambda project_slug, session: _prepare_report_export(project_slug, "xlsx", session),
                     inputs=[report_project_selector, session_state],
-                    outputs=[report_export_file, report_export_status],
+                    outputs=[report_export_xlsx_file, report_export_status],
+                )
+                report_export_xlsx_event.then(
+                    fn=None,
+                    js="() => document.querySelector('#bn-report-export-xlsx-download button, #bn-report-export-xlsx-download')?.click()",
                 )
 
             # ===== TAB 6: Settings =====
