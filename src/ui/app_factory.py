@@ -4465,29 +4465,36 @@ def create_app() -> gr.Blocks:
                     report_recent_prev_btn = gr.Button("Previous recent page", elem_classes=["bn-clean-action"])
                     report_recent_next_btn = gr.Button("Next recent page", elem_classes=["bn-clean-action"])
                 report_status = gr.Markdown("")
-                with gr.Group(elem_classes=["bn-report-panel", "bn-report-download-panel"]):
-                    gr.HTML(
-                        section_header_html(
-                            "Download",
-                            "Complete validation dataset",
-                            "Export every detection with the validation fields already filled in for the selected project.",
-                            class_name="bn-panel-soft",
+                with gr.Column(elem_classes=["bn-report-download-section"]):
+                    with gr.Group(elem_classes=["bn-report-panel", "bn-report-download-panel"]):
+                        gr.HTML(
+                            section_header_html(
+                                "Download",
+                                "Complete validation dataset",
+                                "Export every detection with the validation fields already filled in for the selected project.",
+                                class_name="bn-panel-soft",
+                            )
                         )
-                    )
-                    with gr.Row(elem_classes=["bn-clean-button-row"]):
-                        report_export_csv_btn = gr.Button("Download CSV", variant="primary", elem_classes=["bn-clean-action"])
-                        report_export_xlsx_btn = gr.Button("Download XLSX", elem_classes=["bn-clean-action"])
-                    report_export_status = gr.Markdown("")
-                    report_export_csv_file = gr.DownloadButton(
-                        "Download prepared CSV",
-                        elem_id="bn-report-export-csv-download",
-                        elem_classes=["bn-autodownload-target"],
-                    )
-                    report_export_xlsx_file = gr.DownloadButton(
-                        "Download prepared XLSX",
-                        elem_id="bn-report-export-xlsx-download",
-                        elem_classes=["bn-autodownload-target"],
-                    )
+                        report_export_status = gr.Markdown("")
+                        report_export_csv_file = gr.DownloadButton(
+                            "Download prepared CSV",
+                            elem_id="bn-report-export-csv-download",
+                            elem_classes=["bn-autodownload-target"],
+                        )
+                        report_export_xlsx_file = gr.DownloadButton(
+                            "Download prepared XLSX",
+                            elem_id="bn-report-export-xlsx-download",
+                            elem_classes=["bn-autodownload-target"],
+                        )
+                    with gr.Row(elem_classes=["bn-report-download-action-row"]):
+                        report_export_csv_btn = gr.Button(
+                            "Download CSV",
+                            elem_classes=["bn-report-download-action", "bn-report-download-action-orange"],
+                        )
+                        report_export_xlsx_btn = gr.Button(
+                            "Download XLSX",
+                            elem_classes=["bn-report-download-action", "bn-report-download-action-blue"],
+                        )
 
                 def _list_project_detections(project_slug: str) -> list[Detection]:
                     if not project_slug:

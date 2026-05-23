@@ -16,7 +16,12 @@ APP_CSS = """
   --bn-shadow: 0 8px 24px rgba(20, 32, 51, 0.07);
 }
 
+html,
 body,
+gradio-app,
+main.app,
+.wrap,
+.contain,
 .gradio-container {
   background: var(--bn-bg) !important;
   color: var(--bn-text) !important;
@@ -737,6 +742,12 @@ button.bn-admin-action-red:hover {
   min-height: 54px !important;
 }
 
+.bn-report-download-section {
+  margin-top: 12px;
+  background: var(--bn-bg) !important;
+  gap: 8px !important;
+}
+
 .bn-report-download-panel,
 .bn-report-download-panel .block,
 .bn-report-download-panel .form {
@@ -744,7 +755,58 @@ button.bn-admin-action-red:hover {
 }
 
 .bn-report-download-panel {
-  margin-top: 12px;
+  box-shadow: none !important;
+}
+
+.bn-report-download-panel > .styler,
+.bn-report-download-panel .styler {
+  background: var(--bn-bg) !important;
+}
+
+.bn-report-download-section,
+.bn-report-download-action-row,
+.bn-report-download-action-row > *,
+.bn-report-download-action-row .block,
+.bn-report-download-action-row .form {
+  background: var(--bn-bg) !important;
+}
+
+div.row.bn-report-download-action-row {
+  background-color: var(--bn-bg) !important;
+  background-image: linear-gradient(var(--bn-bg), var(--bn-bg)) !important;
+}
+
+.bn-report-download-action button,
+button.bn-report-download-action {
+  min-height: 48px !important;
+  border-radius: 8px !important;
+  font-weight: 790 !important;
+}
+
+.bn-report-download-action-orange button,
+button.bn-report-download-action-orange {
+  border-color: #f97316 !important;
+  background: #f97316 !important;
+  color: #ffffff !important;
+}
+
+.bn-report-download-action-orange button:hover,
+button.bn-report-download-action-orange:hover {
+  border-color: #ea580c !important;
+  background: #ea580c !important;
+}
+
+.bn-report-download-action-blue button,
+button.bn-report-download-action-blue {
+  border-color: #93c5fd !important;
+  background: #dbeafe !important;
+  color: #075985 !important;
+}
+
+.bn-report-download-action-blue button:hover,
+button.bn-report-download-action-blue:hover {
+  border-color: #60a5fa !important;
+  background: #bfdbfe !important;
 }
 
 .bn-autodownload-target {
