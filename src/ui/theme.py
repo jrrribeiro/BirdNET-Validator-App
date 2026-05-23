@@ -591,6 +591,10 @@ body,
   background: var(--bn-bg) !important;
 }
 
+.bn-admin-panel {
+  box-shadow: none !important;
+}
+
 .bn-admin-panel .block:has(button),
 .bn-admin-panel .form:has(button),
 .bn-report-panel .block:has(button),
