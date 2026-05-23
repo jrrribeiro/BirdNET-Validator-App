@@ -4619,7 +4619,6 @@ def create_app() -> gr.Blocks:
                             ("Skipped", str(status_totals["skip"]), "not reviewed", ""),
                             ("Species touched", str(validated_species), "with validation", ""),
                             ("Validators", str(len(validator_totals)), "active in project", ""),
-                            ("Events", str(len(events)), "append-only log", ""),
                         ]
                     )
                     status_text = (
