@@ -193,3 +193,32 @@ def test_snapshot_filters_work_with_real_validation_data(tmp_path: Path) -> None
     assert filtered_rows[0][0] == "0000000000000002"
     assert filtered_rows[0][6] == "uncertain"
     assert "Shown: 1" in status
+
+
+def test_snapshot_filters_are_applied_before_pagination(tmp_path: Path) -> None:
+    project_slug = "demo-project"
+    queue_service, validation_repo, validation_service = _build_stack(tmp_path, project_slug)
+
+    _ = validation_service.validate_detection(
+        project_slug=project_slug,
+        detection_key="0000000000000002",
+        status="negative",
+        validator="validator-z",
+        expected_version=0,
+    )
+
+    filtered_rows, status, page = _page_to_table(
+        service=queue_service,
+        snapshot_reader=validation_repo,
+        project_slug=project_slug,
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
+        page_size=1,
+        status_filter="negative",
+    )
+
+    assert page == 1
+    assert len(filtered_rows) == 1
+    assert filtered_rows[0][0] == "0000000000000002"
+    assert "Filtered: 1" in status

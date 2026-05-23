@@ -4,7 +4,9 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
+import time
 import wave
 from collections.abc import Mapping
 from dataclasses import replace
@@ -72,6 +74,14 @@ class _ValidationReadRepositoryProtocol(Protocol):
 
 
 class _QueueServiceProtocol(Protocol):
+    def list_all_detections(
+        self,
+        project_slug: str,
+        scientific_name: str | None = None,
+        min_confidence: float | None = None,
+        max_confidence: float | None = None,
+    ) -> list[Detection]: ...
+
     def get_page(
         self,
         project_slug: str,
@@ -727,23 +737,15 @@ def _seed_service_for_projects(
     warnings: list[str] = []
 
     for project_slug in project_slugs:
-        project = (project_map or {}).get(project_slug)
-        dataset_items: list[Detection] = []
-        if project is not None and project.active:
-            dataset_items, dataset_warning = _load_dataset_detections_for_project(project, hf_token=hf_token)
-            if dataset_warning:
-                warnings.append(dataset_warning)
-
-        seeded_items = detected_by_project.get(project_slug, [])
-        if dataset_items:
-            items = dataset_items
-        elif seeded_items:
-            items = seeded_items
-        elif allow_demo_defaults:
-            items = _default_demo_detections(project_slug)
-        else:
-            items = []
-        items = sorted(items, key=lambda item: item.detection_key)
+        items, dataset_warning = _project_detection_items(
+            project_slug,
+            seed_detections_by_project=detected_by_project,
+            project_map=project_map,
+            allow_demo_defaults=allow_demo_defaults,
+            hf_token=hf_token,
+        )
+        if dataset_warning:
+            warnings.append(dataset_warning)
         repo.seed(project_slug, items)
 
     return DetectionQueueService(repo), warnings
@@ -921,6 +923,33 @@ def _parse_detection_rows(rows: object) -> list[Detection]:
             continue
 
     return parsed
+
+
+def _project_detection_items(
+    project_slug: str,
+    *,
+    seed_detections_by_project: dict[str, list[Detection]],
+    project_map: dict[str, Project] | None = None,
+    allow_demo_defaults: bool = True,
+    hf_token: str | None = None,
+) -> tuple[list[Detection], str]:
+    project = (project_map or {}).get(project_slug)
+    dataset_items: list[Detection] = []
+    dataset_warning = ""
+    if project is not None and project.active:
+        dataset_items, dataset_warning = _load_dataset_detections_for_project(project, hf_token=hf_token)
+
+    seeded_items = seed_detections_by_project.get(project_slug, [])
+    if dataset_items:
+        items = dataset_items
+    elif seeded_items:
+        items = seeded_items
+    elif allow_demo_defaults:
+        items = _default_demo_detections(project_slug)
+    else:
+        items = []
+
+    return sorted(items, key=lambda item: item.detection_key), dataset_warning
 
 
 def _default_projects() -> list[Project]:
@@ -1202,18 +1231,42 @@ def _page_to_table(
     show_conflicts_only: bool = False,
 ):
     filter_name = scientific_name.strip() if scientific_name.strip() else None
-    page_obj = service.get_page(
-        project_slug=project_slug,
-        page=page,
-        page_size=page_size,
-        scientific_name=filter_name,
-        min_confidence=min_confidence,
-    )
-
     snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
-
     normalized_status_filter = status_filter.strip().lower() if status_filter else "all"
     normalized_validator_filter = validator_filter.strip().lower()
+
+    list_all = getattr(service, "list_all_detections", None)
+    if callable(list_all):
+        items = list_all(
+            project_slug=project_slug,
+            scientific_name=filter_name,
+            min_confidence=min_confidence,
+            max_confidence=None,
+        )
+    else:
+        # Compatibility path for light test doubles. Real services expose
+        # list_all_detections so status/validator/date filters can be applied
+        # before pagination.
+        first_page = service.get_page(
+            project_slug=project_slug,
+            page=1,
+            page_size=page_size,
+            scientific_name=filter_name,
+            min_confidence=min_confidence,
+        )
+        items = list(getattr(first_page, "items", []))
+        next_page = 2
+        while bool(getattr(first_page, "has_next", False)):
+            first_page = service.get_page(
+                project_slug=project_slug,
+                page=next_page,
+                page_size=page_size,
+                scientific_name=filter_name,
+                min_confidence=min_confidence,
+            )
+            items.extend(list(getattr(first_page, "items", [])))
+            next_page += 1
+
     updated_after_date: date | None = None
     if updated_after is not None:
         if isinstance(updated_after, datetime):
@@ -1246,7 +1299,7 @@ def _page_to_table(
             "CONFLICT" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
             "HIGH" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
         ]
-        for item in page_obj.items
+        for item in items
     ]
 
     if normalized_validator_filter:
@@ -1277,10 +1330,20 @@ def _page_to_table(
     if show_conflicts_only:
         rows = [row for row in rows if str(row[8]) == "CONFLICT"]
 
-    status = f"Page {page_obj.page}/{page_obj.total_pages} | Base total: {page_obj.total_items} | Shown: {len(rows)}"
+    rows = _sort_rows_by_confidence_desc(rows)
+    filtered_total = len(rows)
+    total_pages = max(1, ((filtered_total - 1) // page_size) + 1) if filtered_total else 1
+    safe_page = max(1, min(int(page), total_pages))
+    start = (safe_page - 1) * page_size
+    page_rows = rows[start : start + page_size]
+
+    status = (
+        f"Page {safe_page}/{total_pages} | Base total: {len(items)} | "
+        f"Filtered: {filtered_total} | Shown: {len(page_rows)}"
+    )
     if show_conflicts_only:
-        status = f"{status} | Conflicts only: {len(rows)} item(ns)"
-    return rows, status, page_obj.page
+        status = f"{status} | Conflicts only: {filtered_total} item(ns)"
+    return page_rows, status, safe_page
 
 
 def _get_project_detection_count(service: _QueueServiceProtocol, project_slug: str) -> int:
@@ -2258,6 +2321,18 @@ _VALIDATION_EXPORT_STATE_COLUMNS = [
 ]
 
 _XLSX_EXPORT_MAX_DATA_ROWS = 1_048_575
+_VALIDATION_EXPORT_MAX_AGE_SECONDS = 6 * 60 * 60
+
+
+def _cleanup_old_validation_exports(max_age_seconds: int = _VALIDATION_EXPORT_MAX_AGE_SECONDS) -> None:
+    temp_root = Path(tempfile.gettempdir())
+    cutoff = time.time() - max_age_seconds
+    for export_dir in temp_root.glob("birdnet-validation-export-*"):
+        try:
+            if export_dir.is_dir() and export_dir.stat().st_mtime < cutoff:
+                shutil.rmtree(export_dir, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def _export_cell_value(value: object) -> object:
@@ -2353,6 +2428,8 @@ def _write_validation_export(
     normalized_format = file_format.lower().strip()
     if normalized_format not in {"csv", "xlsx"}:
         raise ValueError("Export format must be csv or xlsx")
+
+    _cleanup_old_validation_exports()
 
     safe_slug = re.sub(r"[^A-Za-z0-9_.-]+", "-", project_slug).strip("-") or "project"
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -2450,16 +2527,20 @@ def create_app() -> gr.Blocks:
                 project_map[slug] = project
         return project_map
 
-    queue_service, seed_warning = _build_detection_repository(
-        [project["project_slug"] for project in admin_manager.list_projects()],
-        seed_file_path=runtime_config.detection_seed_path,
-        project_map=_current_project_map(),
-        allow_demo_defaults=runtime_config.enable_demo_bootstrap,
-    )
+    seed_warning = _validate_seed_file(runtime_config.detection_seed_path)
+    seed_detections_by_project = _load_seed_detections(runtime_config.detection_seed_path)
+    detection_repository = InMemoryDetectionRepository()
+    queue_service = DetectionQueueService(detection_repository)
     service_ref: dict[str, DetectionQueueService] = {"queue": queue_service}
+    loaded_project_signatures: dict[str, str] = {}
+    loaded_project_warnings: dict[str, str] = {}
+    loaded_project_order: list[str] = []
+    max_loaded_projects = 3
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
     validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
     validation_service = ValidationService(validation_repository)
+    report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
+    report_cache_ttl_seconds = 30.0
 
     with gr.Blocks(title="BirdNET-Validator-App", css=APP_CSS, elem_classes=["bn-shell"]) as wrapper:
         gr.HTML(app_header_html(state_backend_message))
@@ -2525,16 +2606,87 @@ def create_app() -> gr.Blocks:
             refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
             return replace(refreshed, authorized_projects=list(refreshed.authorized_projects))
 
-        def _rebuild_queue_service(hf_token: str | None = None) -> str:
-            refreshed_service, refreshed_warning = _build_detection_repository(
-                _project_slugs(),
-                seed_file_path=runtime_config.detection_seed_path,
+        def _project_queue_signature(project_slug: str, token: str | None) -> str:
+            project = admin_manager.get_project(project_slug)
+            token_digest = hashlib.sha1((token or "").encode("utf-8")).hexdigest() if token else ""
+            seed_stamp = ""
+            if runtime_config.detection_seed_path:
+                seed_path = Path(runtime_config.detection_seed_path)
+                try:
+                    stat = seed_path.stat()
+                    seed_stamp = f"{stat.st_size}:{stat.st_mtime_ns}"
+                except OSError:
+                    seed_stamp = "missing"
+            payload = {
+                "project_slug": project_slug,
+                "dataset_repo_id": project.dataset_repo_id if project is not None else "",
+                "active": project.active if project is not None else False,
+                "dataset_token": token_digest,
+                "seed": seed_stamp,
+                "demo": runtime_config.enable_demo_bootstrap,
+            }
+            return hashlib.sha1(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+
+        def _touch_loaded_project(project_slug: str) -> None:
+            if project_slug in loaded_project_order:
+                loaded_project_order.remove(project_slug)
+            loaded_project_order.append(project_slug)
+            while len(loaded_project_order) > max_loaded_projects:
+                stale_slug = loaded_project_order.pop(0)
+                if stale_slug == project_slug:
+                    continue
+                detection_repository.remove_project(stale_slug)
+                loaded_project_signatures.pop(stale_slug, None)
+                loaded_project_warnings.pop(stale_slug, None)
+
+        def _invalidate_report_cache(project_slug: str | None = None) -> None:
+            if not project_slug:
+                report_cache.clear()
+                return
+            for cache_key in list(report_cache.keys()):
+                if cache_key[0] == project_slug:
+                    report_cache.pop(cache_key, None)
+
+        def _invalidate_project_queue(project_slug: str | None = None) -> None:
+            if project_slug:
+                detection_repository.remove_project(project_slug)
+                loaded_project_signatures.pop(project_slug, None)
+                loaded_project_warnings.pop(project_slug, None)
+                if project_slug in loaded_project_order:
+                    loaded_project_order.remove(project_slug)
+                _invalidate_report_cache(project_slug)
+                return
+
+            for loaded_slug in list(loaded_project_signatures.keys()):
+                detection_repository.remove_project(loaded_slug)
+            loaded_project_signatures.clear()
+            loaded_project_warnings.clear()
+            loaded_project_order.clear()
+            _invalidate_report_cache()
+
+        def _ensure_project_queue_loaded(project_slug: str, session, force: bool = False) -> str:
+            slug = (project_slug or "").strip()
+            if not slug:
+                return ""
+
+            token = _project_fetch_token(slug, session)
+            signature = _project_queue_signature(slug, token)
+            if not force and loaded_project_signatures.get(slug) == signature:
+                _touch_loaded_project(slug)
+                return loaded_project_warnings.get(slug, "")
+
+            items, warning = _project_detection_items(
+                slug,
+                seed_detections_by_project=seed_detections_by_project,
                 project_map=_project_map(),
                 allow_demo_defaults=runtime_config.enable_demo_bootstrap,
-                hf_token=hf_token,
+                hf_token=token,
             )
-            service_ref["queue"] = refreshed_service
-            return refreshed_warning
+            detection_repository.seed(slug, items)
+            loaded_project_signatures[slug] = signature
+            loaded_project_warnings[slug] = warning
+            _touch_loaded_project(slug)
+            return warning
 
         def _persist_admin_state() -> tuple[bool, str]:
             try:
@@ -2727,7 +2879,8 @@ def create_app() -> gr.Blocks:
                         # Project creator is always admin of the project.
                         auth_service.upsert_user_project_role(session.username, slug, Role.admin)
                         persisted, persist_error = _persist_admin_state()
-                        refreshed_warning = _rebuild_queue_service()
+                        _invalidate_project_queue(slug)
+                        refreshed_warning = ""
                         refreshed_session = _refresh_session_copy(session)
                         admin_projects = _admin_projects_for_session(refreshed_session)
 
@@ -2838,9 +2991,8 @@ def create_app() -> gr.Blocks:
                         if not persisted:
                             message = f"{message} | Persistence failed: {persist_error}"
 
-                        refreshed_warning = _rebuild_queue_service()
-                        if refreshed_warning:
-                            message = f"{message} | {refreshed_warning}"
+                        _invalidate_project_queue(project_slug)
+                        refreshed_warning = ""
 
                         return message, gr.update(value=""), gr.update(value=False), _project_rows(), refreshed_warning
 
@@ -2864,7 +3016,8 @@ def create_app() -> gr.Blocks:
                     if not persisted:
                         msg = f"{msg} | Persistence failed: {persist_error}"
 
-                    refreshed_warning = _rebuild_queue_service()
+                    _invalidate_project_queue(project_slug)
+                    refreshed_warning = ""
                     refreshed_session = _refresh_session_copy(session)
 
                     admin_projects = _admin_projects_for_session(refreshed_session)
@@ -3758,7 +3911,7 @@ def create_app() -> gr.Blocks:
                     if not project_slug:
                         return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
 
-                    warning = _rebuild_queue_service(_session_hf_token(session))
+                    warning = _ensure_project_queue_loaded(project_slug, session)
 
                     species_options = _extract_species_options_from_queue(
                         queue_service=service_ref["queue"],
@@ -3801,7 +3954,7 @@ def create_app() -> gr.Blocks:
                     validator_name_value = _validator_name_from_session(session)
                     if not validator_name_value:
                         return "Login before validating", cache_key, None, rows, page, idx, "", ""
-                    return _save_selected_validation_with_refresh(
+                    result = _save_selected_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
                         queue_service=service_ref["queue"],
@@ -3822,6 +3975,8 @@ def create_app() -> gr.Blocks:
                         updated_after=updated_after_value,
                         show_conflicts_only=bool(only_conflicts),
                     )
+                    _invalidate_report_cache(project_slug)
+                    return result
 
                 def reapply_for_project(
                     project_slug: str,
@@ -3842,7 +3997,7 @@ def create_app() -> gr.Blocks:
                 ):
                     if not project_slug:
                         return "Select a project before reapplying", cache_key, None, rows, page, idx, pending_status, conflict_key
-                    return _reapply_last_conflict_validation_with_refresh(
+                    result = _reapply_last_conflict_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
                         queue_service=service_ref["queue"],
@@ -3863,6 +4018,8 @@ def create_app() -> gr.Blocks:
                         updated_after=updated_after_value,
                         show_conflicts_only=bool(only_conflicts),
                     )
+                    _invalidate_report_cache(project_slug)
+                    return result
 
                 def batch_for_project(
                     project_slug: str,
@@ -3880,7 +4037,7 @@ def create_app() -> gr.Blocks:
                 ):
                     if not project_slug:
                         return "Select a project before validating", cache_key, None, rows, page
-                    return _batch_validate_conflicts(
+                    result = _batch_validate_conflicts(
                         validation_service=validation_service,
                         audio_service=audio_service,
                         queue_service=service_ref["queue"],
@@ -3898,6 +4055,8 @@ def create_app() -> gr.Blocks:
                         status_filter=status_filter_value,
                         updated_after=updated_after_value,
                     )
+                    _invalidate_report_cache(project_slug)
+                    return result
 
                 def build_report_for_project(project_slug: str) -> str:
                     if not project_slug:
@@ -4500,9 +4659,10 @@ def create_app() -> gr.Blocks:
                             elem_classes=["bn-report-download-action", "bn-report-download-action-blue"],
                         )
 
-                def _list_project_detections(project_slug: str) -> list[Detection]:
+                def _list_project_detections(project_slug: str, session=None) -> list[Detection]:
                     if not project_slug:
                         return []
+                    _ensure_project_queue_loaded(project_slug, session)
                     return service_ref["queue"].list_all_detections(project_slug=project_slug)
 
                 def _prepare_report_export(project_slug: str, file_format: str, session):
@@ -4513,7 +4673,7 @@ def create_app() -> gr.Blocks:
                         return None, "Choose an authorized project before exporting."
 
                     project = _project_map().get(slug)
-                    items = _list_project_detections(slug)
+                    items = _list_project_detections(slug, session)
                     if not items:
                         return None, f"Project '{slug}' has no detections loaded for export."
 
@@ -4538,8 +4698,16 @@ def create_app() -> gr.Blocks:
                         ),
                     )
 
-                def _render_report_dashboard(project_slug: str, validator_page: int = 1, recent_page: int = 1):
+                def _render_report_dashboard(project_slug: str, validator_page: int = 1, recent_page: int = 1, session=None):
                     slug = (project_slug or "").strip()
+                    try:
+                        validator_page = max(1, int(validator_page or 1))
+                    except (TypeError, ValueError):
+                        validator_page = 1
+                    try:
+                        recent_page = max(1, int(recent_page or 1))
+                    except (TypeError, ValueError):
+                        recent_page = 1
                     if not slug:
                         return (
                             "",
@@ -4551,7 +4719,14 @@ def create_app() -> gr.Blocks:
                             "Select a project to view the dashboard",
                         )
 
-                    items = _list_project_detections(slug)
+                    warning = _ensure_project_queue_loaded(slug, session)
+                    signature = loaded_project_signatures.get(slug, "")
+                    cache_key = (slug, validator_page, recent_page, signature)
+                    cached = report_cache.get(cache_key)
+                    if cached and time.monotonic() - cached[0] <= report_cache_ttl_seconds:
+                        return cached[1]
+
+                    items = service_ref["queue"].list_all_detections(project_slug=slug)
                     snapshot = validation_repository.load_current_snapshot(project_slug=slug)
                     events = validation_repository.list_events(project_slug=slug)
                     total_recordings = len(items)
@@ -4625,7 +4800,9 @@ def create_app() -> gr.Blocks:
                         f"Project: **{slug}** | Total recordings: **{total_recordings}** | "
                         f"Validated: **{validated_recordings}** | Remaining: **{remaining_recordings}**"
                     )
-                    return (
+                    if warning:
+                        status_text = f"{status_text}\n\n{warning}"
+                    result = (
                         kpis_html,
                         coverage_bars_html(rows),
                         paged_activity_html(
@@ -4644,6 +4821,8 @@ def create_app() -> gr.Blocks:
                         recent_page,
                         status_text,
                     )
+                    report_cache[cache_key] = (time.monotonic(), result)
+                    return result
 
                 session_state.change(
                     fn=lambda s: (
@@ -4665,8 +4844,8 @@ def create_app() -> gr.Blocks:
                 )
 
                 report_project_selector.change(
-                    fn=lambda project_slug: _render_report_dashboard(project_slug, 1, 1),
-                    inputs=[report_project_selector],
+                    fn=lambda project_slug, session: _render_report_dashboard(project_slug, 1, 1, session),
+                    inputs=[report_project_selector, session_state],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
 
@@ -4675,35 +4854,35 @@ def create_app() -> gr.Blocks:
                     inputs=[selected_project_state],
                     outputs=[report_project_selector],
                 ).then(
-                    fn=lambda project_slug: _render_report_dashboard(project_slug, 1, 1),
-                    inputs=[selected_project_state],
+                    fn=lambda project_slug, session: _render_report_dashboard(project_slug, 1, 1, session),
+                    inputs=[selected_project_state, session_state],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
 
                 refresh_report_btn.click(
                     fn=_render_report_dashboard,
-                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    inputs=[report_project_selector, report_validator_page, report_recent_page, session_state],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
 
                 report_validator_prev_btn.click(
-                    fn=lambda project_slug, page, recent: _render_report_dashboard(project_slug, max(1, int(page) - 1), int(recent)),
-                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    fn=lambda project_slug, page, recent, session: _render_report_dashboard(project_slug, max(1, int(page) - 1), int(recent), session),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page, session_state],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
                 report_validator_next_btn.click(
-                    fn=lambda project_slug, page, recent: _render_report_dashboard(project_slug, int(page) + 1, int(recent)),
-                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    fn=lambda project_slug, page, recent, session: _render_report_dashboard(project_slug, int(page) + 1, int(recent), session),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page, session_state],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
                 report_recent_prev_btn.click(
-                    fn=lambda project_slug, validator, page: _render_report_dashboard(project_slug, int(validator), max(1, int(page) - 1)),
-                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    fn=lambda project_slug, validator, page, session: _render_report_dashboard(project_slug, int(validator), max(1, int(page) - 1), session),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page, session_state],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
                 report_recent_next_btn.click(
-                    fn=lambda project_slug, validator, page: _render_report_dashboard(project_slug, int(validator), int(page) + 1),
-                    inputs=[report_project_selector, report_validator_page, report_recent_page],
+                    fn=lambda project_slug, validator, page, session: _render_report_dashboard(project_slug, int(validator), int(page) + 1, session),
+                    inputs=[report_project_selector, report_validator_page, report_recent_page, session_state],
                     outputs=[report_kpis, report_coverage_bars, report_validator_table, report_recent_table, report_validator_page, report_recent_page, report_status],
                 )
                 report_export_csv_event = report_export_csv_btn.click(

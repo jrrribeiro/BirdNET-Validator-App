@@ -11,6 +11,14 @@ class InMemoryDetectionRepository:
     def seed(self, project_slug: str, detections: list[Detection]) -> None:
         self._project_items[project_slug] = list(detections)
 
+    def remove_project(self, project_slug: str) -> None:
+        self._project_items.pop(project_slug, None)
+
+    def keep_only(self, project_slugs: set[str]) -> None:
+        for project_slug in list(self._project_items.keys()):
+            if project_slug not in project_slugs:
+                self.remove_project(project_slug)
+
     def list_detections(
         self,
         project_slug: str,
