@@ -3484,7 +3484,7 @@ def create_app() -> gr.Blocks:
                 gr.HTML(
                     section_header_html(
                         "Validation workbench",
-                        "Review audio segments with less friction",
+                        "Review audio segments",
                         "Load a project, listen to the current segment, review the spectrogram, and keep the queue moving with clear status actions.",
                     )
                 )
@@ -4447,7 +4447,11 @@ def create_app() -> gr.Blocks:
                     interactive=False,
                     allow_custom_value=True,
                 )
-                refresh_report_btn = gr.Button("Refresh dashboard", variant="primary", elem_classes=["bn-clean-action"])
+                refresh_report_btn = gr.Button(
+                    "Refresh dashboard",
+                    variant="primary",
+                    elem_classes=["bn-clean-action", "bn-orange-action"],
+                )
                 report_kpis = gr.HTML(value="")
                 report_coverage_bars = gr.HTML(value=coverage_bars_html([]))
                 report_validator_page = gr.State(value=1)
@@ -4733,7 +4737,10 @@ def create_app() -> gr.Blocks:
                 )
                 settings_health = gr.HTML(value="")
                 settings_status = gr.Markdown(value="")
-                refresh_settings_btn = gr.Button("Refresh health")
+                refresh_settings_btn = gr.Button(
+                    "Refresh health",
+                    elem_classes=["bn-orange-action"],
+                )
 
                 def _render_settings_health():
                     backend = (runtime_config.state_backend or "filesystem").strip().lower()

@@ -692,6 +692,23 @@ button.bn-clean-action.secondary:hover {
   background: #bfdbfe !important;
 }
 
+.bn-orange-action button,
+button.bn-orange-action {
+  min-height: 42px !important;
+  border: 1px solid #f97316 !important;
+  border-radius: 8px !important;
+  background: #f97316 !important;
+  color: #ffffff !important;
+  font-weight: 760 !important;
+}
+
+.bn-orange-action button:hover,
+button.bn-orange-action:hover {
+  border-color: #ea580c !important;
+  background: #ea580c !important;
+  color: #ffffff !important;
+}
+
 .bn-admin-action button,
 button.bn-admin-action {
   min-height: 48px !important;
