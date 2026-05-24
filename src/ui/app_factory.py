@@ -38,6 +38,7 @@ from src.services.hf_project_state_store import (
     HF_PROJECT_STATE_SCHEMA_VERSION,
     HfProjectStateStoreError,
     HfProjectStateStoreInitializer,
+    HfProjectStateStoreSync,
 )
 from src.services.validation_service import ValidationService
 from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
@@ -2783,11 +2784,17 @@ def create_app() -> gr.Blocks:
     validation_repository = ProjectAwareValidationRepository(
         fallback_repository=base_validation_repository,
         project_lookup=admin_manager.get_project,
-        token_provider=lambda project: (project.dataset_token or "").strip() or _env_hf_token(),
+        token_provider=lambda project: (
+            (project.dataset_token or "").strip()
+            or (auth_service.get_hf_token_for_user((project.owner_username or "").strip()) or "").strip()
+            or (_env_hf_token() or "").strip()
+            or None
+        ),
         enable_hf_project_state=runtime_config.hf_project_state_writes_enabled,
     )
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
+    hf_state_sync = HfProjectStateStoreSync()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
     report_cache_ttl_seconds = 30.0
 
@@ -2937,7 +2944,82 @@ def create_app() -> gr.Blocks:
             _touch_loaded_project(slug)
             return warning
 
-        def _persist_admin_state(allowed_removed_project_slugs: set[str] | None = None) -> tuple[bool, str]:
+        def _project_state_write_token(project: Project, session=None) -> str | None:
+            session_username = str(getattr(session, "username", "") or "").strip()
+            session_token = auth_service.get_hf_token_for_user(session_username) if session_username else None
+            owner_username = (project.owner_username or "").strip()
+            owner_token = auth_service.get_hf_token_for_user(owner_username) if owner_username else None
+            return (
+                (session_token or "").strip()
+                or (project.dataset_token or "").strip()
+                or (owner_token or "").strip()
+                or (_env_hf_token() or "").strip()
+                or None
+            )
+
+        def _sync_hf_admin_state(
+            *,
+            session=None,
+            sync_project_slugs: set[str] | None = None,
+            archived_projects: list[Project] | None = None,
+        ) -> list[str]:
+            if not runtime_config.hf_project_state_writes_enabled:
+                return []
+
+            user_access = auth_service.export_user_access_map(include_inactive=True)
+            pending_invites = auth_service.export_pending_invites_map()
+            target_slugs = {
+                slug.strip()
+                for slug in (sync_project_slugs or set())
+                if slug and slug.strip()
+            }
+            active_projects: list[Project] = []
+            for project_row in admin_manager.list_projects():
+                slug = str(project_row.get("project_slug") or "").strip()
+                if target_slugs and slug not in target_slugs:
+                    continue
+                project = admin_manager.get_project(slug)
+                if project is None:
+                    continue
+                if (project.state_backend or "").strip() != HF_PROJECT_STATE_BACKEND:
+                    continue
+                active_projects.append(project)
+
+            archived_targets = [
+                project
+                for project in (archived_projects or [])
+                if (project.state_backend or "").strip() == HF_PROJECT_STATE_BACKEND
+            ]
+
+            errors: list[str] = []
+            actor_username = str(getattr(session, "username", "") or "").strip()
+            for project in [*active_projects, *archived_targets]:
+                token = _project_state_write_token(project, session=session)
+                if not token:
+                    errors.append(
+                        f"{project.project_slug}: missing HF token with write access to {project.state_repo_id or project.dataset_repo_id}"
+                    )
+                    continue
+                try:
+                    hf_state_sync.sync_project_state(
+                        project=project,
+                        user_access=user_access,
+                        pending_invites=pending_invites,
+                        token=token,
+                        actor_username=actor_username,
+                        archived=project in archived_targets,
+                    )
+                except Exception as exc:
+                    errors.append(f"{project.project_slug}: {exc}")
+            return errors
+
+        def _persist_admin_state(
+            allowed_removed_project_slugs: set[str] | None = None,
+            *,
+            session=None,
+            sync_project_slugs: set[str] | None = None,
+            archived_projects: list[Project] | None = None,
+        ) -> tuple[bool, str]:
             try:
                 _persist_bootstrap_state(
                     projects_path=projects_file_path,
@@ -2948,6 +3030,13 @@ def create_app() -> gr.Blocks:
                     state_store=state_store,
                     allowed_removed_project_slugs=allowed_removed_project_slugs,
                 )
+                sync_errors = _sync_hf_admin_state(
+                    session=session,
+                    sync_project_slugs=sync_project_slugs,
+                    archived_projects=archived_projects,
+                )
+                if sync_errors:
+                    return False, "HF project-state sync failed: " + " | ".join(sync_errors)
                 return True, ""
             except Exception as exc:
                 return False, str(exc)
@@ -3184,7 +3273,10 @@ def create_app() -> gr.Blocks:
 
                         # Project creator is always admin of the project.
                         auth_service.upsert_user_project_role(session.username, slug, Role.admin)
-                        persisted, persist_error = _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={slug},
+                        )
                         _invalidate_project_queue(slug)
                         refreshed_warning = ""
                         refreshed_session = _refresh_session_copy(session)
@@ -3293,7 +3385,10 @@ def create_app() -> gr.Blocks:
                             project.dataset_token = candidate
                             message = f"Project token updated for {project_slug}"
 
-                        persisted, persist_error = _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={project_slug},
+                        )
                         if not persisted:
                             message = f"{message} | Persistence failed: {persist_error}"
 
@@ -3314,11 +3409,22 @@ def create_app() -> gr.Blocks:
                     if not _is_admin_for_project(session, project_slug):
                         return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
 
+                    project_to_archive = admin_manager.get_project(project_slug)
+                    archived_project = (
+                        project_to_archive.model_copy(update={"active": False, "state_status": "archived"})
+                        if project_to_archive is not None
+                        else None
+                    )
                     success, msg = admin_manager.delete_project(session.username, project_slug)
                     if not success:
                         return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
 
-                    persisted, persist_error = _persist_admin_state(allowed_removed_project_slugs={project_slug})
+                    persisted, persist_error = _persist_admin_state(
+                        allowed_removed_project_slugs={project_slug},
+                        session=session,
+                        sync_project_slugs={project_slug},
+                        archived_projects=[archived_project] if archived_project is not None else [],
+                    )
                     if not persisted:
                         msg = f"{msg} | Persistence failed: {persist_error}"
 
@@ -3442,7 +3548,10 @@ def create_app() -> gr.Blocks:
                             role,
                         )
                         if success:
-                            persisted, persist_error = _persist_admin_state()
+                            persisted, persist_error = _persist_admin_state(
+                                session=session,
+                                sync_project_slugs={project},
+                            )
                             final_message = msg if persisted else f"{msg} | Persistence failed: {persist_error}"
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
@@ -3471,7 +3580,10 @@ def create_app() -> gr.Blocks:
                             role=role,
                         )
                         if success:
-                            persisted, persist_error = _persist_admin_state()
+                            persisted, persist_error = _persist_admin_state(
+                                session=session,
+                                sync_project_slugs={project},
+                            )
                             final_message = msg if persisted else f"{msg} | Persistence failed: {persist_error}"
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
@@ -3588,7 +3700,10 @@ def create_app() -> gr.Blocks:
                             return "Access denied. You must be admin of the selected project.", _pending_invites_rows(project_filter, session)
                         success, msg = admin_manager.revoke_invite(username=username, project_slug=project_slug)
                         if success:
-                            persisted, persist_error = _persist_admin_state()
+                            persisted, persist_error = _persist_admin_state(
+                                session=session,
+                                sync_project_slugs={project_slug},
+                            )
                             if not persisted:
                                 msg = f"{msg} | Persistence failed: {persist_error}"
                         return msg, _pending_invites_rows(project_filter, session)
@@ -3826,7 +3941,12 @@ def create_app() -> gr.Blocks:
                     success, message = auth_service.accept_project_invite(session.username, project_slug)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if success:
-                        _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={project_slug},
+                        )
+                        if not persisted:
+                            message = f"{message} | Persistence failed: {persist_error}"
                     return message, refreshed
 
                 def _reject_invite(session, selected_option: str):
@@ -3838,16 +3958,29 @@ def create_app() -> gr.Blocks:
                     success, message = auth_service.reject_project_invite(session.username, project_slug)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if success:
-                        _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={project_slug},
+                        )
+                        if not persisted:
+                            message = f"{message} | Persistence failed: {persist_error}"
                     return message, refreshed
 
                 def _accept_all_invites(session):
                     if session is None:
                         return "Login first", session
+                    invited_project_slugs = {
+                        invite.project_slug for invite in auth_service.list_pending_invites(session.username)
+                    }
                     accepted, failed, message = auth_service.accept_all_project_invites(session.username)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if accepted > 0:
-                        _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs=invited_project_slugs,
+                        )
+                        if not persisted:
+                            message = f"{message} | Persistence failed: {persist_error}"
                     detail = f"{message}"
                     if failed:
                         detail = f"{detail} | failed={failed}"

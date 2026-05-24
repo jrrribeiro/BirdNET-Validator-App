@@ -7,6 +7,7 @@ from src.services.hf_project_state_store import (
     HF_PROJECT_STATE_BACKEND,
     HfProjectStateStoreError,
     HfProjectStateStoreInitializer,
+    HfProjectStateStoreSync,
     default_state_repo_id,
 )
 
@@ -136,3 +137,91 @@ def test_initialize_requires_token() -> None:
 
     with pytest.raises(HfProjectStateStoreError):
         initializer.initialize(project=_project(), creator_username="jrrribeiro", token="")
+
+
+def test_sync_project_state_writes_project_acl_and_invites_without_token_values() -> None:
+    fake_api = FakeHfProjectStateApi()
+    sync = HfProjectStateStoreSync(api=fake_api)
+    project = _project()
+    project.state_repo_id = "jrrribeiro/upload_test2_state"
+    project.state_backend = HF_PROJECT_STATE_BACKEND
+    project.dataset_token = "hf_should_not_be_serialized"
+
+    result = sync.sync_project_state(
+        project=project,
+        user_access={
+            "jrrribeiro": {"upload-test2": "admin"},
+            "validator-a": {"upload-test2": "validator"},
+            "other": {"another-project": "admin"},
+        },
+        pending_invites={
+            "validator-b": {
+                "upload-test2": {
+                    "role": "validator",
+                    "invited_by": "jrrribeiro",
+                    "created_at": "2026-05-24T12:00:00+00:00",
+                    "expires_at": "2026-05-25T12:00:00+00:00",
+                    "username": "validator-b",
+                    "invitee_email": "",
+                }
+            },
+            "other": {"another-project": {"role": "validator"}},
+        },
+        token="hf_write",
+        actor_username="jrrribeiro",
+    )
+
+    assert result.state_repo_id == "jrrribeiro/upload_test2_state"
+    commit = fake_api.commits[0]
+    assert commit["repo_id"] == "jrrribeiro/upload_test2_state"
+    paths = [operation.path_in_repo for operation in commit["operations"]]
+    assert paths == ["project.json", "acl.json", "invites.json"]
+    project_payload = json.loads(commit["operations"][0].path_or_fileobj.decode("utf-8"))
+    acl_payload = json.loads(commit["operations"][1].path_or_fileobj.decode("utf-8"))
+    invites_payload = json.loads(commit["operations"][2].path_or_fileobj.decode("utf-8"))
+    serialized = json.dumps([project_payload, acl_payload, invites_payload])
+    assert "hf_should_not_be_serialized" not in serialized
+    assert sorted(acl_payload["users"]) == ["jrrribeiro", "validator-a"]
+    assert acl_payload["users"]["validator-a"]["role"] == "validator"
+    assert sorted(invites_payload["pending"]) == ["validator-b"]
+
+
+def test_sync_project_state_archives_without_deleting_validation_files() -> None:
+    fake_api = FakeHfProjectStateApi()
+    sync = HfProjectStateStoreSync(api=fake_api)
+    project = _project()
+    project.state_repo_id = "jrrribeiro/upload_test2_state"
+    project.active = False
+
+    sync.sync_project_state(
+        project=project,
+        user_access={"jrrribeiro": {"upload-test2": "admin"}},
+        pending_invites={"validator-b": {"upload-test2": {"role": "validator"}}},
+        token="hf_write",
+        actor_username="jrrribeiro",
+        archived=True,
+    )
+
+    commit = fake_api.commits[0]
+    paths = [operation.path_in_repo for operation in commit["operations"]]
+    assert paths == ["project.json", "acl.json", "invites.json"]
+    project_payload = json.loads(commit["operations"][0].path_or_fileobj.decode("utf-8"))
+    acl_payload = json.loads(commit["operations"][1].path_or_fileobj.decode("utf-8"))
+    invites_payload = json.loads(commit["operations"][2].path_or_fileobj.decode("utf-8"))
+    assert project_payload["active"] is False
+    assert project_payload["state_status"] == "archived"
+    assert "archived_at" in project_payload
+    assert acl_payload["users"] == {}
+    assert invites_payload["pending"] == {}
+
+
+def test_sync_project_state_requires_token() -> None:
+    sync = HfProjectStateStoreSync(api=FakeHfProjectStateApi())
+
+    with pytest.raises(HfProjectStateStoreError):
+        sync.sync_project_state(
+            project=_project(),
+            user_access={},
+            pending_invites={},
+            token="",
+        )

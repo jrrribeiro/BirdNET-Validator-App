@@ -750,3 +750,36 @@ Validation:
 1. `pytest tests\unit\test_hf_project_state_validation_repository.py tests\unit\test_project_aware_validation_repository.py tests\unit\test_runtime_config.py tests\unit\test_hf_project_state_store.py -q`: passed.
 2. `python -m compileall app.py src`: passed.
 
+### 2026-05-24: HF project-state administrative sync
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added project-owned administrative state sync.
+   - `project.json` stores the project manifest.
+   - `acl.json` stores project-scoped admins and validators.
+   - `invites.json` stores pending invites for the project.
+
+2. Added safety boundaries for admin-state sync.
+   - Dataset/project tokens are not serialized into the `_state` repo.
+   - Sync is filtered by project and does not include users/invites from other projects.
+   - Sync only writes `project.json`, `acl.json`, and `invites.json`.
+   - Validation history under `events/` and `snapshots/` is never deleted or rewritten by admin sync.
+
+3. Connected admin workflows to the `_state` repo when HF project-state writes are enabled.
+   - Project creation.
+   - Project token updates.
+   - Project archival/deletion from the workspace.
+   - Direct user assignment.
+   - Invite creation.
+   - Invite revocation.
+   - Invite acceptance/rejection.
+
+4. Added safe archive behavior.
+   - Deleting a project from the validator workspace does not delete the HF audio dataset or the `_state` repo.
+   - The `_state` manifest is marked archived and ACL/invites are cleared while validation history remains intact.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_admin_panel_manager.py tests\unit\test_project_aware_validation_repository.py tests\unit\test_hf_project_state_validation_repository.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+

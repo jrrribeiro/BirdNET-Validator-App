@@ -64,6 +64,12 @@ class HfProjectStateStoreInitResult:
     reused_existing: bool
 
 
+@dataclass(frozen=True)
+class HfProjectStateStoreSyncResult:
+    state_repo_id: str
+    synced_paths: list[str]
+
+
 def default_state_repo_id(dataset_repo_id: str) -> str:
     repo_id = (dataset_repo_id or "").strip().strip("/")
     if "/" not in repo_id:
@@ -80,17 +86,30 @@ def default_state_repo_id(dataset_repo_id: str) -> str:
     return f"{namespace}/{state_name}"
 
 
-def _project_json(project: Project, state_repo_id: str, created_at: str) -> dict[str, object]:
+def _project_json(
+    project: Project,
+    state_repo_id: str,
+    created_at: str,
+    *,
+    updated_at: str | None = None,
+    archived_at: str | None = None,
+) -> dict[str, object]:
     return {
         "schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
+        "project_id": project.project_id,
         "project_slug": project.project_slug,
         "project_name": project.name,
         "dataset_repo_id": project.dataset_repo_id,
         "state_backend": HF_PROJECT_STATE_BACKEND,
         "state_ref": state_repo_id,
+        "state_schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
+        "state_status": "archived" if archived_at else "ready",
         "owner_username": project.owner_username,
         "visibility": project.visibility,
+        "active": bool(project.active) and archived_at is None,
         "created_at": created_at,
+        "updated_at": updated_at or created_at,
+        **({"archived_at": archived_at} if archived_at else {}),
     }
 
 
@@ -122,6 +141,69 @@ def _readme(project: Project, state_repo_id: str) -> str:
         "and future recovery artifacts for the validator app. It should remain private "
         "unless the project admin intentionally changes the visibility policy.\n"
     )
+
+
+def _json_bytes(payload: object) -> bytes:
+    return json.dumps(payload, ensure_ascii=True, indent=2, sort_keys=True).encode("utf-8")
+
+
+def _acl_from_access_map(
+    *,
+    project: Project,
+    user_access: dict[str, dict[str, str]],
+    updated_at: str,
+    actor_username: str,
+) -> dict[str, object]:
+    users: dict[str, dict[str, object]] = {}
+    for username, roles_by_project in sorted((user_access or {}).items()):
+        if not isinstance(roles_by_project, dict):
+            continue
+        role = str(roles_by_project.get(project.project_slug) or "").strip().lower()
+        if role not in {Role.admin.value, Role.validator.value}:
+            continue
+        users[str(username)] = {
+            "role": role,
+            "active": True,
+            "updated_at": updated_at,
+            "updated_by": actor_username or None,
+        }
+
+    return {
+        "schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
+        "project_slug": project.project_slug,
+        "updated_at": updated_at,
+        "users": users,
+    }
+
+
+def _invites_from_invite_map(
+    *,
+    project: Project,
+    pending_invites: dict[str, dict[str, dict[str, str]]],
+    updated_at: str,
+) -> dict[str, object]:
+    pending: dict[str, dict[str, object]] = {}
+    for invite_key, invites_by_project in sorted((pending_invites or {}).items()):
+        if not isinstance(invites_by_project, dict):
+            continue
+        invite = invites_by_project.get(project.project_slug)
+        if not isinstance(invite, dict):
+            continue
+        pending[str(invite_key)] = {
+            "role": str(invite.get("role") or "validator"),
+            "invited_by": str(invite.get("invited_by") or ""),
+            "created_at": str(invite.get("created_at") or ""),
+            "expires_at": str(invite.get("expires_at") or ""),
+            "username": str(invite.get("username") or ""),
+            "invitee_email": str(invite.get("invitee_email") or ""),
+        }
+
+    return {
+        "schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
+        "project_slug": project.project_slug,
+        "updated_at": updated_at,
+        "pending": pending,
+    }
 
 
 class HfProjectStateStoreInitializer:
@@ -230,3 +312,84 @@ class HfProjectStateStoreInitializer:
             initialized=True,
             reused_existing=False,
         )
+
+
+class HfProjectStateStoreSync:
+    def __init__(self, api: HfProjectStateApi | None = None) -> None:
+        self._api = api or HfApi()
+
+    def sync_project_state(
+        self,
+        *,
+        project: Project,
+        user_access: dict[str, dict[str, str]],
+        pending_invites: dict[str, dict[str, dict[str, str]]],
+        token: str | None,
+        actor_username: str = "",
+        archived: bool = False,
+    ) -> HfProjectStateStoreSyncResult:
+        token_value = (token or "").strip()
+        if not token_value:
+            raise HfProjectStateStoreError("A Hugging Face token is required to sync the private project state repository.")
+
+        state_repo_id = (project.state_repo_id or "").strip() or default_state_repo_id(project.dataset_repo_id)
+        updated_at = datetime.now(UTC).isoformat()
+        archived_at = updated_at if archived else None
+        project_payload = _project_json(
+            project,
+            state_repo_id,
+            updated_at,
+            updated_at=updated_at,
+            archived_at=archived_at,
+        )
+        acl_payload = (
+            {
+                "schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
+                "project_slug": project.project_slug,
+                "updated_at": updated_at,
+                "users": {},
+            }
+            if archived
+            else _acl_from_access_map(
+                project=project,
+                user_access=user_access,
+                updated_at=updated_at,
+                actor_username=actor_username,
+            )
+        )
+        invites_payload = (
+            {
+                "schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
+                "project_slug": project.project_slug,
+                "updated_at": updated_at,
+                "pending": {},
+            }
+            if archived
+            else _invites_from_invite_map(
+                project=project,
+                pending_invites=pending_invites,
+                updated_at=updated_at,
+            )
+        )
+        paths = ["project.json", "acl.json", "invites.json"]
+
+        try:
+            self._api.create_commit(
+                repo_id=state_repo_id,
+                repo_type="dataset",
+                token=token_value,
+                commit_message=(
+                    "Archive BirdNET Validator project state"
+                    if archived
+                    else "Sync BirdNET Validator project state"
+                ),
+                operations=[
+                    CommitOperationAdd(path_in_repo="project.json", path_or_fileobj=_json_bytes(project_payload)),
+                    CommitOperationAdd(path_in_repo="acl.json", path_or_fileobj=_json_bytes(acl_payload)),
+                    CommitOperationAdd(path_in_repo="invites.json", path_or_fileobj=_json_bytes(invites_payload)),
+                ],
+            )
+        except Exception as exc:
+            raise HfProjectStateStoreError(f"Could not sync private HF state repo {state_repo_id}: {exc}") from exc
+
+        return HfProjectStateStoreSyncResult(state_repo_id=state_repo_id, synced_paths=paths)
