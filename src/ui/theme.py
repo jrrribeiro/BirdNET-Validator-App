@@ -961,6 +961,182 @@ button.bn-report-download-action-blue:hover {
   font-weight: 750 !important;
 }
 
+.bn-polished-dataframe {
+  overflow: hidden !important;
+  border: 1px solid var(--bn-border) !important;
+  border-radius: 8px !important;
+  background: #eef4fb !important;
+  box-shadow: 0 10px 24px rgba(16, 24, 40, 0.05) !important;
+  padding: 0 !important;
+}
+
+.bn-polished-dataframe .table-container {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: #ffffff !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+
+.bn-polished-dataframe .header-row {
+  position: static !important;
+  display: flex !important;
+  align-items: center !important;
+  min-height: 40px !important;
+  margin: 0 !important;
+  padding: 10px 14px !important;
+  border: 0 !important;
+  border-bottom: 1px solid #dbe5ef !important;
+  background: #eef4fb !important;
+  color: #40566f !important;
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  line-height: 1.2 !important;
+}
+
+.bn-polished-dataframe .header-row .label,
+.bn-polished-dataframe .header-row .label p {
+  margin: 0 !important;
+  padding: 0 !important;
+  color: inherit !important;
+  font: inherit !important;
+  line-height: inherit !important;
+}
+
+.bn-polished-dataframe .wrap,
+.bn-polished-dataframe .table-wrap,
+.bn-polished-dataframe [data-testid="dataframe"] {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 0 8px 8px !important;
+  background: #ffffff !important;
+}
+
+.bn-polished-dataframe,
+.bn-polished-dataframe .wrap,
+.bn-polished-dataframe .table-wrap,
+.bn-polished-dataframe [data-testid="dataframe"],
+.bn-polished-dataframe [role="grid"] {
+  max-width: 100% !important;
+  overflow-x: hidden !important;
+}
+
+.bn-polished-dataframe table {
+  width: 100% !important;
+  min-width: 0 !important;
+  table-layout: fixed !important;
+  border-collapse: separate !important;
+  border-spacing: 0 !important;
+}
+
+.bn-polished-dataframe th,
+.bn-polished-dataframe td {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+  white-space: nowrap !important;
+  padding: 9px 8px !important;
+  border-color: #e6edf5 !important;
+  vertical-align: middle !important;
+}
+
+.bn-polished-dataframe th {
+  background: #eef4fb !important;
+  color: #1f344d !important;
+  font-size: 12px !important;
+  letter-spacing: 0 !important;
+  text-transform: uppercase !important;
+}
+
+.bn-polished-dataframe td {
+  color: #102033 !important;
+  font-size: 13px !important;
+}
+
+.bn-polished-dataframe tbody tr:nth-child(even) td {
+  background: #fbfdff !important;
+}
+
+.bn-polished-dataframe tbody tr:hover td {
+  background: #eff6ff !important;
+}
+
+.bn-polished-dataframe * {
+  scrollbar-width: none !important;
+}
+
+.bn-polished-dataframe *::-webkit-scrollbar {
+  display: none !important;
+}
+
+#bn-admin-projects-table th:nth-child(1),
+#bn-admin-projects-table td:nth-child(1) {
+  width: 13% !important;
+}
+
+#bn-admin-projects-table th:nth-child(2),
+#bn-admin-projects-table td:nth-child(2) {
+  width: 17% !important;
+}
+
+#bn-admin-projects-table th:nth-child(3),
+#bn-admin-projects-table td:nth-child(3) {
+  width: 28% !important;
+}
+
+#bn-admin-projects-table th:nth-child(4),
+#bn-admin-projects-table td:nth-child(4),
+#bn-admin-projects-table th:nth-child(5),
+#bn-admin-projects-table td:nth-child(5) {
+  width: 13% !important;
+}
+
+#bn-admin-projects-table th:nth-child(6),
+#bn-admin-projects-table td:nth-child(6),
+#bn-admin-projects-table th:nth-child(7),
+#bn-admin-projects-table td:nth-child(7) {
+  width: 8% !important;
+}
+
+#bn-admin-pending-invites-table th:nth-child(1),
+#bn-admin-pending-invites-table td:nth-child(1),
+#bn-admin-pending-invites-table th:nth-child(2),
+#bn-admin-pending-invites-table td:nth-child(2),
+#bn-admin-pending-invites-table th:nth-child(4),
+#bn-admin-pending-invites-table td:nth-child(4) {
+  width: 18% !important;
+}
+
+#bn-admin-pending-invites-table th:nth-child(3),
+#bn-admin-pending-invites-table td:nth-child(3),
+#bn-admin-pending-invites-table th:nth-child(6),
+#bn-admin-pending-invites-table td:nth-child(6) {
+  width: 12% !important;
+}
+
+#bn-admin-pending-invites-table th:nth-child(5),
+#bn-admin-pending-invites-table td:nth-child(5) {
+  width: 22% !important;
+}
+
+#bn-admin-projects-table td:nth-child(1),
+#bn-admin-projects-table td:nth-child(3),
+#bn-admin-pending-invites-table td:nth-child(1),
+#bn-admin-pending-invites-table td:nth-child(2),
+#bn-admin-pending-invites-table td:nth-child(5) {
+  color: #475467 !important;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace !important;
+  font-size: 12px !important;
+}
+
+#bn-admin-projects-table td:nth-child(6),
+#bn-admin-projects-table td:nth-child(7),
+#bn-admin-pending-invites-table td:nth-child(3),
+#bn-admin-pending-invites-table td:nth-child(6) {
+  color: #0b5e86 !important;
+  font-weight: 750 !important;
+}
+
 .bn-validation-dataframe {
   overflow: hidden !important;
   border: 1px solid var(--bn-border) !important;

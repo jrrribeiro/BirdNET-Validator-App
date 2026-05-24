@@ -3012,8 +3012,14 @@ def create_app() -> gr.Blocks:
                         projects_table = gr.Dataframe(
                             value=_project_rows(),
                             headers=["Project", "Name", "Dataset", "Visibility", "Owner", "Token", "Active"],
+                            label="Registered projects",
                             interactive=False,
-                            elem_classes=["bn-dataframe"],
+                            max_height=300,
+                            wrap=False,
+                            column_widths=["13%", "17%", "28%", "13%", "13%", "8%", "8%"],
+                            show_row_numbers=False,
+                            elem_id="bn-admin-projects-table",
+                            elem_classes=["bn-dataframe", "bn-polished-dataframe", "bn-admin-dataframe"],
                         )
 
                     with gr.Row(elem_classes=["bn-admin-action-row"]):
@@ -3392,8 +3398,14 @@ def create_app() -> gr.Blocks:
                             pending_invites_table = gr.Dataframe(
                                 value=[],
                                 headers=["Username", "Project", "Role", "Invited by", "Expires at", "Expires in"],
+                                label="Pending invites",
                                 interactive=False,
-                                elem_classes=["bn-dataframe"],
+                                max_height=300,
+                                wrap=False,
+                                column_widths=["18%", "18%", "12%", "18%", "22%", "12%"],
+                                show_row_numbers=False,
+                                elem_id="bn-admin-pending-invites-table",
+                                elem_classes=["bn-dataframe", "bn-polished-dataframe", "bn-admin-dataframe"],
                             )
                             pending_invites_message = gr.Markdown()
                     with gr.Row(elem_classes=["bn-admin-action-row"]):
