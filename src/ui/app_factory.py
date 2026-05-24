@@ -3947,20 +3947,28 @@ def create_app() -> gr.Blocks:
 
                         table = gr.Dataframe(
                             headers=[
-                                "Key",
+                                "ID",
                                 "Audio",
                                 "Species",
-                                "Confidence",
+                                "Conf.",
                                 "Start",
                                 "End",
                                 "Status",
-                                "Version",
-                                "Conflict",
-                                "Severity",
+                                "Ver.",
+                                "Flag",
+                                "Risk",
                             ],
                             label="Validation queue",
                             interactive=False,
-                            elem_classes=["bn-dataframe"],
+                            row_count=(10, "fixed"),
+                            col_count=(10, "fixed"),
+                            datatype=["str", "str", "str", "number", "number", "number", "str", "number", "str", "str"],
+                            max_height=460,
+                            wrap=False,
+                            column_widths=["8%", "24%", "21%", "10%", "8%", "8%", "14%", "7%", "0%", "0%"],
+                            show_row_numbers=False,
+                            elem_id="bn-validation-queue-table",
+                            elem_classes=["bn-dataframe", "bn-validation-dataframe"],
                         )
                         selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
 
