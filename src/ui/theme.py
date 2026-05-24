@@ -965,6 +965,54 @@ button.bn-report-download-action-blue:hover {
   overflow: hidden !important;
   border: 1px solid var(--bn-border) !important;
   border-radius: 8px !important;
+  background: #eef4fb !important;
+  box-shadow: 0 10px 24px rgba(16, 24, 40, 0.05) !important;
+}
+
+#bn-validation-queue-table {
+  padding: 0 !important;
+}
+
+#bn-validation-queue-table .table-container {
+  margin: 0 !important;
+  padding: 0 !important;
+  background: #ffffff !important;
+  border-radius: 8px !important;
+  overflow: hidden !important;
+}
+
+#bn-validation-queue-table .header-row {
+  position: static !important;
+  display: flex !important;
+  align-items: center !important;
+  min-height: 40px !important;
+  margin: 0 !important;
+  padding: 10px 14px !important;
+  border: 0 !important;
+  border-bottom: 1px solid #dbe5ef !important;
+  background: #eef4fb !important;
+  color: #40566f !important;
+  font-size: 13px !important;
+  font-weight: 650 !important;
+  line-height: 1.2 !important;
+}
+
+#bn-validation-queue-table .header-row .label,
+#bn-validation-queue-table .header-row .label p {
+  margin: 0 !important;
+  padding: 0 !important;
+  color: inherit !important;
+  font: inherit !important;
+  line-height: inherit !important;
+}
+
+#bn-validation-queue-table .wrap,
+#bn-validation-queue-table .table-wrap,
+#bn-validation-queue-table [data-testid="dataframe"] {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 0 8px 8px !important;
   background: #ffffff !important;
 }
 
