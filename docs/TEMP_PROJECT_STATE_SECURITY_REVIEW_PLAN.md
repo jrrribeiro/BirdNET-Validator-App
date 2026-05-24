@@ -892,8 +892,28 @@ Implemented on branch `feature/project-state-security-privacy-review`:
    - The validation queue surfaces that persisted conflict using the existing conflict workflow.
    - CSV/XLSX exports now include `validation_conflict` and `validation_conflict_reason`.
 
-Next scalability barrier before real-data enablement:
+### 2026-05-24: Bounded active event window and compact audit archives
 
-1. Define checkpoint/compaction or bounded event-window reads so snapshot reconciliation does not require scanning an unbounded event history during high-volume validation.
-2. Exercise simultaneous validators against that strategy before enabling Bucket state for production projects.
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added automatic Bucket event compaction.
+   - An active window of up to 250 individual validation events is retained for reconciliation during ordinary writes.
+   - Before the next write after the active window fills, events are rolled into an append-only JSONL audit archive and the reconciled snapshot is updated.
+   - The original individual event objects are removed only in the same Bucket batch that writes their archive and snapshot.
+
+2. Kept historical recovery and auditing intact.
+   - A missing or corrupt snapshot can be rebuilt from archived and active events.
+   - Duplicate event IDs produced by parallel compactors are de-duplicated during reads.
+   - If an active event cannot be read safely, compaction aborts instead of deleting it.
+
+3. Added bounded recent-activity reads for the Progress dashboard.
+   - The dashboard asks for only the events required for the visible recent-activity page plus one look-ahead row.
+   - Bucket-backed reads inspect the active window and only as many newest archive files as necessary.
+   - Full CSV/XLSX scientific exports remain based on the complete current detection snapshot.
+
+Remaining validation before real-data enablement:
+
+1. Exercise simultaneous validators against the compacted strategy and measure latency at expected review speed.
+2. Confirm multi-user Bucket authorization in a real Space.
+3. Implement onboarding/recovery UI for connecting and migrating existing state resources.
 

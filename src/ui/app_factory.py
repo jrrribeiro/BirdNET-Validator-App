@@ -5386,10 +5386,18 @@ def create_app() -> gr.Blocks:
                         project_slug=slug,
                         actor_username=_validator_name_from_session(session),
                     )
-                    events = validation_repository.list_events(
-                        project_slug=slug,
-                        actor_username=_validator_name_from_session(session),
-                    )
+                    recent_events_reader = getattr(validation_repository, "list_recent_events", None)
+                    if callable(recent_events_reader):
+                        events = recent_events_reader(
+                            project_slug=slug,
+                            limit=max(11, (recent_page * 10) + 1),
+                            actor_username=_validator_name_from_session(session),
+                        )
+                    else:
+                        events = validation_repository.list_events(
+                            project_slug=slug,
+                            actor_username=_validator_name_from_session(session),
+                        )
                     total_recordings = len(items)
 
                     species_totals: dict[str, dict[str, int]] = {}

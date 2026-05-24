@@ -15,6 +15,7 @@ from src.repositories.append_only_validation_repository import OptimisticLockErr
 
 HF_BUCKET_VALIDATION_BACKEND = "hf_bucket"
 HF_BUCKET_VALIDATION_SCHEMA_VERSION = 1
+HF_BUCKET_DEFAULT_ACTIVE_EVENT_LIMIT = 250
 
 
 class HfBucketValidationError(Exception):
@@ -41,7 +42,14 @@ class HfBucketFilesApi(Protocol):
 
     def read_texts(self, *, bucket_id: str, paths_in_bucket: list[str], token: str) -> dict[str, str]: ...
 
-    def write_files(self, *, bucket_id: str, files: dict[str, bytes], token: str) -> None: ...
+    def write_files(
+        self,
+        *,
+        bucket_id: str,
+        files: dict[str, bytes],
+        token: str,
+        delete_paths: list[str] | None = None,
+    ) -> None: ...
 
 
 class HuggingFaceBucketFilesApi:
@@ -86,10 +94,18 @@ class HuggingFaceBucketFilesApi:
                 if local_path.exists()
             }
 
-    def write_files(self, *, bucket_id: str, files: dict[str, bytes], token: str) -> None:
+    def write_files(
+        self,
+        *,
+        bucket_id: str,
+        files: dict[str, bytes],
+        token: str,
+        delete_paths: list[str] | None = None,
+    ) -> None:
         batch_bucket_files(
             bucket_id,
             add=[(contents, path) for path, contents in files.items()],
+            delete=delete_paths or None,
             token=token,
         )
 
@@ -99,6 +115,12 @@ class HfBucketValidationInitResult:
     bucket_id: str
     initialized: bool
     reused_existing: bool
+
+
+@dataclass(frozen=True)
+class HfBucketCompactionResult:
+    archive_path: str | None
+    compacted_event_count: int
 
 
 class HfBucketValidationInitializer:
@@ -174,10 +196,18 @@ def _extract_items(payload: object, project_slug: str) -> dict[str, dict[str, ob
 class HfBucketValidationRepository:
     """Mutable validation state in an admin-owned HF Bucket, without Git commits."""
 
-    def __init__(self, *, bucket_id: str, token: str, api: HfBucketFilesApi | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        bucket_id: str,
+        token: str,
+        api: HfBucketFilesApi | None = None,
+        active_event_limit: int = HF_BUCKET_DEFAULT_ACTIVE_EVENT_LIMIT,
+    ) -> None:
         self._bucket_id = (bucket_id or "").strip()
         self._token = (token or "").strip()
         self._api = api or HuggingFaceBucketFilesApi()
+        self._active_event_limit = max(1, int(active_event_limit))
         self._lock = threading.RLock()
         if not self._bucket_id:
             raise HfBucketValidationError("A Hugging Face Bucket id is required.")
@@ -198,32 +228,85 @@ class HfBucketValidationRepository:
         except json.JSONDecodeError:
             return None
 
-    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
-        _ = actor_username
-        paths = [
+    def _active_event_paths(self) -> list[str]:
+        return [
             path
             for path in self._api.list_files(bucket_id=self._bucket_id, prefix="events/", token=self._token)
             if path.endswith(".json")
         ]
+
+    def _archive_paths(self) -> list[str]:
+        return [
+            path
+            for path in self._api.list_files(bucket_id=self._bucket_id, prefix="archives/events/", token=self._token)
+            if path.endswith(".jsonl")
+        ]
+
+    def _read_event_files(self, paths: list[str], *, project_slug: str) -> list[dict[str, object]]:
         texts = self._api.read_texts(bucket_id=self._bucket_id, paths_in_bucket=paths, token=self._token)
         events: list[dict[str, object]] = []
         for path in sorted(paths):
             text = texts.get(path)
             if text is None:
                 continue
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(payload, dict):
-                continue
-            if str(payload.get("project_slug") or project_slug).strip() != project_slug:
-                continue
-            events.append(payload)
-        return sorted(
+            payloads = text.splitlines() if path.endswith(".jsonl") else [text]
+            for raw_payload in payloads:
+                if not raw_payload.strip():
+                    continue
+                try:
+                    payload = json.loads(raw_payload)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(payload, dict):
+                    continue
+                if str(payload.get("project_slug") or project_slug).strip() != project_slug:
+                    continue
+                events.append(payload)
+        ordered = sorted(
             events,
             key=lambda event: (str(event.get("timestamp") or ""), str(event.get("event_id") or "")),
         )
+        unique_events: list[dict[str, object]] = []
+        seen_ids: set[str] = set()
+        for event in ordered:
+            event_id = str(event.get("event_id") or "").strip()
+            if event_id and event_id in seen_ids:
+                continue
+            if event_id:
+                seen_ids.add(event_id)
+            unique_events.append(event)
+        return unique_events
+
+    def _active_events(self, project_slug: str) -> list[dict[str, object]]:
+        return self._read_event_files(self._active_event_paths(), project_slug=project_slug)
+
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
+        _ = actor_username
+        return self._read_event_files(
+            [*self._archive_paths(), *self._active_event_paths()],
+            project_slug=project_slug,
+        )
+
+    def list_recent_events(
+        self,
+        project_slug: str,
+        *,
+        limit: int = 10,
+        actor_username: str = "",
+    ) -> list[dict[str, object]]:
+        """Read only enough newest archives to serve recent-activity pages."""
+        _ = actor_username
+        requested = max(1, int(limit))
+        events = self._active_events(project_slug)
+        for index, archive_path in enumerate(sorted(self._archive_paths(), reverse=True)):
+            if index > 0 and len(events) >= requested:
+                break
+            events.extend(self._read_event_files([archive_path], project_slug=project_slug))
+        return sorted(
+            events,
+            key=lambda event: (str(event.get("timestamp") or ""), str(event.get("event_id") or "")),
+            reverse=True,
+        )[:requested]
 
     @staticmethod
     def _state_from_event(event: dict[str, object]) -> dict[str, object]:
@@ -280,8 +363,60 @@ class HfBucketValidationRepository:
         _ = actor_username
         with self._lock:
             payload = self._read_json_or_none("snapshots/current.json")
-            items = _extract_items(payload, project_slug) or {}
-            return self._merge_snapshot_and_events(items, self.list_events(project_slug))
+            items = _extract_items(payload, project_slug)
+            if items is None:
+                return self._snapshot_from_events(project_slug)
+            return self._merge_snapshot_and_events(items, self._active_events(project_slug))
+
+    def compact_events(self, project_slug: str, *, force: bool = False) -> HfBucketCompactionResult:
+        """Roll active event objects into an audit archive while preserving recoverability."""
+        project = (project_slug or "").strip()
+        if not project:
+            raise HfBucketValidationError("A project slug is required to compact validation state.")
+
+        with self._lock:
+            active_paths = self._active_event_paths()
+            if not force and len(active_paths) < self._active_event_limit:
+                return HfBucketCompactionResult(archive_path=None, compacted_event_count=0)
+            if not active_paths:
+                return HfBucketCompactionResult(archive_path=None, compacted_event_count=0)
+
+            events = self._read_event_files(active_paths, project_slug=project)
+            if len(events) != len(active_paths):
+                raise HfBucketValidationError(
+                    "Could not compact active validation events safely because one or more files are unreadable."
+                )
+            snapshot_payload = self._read_json_or_none("snapshots/current.json")
+            snapshot_items = _extract_items(snapshot_payload, project)
+            if snapshot_items is None:
+                snapshot_items = self._snapshot_from_events(project)
+            reconciled_items = self._merge_snapshot_and_events(snapshot_items, events)
+            now = datetime.now(UTC)
+            archive_path = f"archives/events/{now.strftime('%Y%m%dT%H%M%S')}_{uuid4()}.jsonl"
+            archive_text = "".join(
+                json.dumps(event, ensure_ascii=True, sort_keys=True) + "\n"
+                for event in events
+            )
+            snapshot = {
+                "schema_version": HF_BUCKET_VALIDATION_SCHEMA_VERSION,
+                "project_slug": project,
+                "updated_at": now.isoformat(),
+                "compacted_event_count": len(events),
+                "items": reconciled_items,
+            }
+            self._api.write_files(
+                bucket_id=self._bucket_id,
+                token=self._token,
+                files={
+                    archive_path: archive_text.encode("utf-8"),
+                    "snapshots/current.json": _json_bytes(snapshot),
+                },
+                delete_paths=active_paths,
+            )
+            return HfBucketCompactionResult(
+                archive_path=archive_path,
+                compacted_event_count=len(events),
+            )
 
     def save_validation(self, project_slug: str, item: Validation, expected_version: int | None = None) -> int:
         project = (project_slug or "").strip()
@@ -289,6 +424,7 @@ class HfBucketValidationRepository:
             raise HfBucketValidationError("A project slug is required to save validation state.")
 
         with self._lock:
+            self.compact_events(project)
             items = self.load_current_snapshot(project)
             current_version = int(items.get(item.detection_key, {}).get("version", 0))
             expected = expected_version if expected_version is not None else current_version

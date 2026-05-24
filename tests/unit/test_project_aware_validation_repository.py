@@ -158,3 +158,17 @@ def test_project_aware_repository_bucket_write_does_not_fall_back_to_admin_token
 
     with pytest.raises(HfBucketValidationError, match="signed-in validator"):
         router.save_validation("project-a", _validation(), expected_version=0)
+
+
+def test_project_aware_repository_recent_events_falls_back_to_bounded_full_events() -> None:
+    fallback = FakeValidationStateRepository("fallback")
+    fallback.saved = [("project-a", "old"), ("project-a", "new")]
+    router = ProjectAwareValidationRepository(
+        fallback_repository=fallback,
+        project_lookup=lambda _: None,
+        token_provider=lambda _: None,
+    )
+
+    events = router.list_recent_events("project-a", limit=1)
+
+    assert len(events) == 1

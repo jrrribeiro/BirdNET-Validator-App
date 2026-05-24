@@ -114,3 +114,21 @@ class ProjectAwareValidationRepository:
 
     def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
         return self._repository_for_project(project_slug, actor_username=actor_username).list_events(project_slug=project_slug)
+
+    def list_recent_events(
+        self,
+        project_slug: str,
+        *,
+        limit: int = 10,
+        actor_username: str = "",
+    ) -> list[dict[str, object]]:
+        repository = self._repository_for_project(project_slug, actor_username=actor_username)
+        reader = getattr(repository, "list_recent_events", None)
+        if callable(reader):
+            return reader(project_slug=project_slug, limit=limit)
+        events = repository.list_events(project_slug=project_slug)
+        return sorted(
+            events,
+            key=lambda event: str(event.get("timestamp") or event.get("created_at") or ""),
+            reverse=True,
+        )[: max(1, int(limit))]
