@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
+import hashlib
 import json
 
 import pandas as pd
@@ -1362,6 +1363,18 @@ def test_parse_segment_filename_hint_reads_time_and_confidence() -> None:
     assert conf == 0.85
 
 
+def test_parse_segment_filename_hint_reads_uploader_hash_filename() -> None:
+    from src.ui import app_factory as module
+
+    start, end, conf = module._parse_segment_filename_hint(
+        "Catim_LS-1500_U10_20250224_063500_33.0-36.0s_95__cf04dd382267.wav"
+    )
+
+    assert start == 33.0
+    assert end == 36.0
+    assert conf == 0.95
+
+
 def test_build_detection_from_row_prefers_segment_path_for_audio_id() -> None:
     from src.ui import app_factory as module
 
@@ -1379,6 +1392,26 @@ def test_build_detection_from_row_prefers_segment_path_for_audio_id() -> None:
 
     assert detection is not None
     assert detection.audio_id == "segments/species_a/example.wav"
+
+
+def test_build_detection_from_row_accepts_birdnet_column_variants() -> None:
+    from src.ui import app_factory as module
+
+    row = {
+        "segment_path_in_repo": "audio/segments/Accipiter_striatus/example_33.0-36.0s_95__abc123def456.wav",
+        "Scientific Name": "Accipiter striatus",
+        "Confidence": 0.731,
+        "Start_tim": 33.0,
+        "End_time": 36.0,
+    }
+
+    detection = module._build_detection_from_row(row, 0, "project-a")
+
+    assert detection is not None
+    assert detection.scientific_name == "Accipiter striatus"
+    assert detection.confidence == 0.731
+    assert detection.start_time == 33.0
+    assert detection.end_time == 36.0
 
 
 def test_load_dataset_detections_for_project_uses_parquet_shards_when_available(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1489,6 +1522,74 @@ def test_load_dataset_detections_for_project_uses_files_parquet_index(
     assert detections[0].confidence == 0.85
     assert detections[0].start_time == 0.0
     assert detections[0].end_time == 3.0
+
+
+def test_files_index_merges_detection_csv_by_source_species_and_time(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    from src.ui import app_factory as module
+
+    original_relative_path = "Accipiter striatus/Catim_LS-1500_U10_20250224_063500_33.0-36.0s_95%.wav"
+    files_index = tmp_path / "files.parquet"
+    pd.DataFrame.from_records(
+        [
+            {
+                "stored_path": "audio/Accipiter_striatus/shard-000001/Catim_LS-1500_U10_20250224_063500_33.0-36.0s_95__cf04dd382267.wav",
+                "original_relative_path": original_relative_path,
+                "logical_group": "Accipiter striatus",
+                "filename": "Catim_LS-1500_U10_20250224_063500_33.0-36.0s_95%.wav",
+                "size": 123,
+            }
+        ]
+    ).to_parquet(files_index, index=False)
+
+    detections_csv = tmp_path / "detections.csv"
+    detections_csv.write_text(
+        "source_file,scientific_name,confidence,start_time,end_time\n"
+        "Catim_LS-1500_U10_20250224_063500.wav,Accipiter striatus,0.812345,33,36\n",
+        encoding="utf-8",
+    )
+
+    class TreeApiShouldNotRun:
+        def __init__(self, token: str | None = None) -> None:
+            _ = token
+
+        def list_repo_files(self, repo_id: str, repo_type: str = "dataset") -> list[str]:
+            _ = repo_id
+            _ = repo_type
+            raise AssertionError("tree discovery should not run when index/files.parquet is available")
+
+    def fake_download(repo_id: str, repo_type: str, filename: str, token: str | None = None) -> str:
+        _ = repo_id
+        _ = repo_type
+        _ = token
+        if filename == "index/files.parquet":
+            return str(files_index)
+        if filename == "index/detections.csv":
+            return str(detections_csv)
+        raise FileNotFoundError(filename)
+
+    monkeypatch.setattr(module, "HfApi", TreeApiShouldNotRun)
+    monkeypatch.setattr(module, "hf_hub_download", fake_download)
+
+    project = Project(
+        project_slug="ppbio-rabeca",
+        name="PPBIO RABECA",
+        dataset_repo_id="jrrribeiro/PPBIO-RABECA",
+        active=True,
+    )
+
+    detections, warning = module._load_dataset_detections_for_project(project)
+
+    assert warning == ""
+    assert len(detections) == 1
+    assert detections[0].detection_key == hashlib.sha1(original_relative_path.encode("utf-8")).hexdigest()[:16]
+    assert detections[0].audio_id == "Accipiter_striatus/shard-000001/Catim_LS-1500_U10_20250224_063500_33.0-36.0s_95__cf04dd382267.wav"
+    assert detections[0].confidence == 0.812345
+    assert detections[0].start_time == 33.0
+    assert detections[0].end_time == 36.0
+    assert detections[0].source_metadata["segment_uploader_key"] == "cf04dd382267"
 
 
 def test_load_dataset_detections_for_project_reads_known_files_index_before_repo_tree(

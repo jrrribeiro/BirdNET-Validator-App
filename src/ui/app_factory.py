@@ -123,10 +123,34 @@ def _candidate_metadata_files(project_slug: str) -> list[str]:
     ]
 
 
+def _is_blank_value(value: object) -> bool:
+    if value is None:
+        return True
+    try:
+        if isinstance(value, float) and np.isnan(value):
+            return True
+        if isinstance(value, np.generic):
+            return _is_blank_value(value.item())
+    except Exception:
+        pass
+    text = str(value).strip()
+    return not text or text.lower() in {"nan", "none", "null"}
+
+
+def _normalized_field_name(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.strip().lower())
+
+
 def _pick_row_value(raw: dict[str, object], keys: list[str]) -> str:
+    normalized_lookup: dict[str, object] = {}
+    for raw_key, raw_value in raw.items():
+        normalized_lookup.setdefault(_normalized_field_name(str(raw_key)), raw_value)
+
     for key in keys:
         value = raw.get(key)
-        if value is None:
+        if _is_blank_value(value):
+            value = normalized_lookup.get(_normalized_field_name(key))
+        if _is_blank_value(value):
             continue
         text = str(value).strip()
         if text:
@@ -146,6 +170,130 @@ def _normalize_audio_id(audio_value: str) -> str:
     if normalized.startswith("audio/"):
         normalized = normalized[len("audio/") :]
     return normalized
+
+
+def _normalize_match_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.strip().replace("\\", "/").lower())
+
+
+def _time_match_key(value: object) -> str:
+    return f"{_to_float(value, -1.0):.3f}"
+
+
+def _normalize_confidence(value: object, default: float) -> float:
+    confidence = _to_float(value, default)
+    if confidence > 1.0:
+        confidence = confidence / 100.0
+    return max(0.0, min(1.0, confidence))
+
+
+def _parse_segment_filename_metadata(path_value: str) -> dict[str, object]:
+    normalized = str(path_value or "").replace("\\", "/").strip()
+    if not normalized:
+        return {}
+
+    filename = normalized.rsplit("/", 1)[-1]
+    suffix = Path(filename).suffix.lower() or ".wav"
+    stem = filename[: -len(suffix)] if suffix and filename.lower().endswith(suffix) else filename
+
+    uploader_key = ""
+    key_match = re.search(r"__([0-9a-fA-F]{8,40})$", stem)
+    if key_match:
+        uploader_key = key_match.group(1).lower()
+        stem = stem[: key_match.start()]
+
+    segment_match = re.match(
+        r"^(?P<source_stem>.+)_(?P<start>\d+(?:\.\d+)?)-(?P<end>\d+(?:\.\d+)?)s(?:_(?P<confidence>\d+(?:\.\d+)?%?))?$",
+        stem,
+    )
+    if not segment_match:
+        return {"uploader_key": uploader_key} if uploader_key else {}
+
+    confidence_raw = segment_match.group("confidence")
+    confidence: float | None = None
+    if confidence_raw:
+        confidence = _normalize_confidence(confidence_raw.rstrip("%"), 0.0)
+
+    return {
+        "source_file": f"{segment_match.group('source_stem')}{suffix}",
+        "start_time": float(segment_match.group("start")),
+        "end_time": float(segment_match.group("end")),
+        "confidence": confidence,
+        "uploader_key": uploader_key,
+    }
+
+
+def _segment_metadata_from_row(raw: dict[str, object], audio_id: str = "") -> dict[str, object]:
+    combined: dict[str, object] = {}
+    for key in [
+        "original_relative_path",
+        "relative_path",
+        "stored_path",
+        "segment_path_in_repo",
+        "segment_relpath",
+        "segment_path",
+        "audio_id",
+        "audio_path",
+        "filename",
+    ]:
+        value = _pick_row_value(raw, [key])
+        if value:
+            parsed = _parse_segment_filename_metadata(value)
+            if parsed:
+                for parsed_key, parsed_value in parsed.items():
+                    if parsed_value not in (None, ""):
+                        combined.setdefault(parsed_key, parsed_value)
+    if audio_id:
+        parsed = _parse_segment_filename_metadata(audio_id)
+        for parsed_key, parsed_value in parsed.items():
+            if parsed_value not in (None, ""):
+                combined.setdefault(parsed_key, parsed_value)
+    return combined
+
+
+_CONFIDENCE_KEYS = ["confidence", "score", "probability", "prediction_confidence", "Confidence"]
+_START_TIME_KEYS = [
+    "start_time",
+    "start",
+    "begin",
+    "offset",
+    "segment_start",
+    "Start_tim",
+    "Start_time",
+    "Start Time",
+    "Start (s)",
+]
+_END_TIME_KEYS = ["end_time", "end", "stop", "segment_end", "End_time", "End Time", "End (s)"]
+
+
+def _derive_detection_key(
+    raw: dict[str, object],
+    *,
+    project_slug: str,
+    audio_id: str,
+    scientific_name: str,
+    start_time: float,
+    end_time: float,
+    row_index: int,
+    segment_metadata: dict[str, object],
+) -> tuple[str, str]:
+    explicit_key = _pick_row_value(raw, ["detection_key", "segment_id", "id", "uid", "key"])
+    if explicit_key:
+        return explicit_key, "metadata"
+
+    original_relative_path = _pick_row_value(raw, ["original_relative_path", "relative_path"])
+    if original_relative_path:
+        return hashlib.sha1(original_relative_path.encode("utf-8")).hexdigest()[:16], "original_relative_path_sha1"
+
+    stored_path = _pick_row_value(raw, ["stored_path", "segment_path_in_repo"])
+    uploader_key = str(segment_metadata.get("uploader_key") or "").strip()
+    if uploader_key and len(uploader_key) >= 12:
+        return f"hfup_{uploader_key[:12]}", "stored_filename_uploader_key"
+    if stored_path:
+        return hashlib.sha1(stored_path.encode("utf-8")).hexdigest()[:16], "stored_path_sha1"
+
+    stable = f"{project_slug}|{audio_id}|{scientific_name}|{start_time:.3f}|{end_time:.3f}|{row_index}"
+    return hashlib.sha1(stable.encode("utf-8")).hexdigest()[:16], "computed_legacy"
 
 
 def _build_detection_from_row(raw: dict[str, object], row_index: int, project_slug: str) -> Detection | None:
@@ -173,6 +321,7 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
     )
     if not audio_id:
         return None
+    segment_metadata = _segment_metadata_from_row(raw, audio_id)
 
     scientific_name = _pick_row_value(
         raw,
@@ -189,20 +338,18 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
     if not scientific_name:
         scientific_name = "Unknown species"
 
-    confidence = _to_float(
-        raw.get("confidence", raw.get("score", raw.get("probability", raw.get("prediction_confidence", 1.0)))),
-        1.0,
-    )
-    confidence = max(0.0, min(1.0, confidence))
+    raw_confidence = _pick_row_value(raw, _CONFIDENCE_KEYS)
+    if raw_confidence:
+        confidence = _normalize_confidence(raw_confidence, 0.0)
+    elif segment_metadata.get("confidence") is not None:
+        confidence = _normalize_confidence(segment_metadata.get("confidence"), 0.0)
+    else:
+        confidence = 0.0
 
-    start_time = _to_float(
-        raw.get("start_time", raw.get("start", raw.get("begin", raw.get("offset", raw.get("segment_start", 0.0))))),
-        0.0,
-    )
-    end_time = _to_float(
-        raw.get("end_time", raw.get("end", raw.get("stop", raw.get("segment_end", 0.0)))),
-        0.0,
-    )
+    raw_start_time = _pick_row_value(raw, _START_TIME_KEYS)
+    raw_end_time = _pick_row_value(raw, _END_TIME_KEYS)
+    start_time = _to_float(raw_start_time, _to_float(segment_metadata.get("start_time"), 0.0))
+    end_time = _to_float(raw_end_time, _to_float(segment_metadata.get("end_time"), 0.0))
     if end_time <= 0.0:
         duration = _to_float(raw.get("duration", 0.0), 0.0)
         if duration > 0.0:
@@ -210,10 +357,24 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
     if end_time <= start_time:
         end_time = start_time + 1.0
 
-    detection_key = _pick_row_value(raw, ["detection_key", "segment_id", "id", "uid", "key"])
-    if not detection_key:
-        stable = f"{project_slug}|{audio_id}|{scientific_name}|{start_time:.3f}|{end_time:.3f}|{row_index}"
-        detection_key = hashlib.sha1(stable.encode("utf-8")).hexdigest()[:16]
+    detection_key, detection_key_source = _derive_detection_key(
+        raw,
+        project_slug=project_slug,
+        audio_id=audio_id,
+        scientific_name=scientific_name,
+        start_time=start_time,
+        end_time=end_time,
+        row_index=row_index,
+        segment_metadata=segment_metadata,
+    )
+    source_metadata = dict(raw)
+    if segment_metadata:
+        for key, value in segment_metadata.items():
+            if value is not None and value != "":
+                source_metadata.setdefault(f"segment_{key}", value)
+    source_metadata.setdefault("detection_key_source", detection_key_source)
+    legacy_stable = f"{project_slug}|{audio_id}|{scientific_name}|{start_time:.3f}|{end_time:.3f}|{row_index}"
+    source_metadata.setdefault("legacy_detection_key", hashlib.sha1(legacy_stable.encode("utf-8")).hexdigest()[:16])
 
     try:
         return Detection(
@@ -223,7 +384,7 @@ def _build_detection_from_row(raw: dict[str, object], row_index: int, project_sl
             confidence=confidence,
             start_time=start_time,
             end_time=end_time,
-            source_metadata=dict(raw),
+            source_metadata=source_metadata,
         )
     except Exception:
         return None
@@ -547,32 +708,64 @@ def _merge_files_index_with_detection_rows(
 ) -> list[dict[str, object]]:
     detection_by_species_and_source: dict[tuple[str, str], dict[str, object]] = {}
     detection_by_source: dict[str, dict[str, object]] = {}
+    detection_by_species_source_time: dict[tuple[str, str, str, str], dict[str, object]] = {}
+    detection_by_source_time: dict[tuple[str, str, str], dict[str, object]] = {}
 
     for row in detection_rows:
         source_file = _pick_row_value(row, ["source_file", "audio_file", "file", "filename", "path"])
         species = _pick_row_value(row, ["scientific_name", "species", "label", "logical_group"])
+        start_time = _pick_row_value(row, _START_TIME_KEYS)
+        end_time = _pick_row_value(row, _END_TIME_KEYS)
+        normalized_source = _normalize_match_text(Path(source_file).name if source_file else "")
+        normalized_species = _normalize_match_text(species.replace("_", " ") if species else "")
         if source_file:
             detection_by_source.setdefault(source_file, row)
             if species:
                 detection_by_species_and_source.setdefault((species, source_file), row)
+        if normalized_source and start_time and end_time:
+            time_key = (_time_match_key(start_time), _time_match_key(end_time))
+            detection_by_source_time.setdefault((normalized_source, *time_key), row)
+            if normalized_species:
+                detection_by_species_source_time.setdefault((normalized_species, normalized_source, *time_key), row)
 
     merged: list[dict[str, object]] = []
     for row in file_rows:
         combined = dict(row)
         original_relative_path = _pick_row_value(row, ["original_relative_path", "relative_path", "stored_path", "audio_id"])
-        filename = _pick_row_value(row, ["filename"])
+        segment_metadata = _segment_metadata_from_row(row)
+        segment_source_file = str(segment_metadata.get("source_file") or "")
+        filename = segment_source_file or _pick_row_value(row, ["filename"])
         if not filename and original_relative_path:
-            filename = Path(original_relative_path).name
+            filename = Path(original_relative_path.replace("\\", "/")).name
         species = _pick_row_value(row, ["logical_group", "scientific_name", "species"])
+        normalized_source = _normalize_match_text(Path(filename).name if filename else "")
+        normalized_species = _normalize_match_text(species.replace("_", " ") if species else "")
+        start_time = segment_metadata.get("start_time")
+        end_time = segment_metadata.get("end_time")
 
         match = None
-        if species and filename:
+        if normalized_source and start_time is not None and end_time is not None:
+            time_key = (_time_match_key(start_time), _time_match_key(end_time))
+            if normalized_species:
+                match = detection_by_species_source_time.get((normalized_species, normalized_source, *time_key))
+            if match is None:
+                match = detection_by_source_time.get((normalized_source, *time_key))
+        if match is None and species and filename:
             match = detection_by_species_and_source.get((species, filename))
         if match is None and filename:
             match = detection_by_source.get(filename)
         if match:
             for key, value in match.items():
                 combined.setdefault(key, value)
+        if segment_metadata:
+            if not _pick_row_value(combined, _START_TIME_KEYS) and segment_metadata.get("start_time") is not None:
+                combined["start_time"] = segment_metadata["start_time"]
+            if not _pick_row_value(combined, _END_TIME_KEYS) and segment_metadata.get("end_time") is not None:
+                combined["end_time"] = segment_metadata["end_time"]
+            if not _pick_row_value(combined, _CONFIDENCE_KEYS) and segment_metadata.get("confidence") is not None:
+                combined["confidence"] = segment_metadata["confidence"]
+            if segment_source_file:
+                combined.setdefault("segment_source_file", segment_source_file)
         merged.append(combined)
     return merged
 
@@ -662,13 +855,14 @@ def _load_detections_from_parquet_shards(
 
 
 def _parse_segment_filename_hint(filename: str) -> tuple[float, float, float]:
-    # Common uploader pattern: ..._12.0-15.0s_85%.wav
-    segment_match = re.search(r"_(\d+(?:\.\d+)?)\-(\d+(?:\.\d+)?)s_(\d+(?:\.\d+)?)%", filename)
-    if segment_match:
-        start_time = float(segment_match.group(1))
-        end_time = float(segment_match.group(2))
-        confidence = float(segment_match.group(3)) / 100.0
-        return start_time, end_time, max(0.0, min(1.0, confidence))
+    metadata = _parse_segment_filename_metadata(filename)
+    if metadata:
+        start_time = _to_float(metadata.get("start_time"), 0.0)
+        end_time = _to_float(metadata.get("end_time"), 1.0)
+        confidence = metadata.get("confidence")
+        if confidence is None:
+            confidence = 0.5
+        return start_time, end_time, _normalize_confidence(confidence, 0.5)
 
     # Fallback pattern without confidence: ..._12.0-15.0s
     basic_match = re.search(r"_(\d+(?:\.\d+)?)\-(\d+(?:\.\d+)?)s", filename)
