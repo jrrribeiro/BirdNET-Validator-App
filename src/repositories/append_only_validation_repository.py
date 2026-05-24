@@ -5,6 +5,7 @@ import threading
 from uuid import uuid4
 
 from src.domain.models import Validation
+from src.repositories.state_safety import atomic_write_json_with_backup
 
 
 class OptimisticLockError(Exception):
@@ -34,10 +35,23 @@ class AppendOnlyValidationRepository:
 
     @staticmethod
     def _atomic_write_json(path: Path, payload: object) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = path.parent / f".{path.name}.tmp.{uuid4().hex}"
-        tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        tmp_path.replace(path)
+        atomic_write_json_with_backup(path, payload)
+
+    def _snapshot_from_events(self, project_slug: str) -> dict[str, dict[str, object]]:
+        snapshot: dict[str, dict[str, object]] = {}
+        for event in self.list_events(project_slug):
+            detection_key = str(event.get("detection_key") or "").strip()
+            if not detection_key:
+                continue
+            snapshot[detection_key] = {
+                "status": event.get("status"),
+                "corrected_species": event.get("corrected_species"),
+                "notes": event.get("notes") or "",
+                "validator": event.get("validator"),
+                "updated_at": event.get("timestamp") or event.get("created_at"),
+                "version": int(event.get("new_version") or event.get("version") or 0),
+            }
+        return snapshot
 
     def save_validation(self, project_slug: str, item: Validation, expected_version: int | None = None) -> int:
         project_dir = self._base_dir / project_slug / "validations"
@@ -46,9 +60,12 @@ class AppendOnlyValidationRepository:
         with self._lock_for_project(project_slug):
             current_file = project_dir / "current.json"
             if current_file.exists():
-                current_payload = json.loads(current_file.read_text(encoding="utf-8"))
+                try:
+                    current_payload = json.loads(current_file.read_text(encoding="utf-8"))
+                except Exception:
+                    current_payload = self._snapshot_from_events(project_slug)
             else:
-                current_payload = {}
+                current_payload = self._snapshot_from_events(project_slug)
 
             current_item = current_payload.get(item.detection_key, {})
             current_version = int(current_item.get("version", 0))
@@ -98,11 +115,17 @@ class AppendOnlyValidationRepository:
                 for line in handle:
                     payload = line.strip()
                     if payload:
-                        events.append(json.loads(payload))
+                        try:
+                            events.append(json.loads(payload))
+                        except json.JSONDecodeError:
+                            continue
         return events
 
     def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
         current_file = self._base_dir / project_slug / "validations" / "current.json"
         if not current_file.exists():
-            return {}
-        return json.loads(current_file.read_text(encoding="utf-8"))
+            return self._snapshot_from_events(project_slug)
+        try:
+            return json.loads(current_file.read_text(encoding="utf-8"))
+        except Exception:
+            return self._snapshot_from_events(project_slug)

@@ -32,12 +32,15 @@ from src.ui.app_factory import (
     _load_projects_from_file,
     _load_user_access_from_file,
     _bootstrap_auth_and_projects,
+    _persist_bootstrap_state,
+    _resolve_username_login_policy,
     _resolve_project_fetch_token,
     _write_validation_export,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
-from src.domain.models import Detection, Project
+from src.domain.models import Detection, Project, Role
+from src.repositories.state_safety import StateSafetyError
 from src.ui.admin_panel import AdminPanelManager
 
 
@@ -85,6 +88,12 @@ class FakeValidationService:
         }
         self.calls.append(payload)
         return payload
+
+
+class NoopInviteNotifier:
+    def send(self, payload):  # noqa: ANN001
+        _ = payload
+        return True, "not sent"
 
 
 class FakeConflictValidationService:
@@ -963,6 +972,89 @@ def test_load_user_access_from_file_reads_valid_payload(tmp_path: Path) -> None:
     assert access["admin_a"]["project-b"].value == "admin"
 
 
+def test_persist_bootstrap_state_blocks_unplanned_project_removal(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    users_file = tmp_path / "user_access.json"
+    invites_file = tmp_path / "invites.json"
+    projects_file.write_text(
+        json.dumps(
+            [
+                {
+                    "project_id": "project-a-id",
+                    "project_slug": "project-a",
+                    "name": "Project A",
+                    "dataset_repo_id": "org/project-a",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    users_file.write_text(json.dumps({"owner": {"project-a": "admin"}}), encoding="utf-8")
+
+    auth_service = AuthService()
+    auth_service.upsert_user_project_role("owner", "project-b", Role.admin)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+    admin_manager.register_project(
+        Project(
+            project_slug="project-b",
+            name="Project B",
+            dataset_repo_id="org/project-b",
+            owner_username="owner",
+        )
+    )
+
+    with pytest.raises(StateSafetyError):
+        _persist_bootstrap_state(
+            projects_path=projects_file,
+            user_access_path=users_file,
+            invites_path=invites_file,
+            admin_manager=admin_manager,
+            auth_service=auth_service,
+        )
+
+    assert json.loads(projects_file.read_text(encoding="utf-8"))[0]["project_slug"] == "project-a"
+
+
+def test_persist_bootstrap_state_allows_explicit_delete_and_creates_backups(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    users_file = tmp_path / "user_access.json"
+    invites_file = tmp_path / "invites.json"
+    projects_file.write_text(
+        json.dumps(
+            [
+                {
+                    "project_id": "project-a-id",
+                    "project_slug": "project-a",
+                    "name": "Project A",
+                    "dataset_repo_id": "org/project-a",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    users_file.write_text(json.dumps({"owner": {"project-a": "admin"}}), encoding="utf-8")
+    invites_file.write_text(json.dumps({}), encoding="utf-8")
+
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    _persist_bootstrap_state(
+        projects_path=projects_file,
+        user_access_path=users_file,
+        invites_path=invites_file,
+        admin_manager=admin_manager,
+        auth_service=auth_service,
+        allowed_removed_project_slugs={"project-a"},
+    )
+
+    assert json.loads(projects_file.read_text(encoding="utf-8")) == []
+    assert json.loads(users_file.read_text(encoding="utf-8")) == {}
+    assert list((tmp_path / ".backups").glob("projects.json.*.bak"))
+    assert list((tmp_path / ".backups").glob("user_access.json.*.bak"))
+
+
 def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp_path: Path) -> None:
     projects_file = tmp_path / "projects.json"
     projects_file.write_text(
@@ -1110,6 +1202,52 @@ def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_p
     assert "Emergency admin access" in warning
     assert emergency_session is not None
     assert emergency_session.role.value == "admin"
+
+
+def test_auto_auth_policy_requires_hf_token_in_space_without_demo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SPACE_ID", "owner/space")
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+    )
+
+    allow_username, label, description = _resolve_username_login_policy(runtime_config)
+
+    assert allow_username is False
+    assert "HF token" in label
+    assert "disabled" in description
+
+
+def test_auto_auth_policy_allows_username_for_demo(tmp_path: Path) -> None:
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=True,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+    )
+
+    allow_username, label, _ = _resolve_username_login_policy(runtime_config)
+
+    assert allow_username is True
+    assert "username" in label
 
 
 def test_load_dataset_detections_for_project_reads_jsonl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

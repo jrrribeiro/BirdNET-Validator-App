@@ -30,6 +30,7 @@ class RuntimeConfig:
     state_backend: str = "filesystem"
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
+    auth_mode: str = "auto"
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -100,6 +101,9 @@ class RuntimeConfig:
         state_backend = (os.getenv("BIRDNET_STATE_BACKEND") or "filesystem").strip().lower() or "filesystem"
         supabase_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/") or None
         supabase_service_role_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip() or None
+        auth_mode = (os.getenv("BIRDNET_AUTH_MODE") or "auto").strip().lower() or "auto"
+        if auth_mode not in {"auto", "hf_token", "username", "username_or_token"}:
+            auth_mode = "auto"
 
         return cls(
             detection_seed_path=detection_seed_path,
@@ -126,4 +130,5 @@ class RuntimeConfig:
             state_backend=state_backend,
             supabase_url=supabase_url,
             supabase_service_role_key=supabase_service_role_key,
+            auth_mode=auth_mode,
         )

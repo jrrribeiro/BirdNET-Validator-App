@@ -653,3 +653,38 @@ The redesign is complete when:
 6. One migrated real project completes validation workflow without Supabase.
 7. Admins can understand where their project state lives and how to export it.
 
+## Implementation Progress
+
+### 2026-05-24: Initial safety foundation
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added destructive-write protection for bootstrap persistence.
+   - Project and ACL removals are blocked unless the caller declares an explicit project-delete intent.
+   - Supabase persistence no longer broadly deactivates missing projects or ACL rows during ordinary create/update/invite operations.
+
+2. Added local JSON backups for filesystem state.
+   - Existing bootstrap JSON files are copied into `.backups/` before replacement.
+   - Validation `current.json` snapshots are also backed up before updates.
+
+3. Added append-only snapshot recovery.
+   - If filesystem `current.json` is missing or invalid, the current validation snapshot is rebuilt from validation event logs.
+   - Malformed event lines are skipped instead of breaking report/validation loading.
+
+4. Added production identity guardrails.
+   - New `BIRDNET_AUTH_MODE` config: `auto`, `hf_token`, `username`, or `username_or_token`.
+   - In automatic mode, Hugging Face Spaces without demo bootstrap require HF-token identity instead of username-only login.
+   - Local/demo mode preserves username login for testing.
+
+5. Added explicit repository contracts for future state backends.
+   - Project catalog.
+   - Project access.
+   - Project invites.
+   - Validation events.
+   - Current validation snapshots.
+
+Validation:
+
+1. `pytest -q`: 182 passed.
+2. `python scripts/check_deployment.py`: passed.
+

@@ -1,3 +1,6 @@
+import pytest
+
+from src.repositories.state_safety import StateSafetyError
 from src.repositories.supabase_state import SupabaseBootstrapStore
 
 
@@ -78,12 +81,38 @@ def test_supabase_persist_deactivates_projects_missing_from_current_state() -> N
         ],
         user_access={"owner": {"new-project": "admin"}},
         invites={},
+        allowed_removed_project_slugs={"old-project"},
     )
 
     old_project = next(row for row in client.tables["projects"] if row["project_slug"] == "old-project")
 
     assert old_project["active"] is False
     assert any(table == "projects" and row["active"] is False for table, row, _ in client.patches)
+
+
+def test_supabase_persist_blocks_unplanned_project_removal() -> None:
+    client = FakeSupabaseClient()
+    store = SupabaseBootstrapStore(client)  # type: ignore[arg-type]
+
+    with pytest.raises(StateSafetyError):
+        store.persist(
+            projects=[
+                {
+                    "project_id": "new-id",
+                    "project_slug": "new-project",
+                    "name": "New Project",
+                    "dataset_repo_id": "org/new-project",
+                    "visibility": "collaborative",
+                    "owner_username": "owner",
+                    "dataset_token": None,
+                    "active": True,
+                }
+            ],
+            user_access={"owner": {"new-project": "admin"}},
+            invites={},
+        )
+
+    assert client.tables["projects"][0]["active"] is True
 
 
 def test_supabase_load_projects_skips_inactive_rows() -> None:

@@ -24,6 +24,11 @@ from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection, Project, Role
 from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository, OptimisticLockError
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
+from src.repositories.state_safety import (
+    assert_bootstrap_persist_is_safe,
+    atomic_write_json_with_backup,
+    load_json_object,
+)
 from src.repositories.supabase_state import SupabaseBootstrapStore, SupabaseRestClient, SupabaseStateError, SupabaseValidationRepository
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
@@ -1275,13 +1280,6 @@ def _resolve_bootstrap_file_paths(runtime_config: RuntimeConfig) -> tuple[Path, 
     return projects_path, user_access_path, invites_path
 
 
-def _atomic_write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.parent / f".{path.name}.tmp.{os.getpid()}"
-    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
-
-
 def _persist_bootstrap_state(
     projects_path: Path,
     user_access_path: Path,
@@ -1289,6 +1287,7 @@ def _persist_bootstrap_state(
     admin_manager: AdminPanelManager,
     auth_service: AuthService,
     state_store: SupabaseBootstrapStore | None = None,
+    allowed_removed_project_slugs: set[str] | None = None,
 ) -> None:
     project_rows = admin_manager.list_projects()
     projects_payload = [
@@ -1308,12 +1307,27 @@ def _persist_bootstrap_state(
     invites_payload = auth_service.export_pending_invites_map()
 
     if state_store is not None:
-        state_store.persist(projects_payload, access_payload, invites_payload)
+        state_store.persist(
+            projects_payload,
+            access_payload,
+            invites_payload,
+            allowed_removed_project_slugs=allowed_removed_project_slugs,
+        )
         return
 
-    _atomic_write_json(projects_path, projects_payload)
-    _atomic_write_json(user_access_path, access_payload)
-    _atomic_write_json(invites_path, invites_payload)
+    existing_projects_payload = load_json_object(projects_path, [])
+    existing_access_payload = load_json_object(user_access_path, {})
+    assert_bootstrap_persist_is_safe(
+        existing_projects=existing_projects_payload if isinstance(existing_projects_payload, list) else [],
+        new_projects=projects_payload,
+        existing_user_access=existing_access_payload if isinstance(existing_access_payload, dict) else {},
+        new_user_access=access_payload,
+        allowed_removed_project_slugs=allowed_removed_project_slugs,
+    )
+
+    atomic_write_json_with_backup(projects_path, projects_payload)
+    atomic_write_json_with_backup(user_access_path, access_payload)
+    atomic_write_json_with_backup(invites_path, invites_payload)
 
 
 def _bootstrap_auth_and_projects(
@@ -1408,6 +1422,24 @@ def _build_supabase_state(runtime_config: RuntimeConfig) -> tuple[SupabaseBootst
         return bootstrap_store, validation_repository, "Supabase state backend enabled."
     except Exception as exc:
         return None, None, f"⚠️ Could not initialize Supabase state backend: {exc}. Falling back to local files."
+
+
+def _is_running_in_hf_space() -> bool:
+    return bool((os.getenv("SPACE_ID") or os.getenv("SPACE_HOST") or "").strip())
+
+
+def _resolve_username_login_policy(runtime_config: RuntimeConfig) -> tuple[bool, str, str]:
+    mode = (runtime_config.auth_mode or "auto").strip().lower()
+    if mode == "username":
+        return True, "username", "Username-only login enabled by explicit configuration."
+    if mode == "username_or_token":
+        return True, "username or HF token", "Username login is enabled; HF token login is still recommended."
+    if mode == "hf_token":
+        return False, "HF token required", "Production identity mode: username-only login is disabled."
+
+    if runtime_config.enable_demo_bootstrap or not _is_running_in_hf_space():
+        return True, "auto: username or HF token", "Development/demo identity mode: username login is available."
+    return False, "auto: HF token required", "Production identity mode: username-only login is disabled."
 
 
 def _page_to_table(
@@ -2700,6 +2732,7 @@ def create_app() -> gr.Blocks:
 
     projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
     state_store, supabase_validation_repository, state_backend_message = _build_supabase_state(runtime_config)
+    allow_username_login, auth_mode_label, auth_mode_description = _resolve_username_login_policy(runtime_config)
     bootstrap_warning = _bootstrap_auth_and_projects(
         auth_service,
         admin_manager,
@@ -2882,7 +2915,7 @@ def create_app() -> gr.Blocks:
             _touch_loaded_project(slug)
             return warning
 
-        def _persist_admin_state() -> tuple[bool, str]:
+        def _persist_admin_state(allowed_removed_project_slugs: set[str] | None = None) -> tuple[bool, str]:
             try:
                 _persist_bootstrap_state(
                     projects_path=projects_file_path,
@@ -2891,6 +2924,7 @@ def create_app() -> gr.Blocks:
                     admin_manager=admin_manager,
                     auth_service=auth_service,
                     state_store=state_store,
+                    allowed_removed_project_slugs=allowed_removed_project_slugs,
                 )
                 return True, ""
             except Exception as exc:
@@ -2906,7 +2940,11 @@ def create_app() -> gr.Blocks:
                         "Your account controls project access, validator attribution, and private dataset access.",
                     )
                 )
-                username_input, session_output, login_button, error_message = create_login_page(auth_service)
+                username_input, session_output, login_button, error_message = create_login_page(
+                    auth_service,
+                    allow_username_login=allow_username_login,
+                    auth_mode_label=auth_mode_description,
+                )
 
                 # Store session ID when login succeeds
                 def handle_login_success(session_id: str):
@@ -3212,7 +3250,7 @@ def create_app() -> gr.Blocks:
                     if not success:
                         return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
 
-                    persisted, persist_error = _persist_admin_state()
+                    persisted, persist_error = _persist_admin_state(allowed_removed_project_slugs={project_slug})
                     if not persisted:
                         msg = f"{msg} | Persistence failed: {persist_error}"
 
@@ -5139,6 +5177,17 @@ def create_app() -> gr.Blocks:
                     supabase_ready = bool(runtime_config.supabase_url and runtime_config.supabase_service_role_key)
                     state_label = "Supabase" if backend in {"supabase", "postgres", "postgresql"} and supabase_ready else "Filesystem"
                     state_tone = "ok" if state_label == "Supabase" else "warn"
+                    normalized_bootstrap_dir = str(runtime_config.bootstrap_base_dir).replace("\\", "/").rstrip("/")
+                    filesystem_durable = normalized_bootstrap_dir == "/data" or normalized_bootstrap_dir.startswith("/data/")
+                    if state_label == "Supabase":
+                        durability_label = "external durable"
+                        durability_tone = "ok"
+                    elif filesystem_durable:
+                        durability_label = "persistent volume"
+                        durability_tone = "ok"
+                    else:
+                        durability_label = "ephemeral local"
+                        durability_tone = "warn"
                     demo_label = "enabled" if runtime_config.enable_demo_bootstrap else "disabled"
                     demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
@@ -5146,6 +5195,10 @@ def create_app() -> gr.Blocks:
                     health_html = settings_health_html(
                         [
                             ("State backend", state_label, state_tone),
+                            ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
+                            ("Destructive write guard", "enabled", "ok"),
+                            ("Local JSON backups", "enabled" if state_label == "Filesystem" else "not used", "ok" if state_label == "Filesystem" else "info"),
+                            ("Durability", durability_label, durability_tone),
                             ("Supabase URL", "configured" if runtime_config.supabase_url else "missing", "ok" if runtime_config.supabase_url else "warn"),
                             ("Supabase service role", "configured" if runtime_config.supabase_service_role_key else "missing", "ok" if runtime_config.supabase_service_role_key else "warn"),
                             ("Demo bootstrap", demo_label, demo_tone),
@@ -5156,9 +5209,12 @@ def create_app() -> gr.Blocks:
                         ]
                     )
                     status_text = (
-                        "Supabase persistence is active."
+                        "Supabase persistence is active. Project and ACL removals are guarded against accidental broad overwrites."
                         if state_label == "Supabase"
-                        else "Filesystem persistence is active. On free Spaces, local files are not durable across rebuilds."
+                        else (
+                            "Filesystem persistence is active with local JSON backups and destructive-write guards. "
+                            "On free Spaces without persistent storage, local files are still not durable across rebuilds."
+                        )
                     )
                     return health_html, status_text
 
