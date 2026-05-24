@@ -194,7 +194,8 @@ class HfProjectStateValidationRepository:
                 events.append(event)
         return events
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]:
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
+        _ = actor_username
         project = (project_slug or "").strip()
         files = self._api.list_repo_files(
             repo_id=self._state_repo_id,
@@ -232,7 +233,8 @@ class HfProjectStateValidationRepository:
             }
         return snapshot
 
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+        _ = actor_username
         with self._lock:
             payload = self._read_json_or_none("snapshots/current.json")
             items = _extract_snapshot_items(payload, project_slug)

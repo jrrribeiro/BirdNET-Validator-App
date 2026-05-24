@@ -263,7 +263,8 @@ class ProjectStateBackend:
 |---|---|
 | Filesystem | local/demo/dev and offline tests |
 | Supabase | current backend, advanced hosted DB mode |
-| Hugging Face project store | recommended community/default mode |
+| Hugging Face companion `_state` repository | recommended control-plane store for project manifest, ACL, invites and checkpoints |
+| Hugging Face Storage Bucket | target high-frequency store for validation events and mutable snapshots |
 
 ## Authentication and Authorization Plan
 
@@ -487,6 +488,40 @@ Exit criteria:
 
 1. One real project can validate, reload, report progress, and survive app redeploy without Supabase.
 
+### 2026-05-24 Architecture Decision Update: high-frequency validation writes
+
+The companion private dataset repository remains appropriate for project manifest,
+ACL, invite metadata, durable exports, and recovery anchors. It must not remain
+the primary write target for every validation click at production scale.
+
+Reason:
+
+1. An expert validator may submit one validation approximately every three seconds.
+2. Several validators can work simultaneously on the same project.
+3. A Git-backed dataset commit for every action produces avoidable commit pressure,
+   history growth, and latency.
+4. Hugging Face documentation now recommends Storage Buckets for mutable data and
+   high-frequency small writes, while repositories remain appropriate for versioned
+   artifacts and documentation.
+
+Target storage split:
+
+| State | Target store | Write profile |
+|---|---|---|
+| Project manifest, ACL and invite policy | private companion `_state` repository | infrequent administrative commits |
+| Validation events and current snapshot | private admin-owned Storage Bucket | frequent mutable writes |
+| Periodic validation export/checkpoint | private companion `_state` repository or downloadable export | infrequent audited checkpoint |
+
+Token and permission policy:
+
+1. Users authenticate with their own Hugging Face OAuth identity.
+2. Tokens remain session-scoped and are never serialized into project state.
+3. The project admin creates/owns the private state resources through the app.
+4. A multi-user permission proof is required before enabling bucket-backed
+   validation by default; validators must never depend on a shared admin token.
+5. If Hugging Face resource permissions cannot grant validator writes safely, an
+   alternative delegated write path must be designed before production rollout.
+
 ## Phase 4: project onboarding flow
 
 Deliverables:
@@ -575,7 +610,7 @@ Measure:
 
 The next review must decide:
 
-1. Is the first HF state backend a Storage Bucket or companion dataset?
+1. Confirm real multi-user Bucket permissions for validator read/write access under OAuth.
 2. Should project state default to private even if audio is public?
 3. Are validators allowed to write directly to state stores with their HF identity?
 4. Do we support organization-owned projects in the first implementation?
@@ -811,4 +846,35 @@ Validation:
 
 1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_runtime_config.py -q`: passed.
 2. `python -m compileall app.py src`: passed.
+
+### 2026-05-24: OAuth identity and high-frequency Bucket foundation
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added Hugging Face OAuth session integration.
+   - The Space login UI uses `gr.LoginButton` in the hosted environment.
+   - An OAuth profile and its short-lived user token create the app session directly.
+   - Manual HF-token login remains a fallback; username-only login remains restricted by deployment mode.
+   - Personal tokens are held in memory for the session and are not serialized into project state.
+
+2. Added least-privilege OAuth metadata.
+   - Requests repository read access for authorized audio datasets.
+   - Requests contributed-repository access for state repositories created through the app.
+   - Broader shared-write permissions are not silently requested before a permission proof.
+
+3. Added an opt-in Hugging Face Storage Bucket validation backend.
+   - New configuration flag: `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED`.
+   - When enabled for creation, a private admin-owned validation Bucket is initialized automatically.
+   - Validation events and `snapshots/current.json` are updated through mutable Bucket file operations rather than one Git commit per review.
+   - Existing projects and the existing `_state` route remain unchanged unless explicitly enabled.
+
+4. Bound Bucket operations to the acting collaborator.
+   - Validation saves, queue snapshot reads, progress reads, and exports can route with the signed-in validator identity.
+   - A Bucket-backed write fails instead of falling back to an admin token when the validator has no own HF authorization.
+
+Still required before production enablement:
+
+1. A real two-user permission proof in a Space to confirm the safest Bucket sharing model.
+2. A multi-validator concurrency/load test at expected review speed.
+3. Onboarding/recovery UI for connecting existing state resources and migrating projects.
 

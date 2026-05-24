@@ -8,6 +8,9 @@ sdk_version: "5.23.1"
 python_version: "3.11"
 app_file: app.py
 hf_oauth: true
+hf_oauth_scopes:
+  - read-repos
+  - contribute-repos
 pinned: false
 ---
 
@@ -175,6 +178,7 @@ User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
 - SDK: `Gradio`
 - Python: `3.11`
 - OAuth: enabled (`hf_oauth: true` in this README metadata)
+- OAuth scopes: `read-repos` for authorized datasets and `contribute-repos` for project state stores created through this app
 
 2. Push this repository to the Space.
 
@@ -194,14 +198,20 @@ Optional runtime settings:
 - `BIRDNET_INVITE_TTL_HOURS` (default `72`)
 - `BIRDNET_PAGE_SIZE` (default `25`)
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
+- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (persist infrequent manifest, ACL and invite updates in the private `_state` dataset repo)
+- `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED=true` (experimental: create/use a private admin-owned Storage Bucket for high-frequency validation events and snapshots)
 
-Supabase state backend, recommended for free Spaces without persistent disk:
+Enable `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED` whenever Bucket validations are enabled. The app will refuse new Bucket-backed projects without the private `_state` manifest persistence needed for recovery after redeploys.
+
+Legacy Supabase state backend, available while migrating existing projects:
 
 - `BIRDNET_STATE_BACKEND=supabase`
 - `SUPABASE_URL` (Secret, example: `https://xxxx.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY` (Secret)
 
-When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`.
+When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`. New community deployments should prefer admin-owned Hugging Face project state once the high-frequency state backend is enabled and verified.
+
+The Bucket validation backend is opt-in until a real multi-validator permission test is completed. It uses each signed-in collaborator's OAuth authorization for validation reads and writes; it never falls back to an admin token for a validator submission.
 
 Optional invite email settings:
 

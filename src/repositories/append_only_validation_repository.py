@@ -104,7 +104,8 @@ class AppendOnlyValidationRepository:
             self._atomic_write_json(current_file, current_payload)
             return new_version
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]:
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
+        _ = actor_username
         project_dir = self._base_dir / project_slug / "validations"
         if not project_dir.exists():
             return []
@@ -121,7 +122,8 @@ class AppendOnlyValidationRepository:
                             continue
         return events
 
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+        _ = actor_username
         current_file = self._base_dir / project_slug / "validations" / "current.json"
         if not current_file.exists():
             return self._snapshot_from_events(project_slug)

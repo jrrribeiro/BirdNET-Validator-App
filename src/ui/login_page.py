@@ -56,10 +56,32 @@ def perform_login(
     )
 
 
+def perform_oauth_login(
+    auth_service: AuthService,
+    profile: gr.OAuthProfile | None,
+    oauth_token: gr.OAuthToken | None,
+) -> Tuple[str, str]:
+    """Create an app session using the verified identity supplied by HF Spaces OAuth."""
+    if profile is None or oauth_token is None:
+        return "", "Sign in with Hugging Face first, then continue to the workspace."
+
+    username = str(profile.get("preferred_username") or profile.get("name") or "").strip()
+    email = str(profile.get("email") or "").strip() or None
+    session, message = auth_service.login_with_verified_hf_identity(
+        username=username,
+        token=oauth_token.token,
+        email=email,
+    )
+    if session is None:
+        return "", message
+    return session.session_id, message
+
+
 def create_login_page(
     auth_service: AuthService,
     *,
     allow_username_login: bool = True,
+    enable_oauth_login: bool = False,
     auth_mode_label: str = "",
 ) -> Tuple[gr.Textbox, gr.Textbox, gr.Button, gr.Markdown]:
     """Create a Gradio login page with username input and session tracking.
@@ -75,10 +97,16 @@ def create_login_page(
             gr.Markdown("")
         with gr.Column(scale=6):
             gr.Markdown("# BirdNET Validation Platform")
-            gr.Markdown("Login to access multi-project validation workflows")
+            gr.Markdown("Sign in with your Hugging Face account to access project validation workflows.")
             if auth_mode_label:
                 gr.Markdown(auth_mode_label)
 
+            oauth_continue_button = None
+            if enable_oauth_login:
+                gr.LoginButton("Sign in with Hugging Face", logout_value="Sign out ({})")
+                oauth_continue_button = gr.Button("Continue with signed-in account", variant="primary")
+
+            gr.Markdown("Manual token access is available as a fallback for development or restricted deployments.")
             username_input = gr.Textbox(
                 label="Username",
                 placeholder="Enter your username" if allow_username_login else "Username login disabled in this deployment",
@@ -114,5 +142,18 @@ def create_login_page(
         inputs=[username_input, hf_token_input],
         outputs=[session_output, error_message],
     )
+
+    def handle_oauth_login(
+        profile: gr.OAuthProfile | None,
+        oauth_token: gr.OAuthToken | None,
+    ) -> Tuple[str, str]:
+        return perform_oauth_login(auth_service, profile, oauth_token)
+
+    if oauth_continue_button is not None:
+        oauth_continue_button.click(
+            fn=handle_oauth_login,
+            inputs=None,
+            outputs=[session_output, error_message],
+        )
 
     return username_input, session_output, login_button, error_message

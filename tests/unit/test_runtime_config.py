@@ -23,3 +23,11 @@ def test_runtime_config_reads_hf_project_state_repo_list(monkeypatch) -> None:  
     config = RuntimeConfig.from_env()
 
     assert config.hf_project_state_repos == ("owner/a_state", "owner/b_state", "owner/c_state")
+
+
+def test_runtime_config_reads_bucket_validation_flag(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED", "true")
+
+    config = RuntimeConfig.from_env()
+
+    assert config.hf_bucket_validations_enabled is True

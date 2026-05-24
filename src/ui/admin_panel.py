@@ -66,6 +66,8 @@ class AdminPanelManager:
                 "state_repo_id": p.state_repo_id,
                 "state_schema_version": p.state_schema_version,
                 "state_status": p.state_status,
+                "validation_backend": p.validation_backend,
+                "validation_bucket_id": p.validation_bucket_id,
                 "active": p.active,
             }
             for p in self._projects.values()

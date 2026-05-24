@@ -1,7 +1,10 @@
 from collections import defaultdict
 from typing import DefaultDict
 
+import pytest
+
 from src.domain.models import Project, Validation
+from src.repositories.hf_bucket_validation_repository import HF_BUCKET_VALIDATION_BACKEND, HfBucketValidationError
 from src.repositories.project_aware_validation_repository import ProjectAwareValidationRepository
 from src.services.hf_project_state_store import HF_PROJECT_STATE_BACKEND
 
@@ -109,3 +112,49 @@ def test_project_aware_repository_uses_fallback_when_project_has_no_state_token(
 
     assert fallback.saved == [("project-a", "audio-a-0000000001")]
     assert hf_repo.saved == []
+
+
+def test_project_aware_repository_routes_bucket_write_with_validator_token() -> None:
+    fallback = FakeValidationStateRepository("fallback")
+    bucket_repo = FakeValidationStateRepository("bucket")
+    received: list[tuple[str, str]] = []
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="owner/project-a",
+        validation_backend=HF_BUCKET_VALIDATION_BACKEND,
+        validation_bucket_id="owner/project-a_validation_state",
+    )
+    router = ProjectAwareValidationRepository(
+        fallback_repository=fallback,
+        project_lookup=lambda slug: project if slug == "project-a" else None,
+        token_provider=lambda _: "hf_admin_token",
+        actor_token_provider=lambda _project, username: "hf_validator_token" if username == "validator-a" else None,
+        enable_hf_bucket_validations=True,
+        bucket_repository_factory=lambda bucket, token: (received.append((bucket, token)) or bucket_repo),
+    )
+
+    assert router.save_validation("project-a", _validation(), expected_version=0) == 1
+
+    assert received == [("owner/project-a_validation_state", "hf_validator_token")]
+    assert bucket_repo.saved == [("project-a", "audio-a-0000000001")]
+
+
+def test_project_aware_repository_bucket_write_does_not_fall_back_to_admin_token() -> None:
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="owner/project-a",
+        validation_backend=HF_BUCKET_VALIDATION_BACKEND,
+        validation_bucket_id="owner/project-a_validation_state",
+    )
+    router = ProjectAwareValidationRepository(
+        fallback_repository=FakeValidationStateRepository("fallback"),
+        project_lookup=lambda _: project,
+        token_provider=lambda _: "hf_admin_token",
+        actor_token_provider=lambda _project, _username: None,
+        enable_hf_bucket_validations=True,
+    )
+
+    with pytest.raises(HfBucketValidationError, match="signed-in validator"):
+        router.save_validation("project-a", _validation(), expected_version=0)

@@ -214,6 +214,21 @@ class TestAuthService:
         assert service.get_hf_token_for_user("hf_user") == "hf_test_token"
         assert service.get_known_email_for_user("hf_user") == "hf_user@example.org"
 
+    def test_login_with_verified_hf_identity_uses_oauth_identity_without_whoami(self):
+        service = AuthService()
+
+        session, message = service.login_with_verified_hf_identity(
+            username="oauth_user",
+            token="oauth_access_token",
+            email="oauth_user@example.org",
+        )
+
+        assert session is not None
+        assert session.username == "oauth_user"
+        assert "Welcome, oauth_user" in message
+        assert service.get_hf_token_for_user("oauth_user") == "oauth_access_token"
+        assert service.get_known_email_for_user("oauth_user") == "oauth_user@example.org"
+
     def test_register_user_project_access_update(self, auth_service):
         """Test updating user's project access."""
         auth_service.register_user_project_access(

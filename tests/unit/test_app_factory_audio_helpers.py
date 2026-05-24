@@ -141,12 +141,12 @@ class FakeSnapshotReader:
             {"detection_key": "dkey_02", "status": "negative"},
         ]
 
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
-        _ = project_slug
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+        _ = (project_slug, actor_username)
         return self.snapshot
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]:
-        _ = project_slug
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
+        _ = (project_slug, actor_username)
         return self.events
 
 

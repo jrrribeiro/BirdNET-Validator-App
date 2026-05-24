@@ -125,6 +125,8 @@ def _project_json(
         "state_ref": state_repo_id,
         "state_schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
         "state_status": "archived" if archived_at else "ready",
+        "validation_backend": project.validation_backend,
+        "validation_bucket_id": project.validation_bucket_id,
         "owner_username": project.owner_username,
         "visibility": project.visibility,
         "active": bool(project.active) and archived_at is None,
@@ -270,6 +272,8 @@ def _project_from_project_payload(payload: dict[str, object], state_repo_id: str
         state_repo_id=state_repo_id,
         state_schema_version=state_schema_version,
         state_status=state_status,
+        validation_backend=str(payload.get("validation_backend") or "app_backend").strip() or "app_backend",
+        validation_bucket_id=(str(payload.get("validation_bucket_id") or "").strip() or None),
         active=True,
     )
 

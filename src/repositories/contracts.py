@@ -51,11 +51,11 @@ class BootstrapStateRepository(ProjectCatalogRepository, ProjectAccessRepository
 
 
 class ValidationEventRepository(Protocol):
-    def list_events(self, project_slug: str) -> list[dict[str, object]]: ...
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]: ...
 
 
 class CurrentValidationRepository(Protocol):
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]: ...
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]: ...
 
 
 class ProjectStateBackend(

@@ -108,6 +108,8 @@ class SupabaseBootstrapStore:
                         state_repo_id=(str(row.get("state_repo_id") or "").strip() or None),
                         state_schema_version=int(row.get("state_schema_version") or 1),
                         state_status=str(row.get("state_status") or "not_configured").strip() or "not_configured",
+                        validation_backend=str(row.get("validation_backend") or "app_backend").strip() or "app_backend",
+                        validation_bucket_id=(str(row.get("validation_bucket_id") or "").strip() or None),
                         active=bool(row.get("active", True)),
                     )
                 )
@@ -320,7 +322,8 @@ class SupabaseValidationRepository:
             )
             return new_version
 
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+        _ = actor_username
         rows = self._client.select("current_validations", query={"project_slug": SupabaseRestClient.eq(project_slug)})
         snapshot: dict[str, dict[str, object]] = {}
         for row in rows:
@@ -337,7 +340,8 @@ class SupabaseValidationRepository:
             }
         return snapshot
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]:
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
+        _ = actor_username
         rows = self._client.select(
             "validation_events",
             query={"project_slug": SupabaseRestClient.eq(project_slug), "order": "created_at.asc"},

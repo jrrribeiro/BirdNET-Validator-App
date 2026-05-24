@@ -24,6 +24,11 @@ from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection, Project, Role
 from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository, OptimisticLockError
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
+from src.repositories.hf_bucket_validation_repository import (
+    HF_BUCKET_VALIDATION_BACKEND,
+    HfBucketValidationError,
+    HfBucketValidationInitializer,
+)
 from src.repositories.project_aware_validation_repository import ProjectAwareValidationRepository
 from src.repositories.state_safety import (
     assert_bootstrap_persist_is_safe,
@@ -83,9 +88,9 @@ class _ValidationServiceProtocol(Protocol):
 
 
 class _ValidationReadRepositoryProtocol(Protocol):
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]: ...
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]: ...
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]: ...
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]: ...
 
 
 class _QueueServiceProtocol(Protocol):
@@ -1232,6 +1237,8 @@ def _load_projects_from_file(projects_file_path: str | None) -> list[Project]:
                     state_repo_id=(str(row.get("state_repo_id", "")).strip() or None),
                     state_schema_version=int(row.get("state_schema_version") or 1),
                     state_status=str(row.get("state_status", "not_configured")).strip() or "not_configured",
+                    validation_backend=str(row.get("validation_backend", "app_backend")).strip() or "app_backend",
+                    validation_bucket_id=(str(row.get("validation_bucket_id", "")).strip() or None),
                     active=bool(row.get("active", True)),
                 )
             )
@@ -1403,6 +1410,8 @@ def _persist_bootstrap_state(
             "state_repo_id": str(project.get("state_repo_id", "")).strip() or None,
             "state_schema_version": int(project.get("state_schema_version") or 1),
             "state_status": str(project.get("state_status", "not_configured")).strip() or "not_configured",
+            "validation_backend": str(project.get("validation_backend", "app_backend")).strip() or "app_backend",
+            "validation_bucket_id": str(project.get("validation_bucket_id", "")).strip() or None,
             "active": bool(project.get("active", True)),
         }
         for project in project_rows
@@ -1552,15 +1561,15 @@ def _is_running_in_hf_space() -> bool:
 def _resolve_username_login_policy(runtime_config: RuntimeConfig) -> tuple[bool, str, str]:
     mode = (runtime_config.auth_mode or "auto").strip().lower()
     if mode == "username":
-        return True, "username", "Username-only login enabled by explicit configuration."
+        return True, "OAuth or username", "OAuth is recommended; username-only login is enabled by explicit development configuration."
     if mode == "username_or_token":
-        return True, "username or HF token", "Username login is enabled; HF token login is still recommended."
+        return True, "OAuth, username, or HF token", "OAuth is recommended; username and token fallback are enabled."
     if mode == "hf_token":
-        return False, "HF token required", "Production identity mode: username-only login is disabled."
+        return False, "OAuth or HF token", "Production identity mode: username-only login is disabled; sign in with Hugging Face OAuth or use an explicit HF token fallback."
 
     if runtime_config.enable_demo_bootstrap or not _is_running_in_hf_space():
-        return True, "auto: username or HF token", "Development/demo identity mode: username login is available."
-    return False, "auto: HF token required", "Production identity mode: username-only login is disabled."
+        return True, "auto: OAuth, username, or HF token", "Development/demo identity mode: OAuth is preferred and username login remains available."
+    return False, "auto: OAuth or HF token", "Production identity mode: username-only login is disabled; sign in with Hugging Face OAuth or use an explicit HF token fallback."
 
 
 def _page_to_table(
@@ -1576,9 +1585,10 @@ def _page_to_table(
     updated_after: object = None,
     conflict_detection_key: str = "",
     show_conflicts_only: bool = False,
+    actor_username: str = "",
 ):
     filter_name = scientific_name.strip() if scientific_name.strip() else None
-    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug, actor_username=actor_username)
     normalized_status_filter = status_filter.strip().lower() if status_filter else "all"
     normalized_validator_filter = validator_filter.strip().lower()
 
@@ -1720,9 +1730,9 @@ def _build_queue_badge(service: _QueueServiceProtocol, project_slug: str | None)
     )
 
 
-def _build_validation_report(snapshot_reader: _ValidationReadRepositoryProtocol, project_slug: str) -> str:
-    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
-    events = snapshot_reader.list_events(project_slug=project_slug)
+def _build_validation_report(snapshot_reader: _ValidationReadRepositoryProtocol, project_slug: str, actor_username: str = "") -> str:
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug, actor_username=actor_username)
+    events = snapshot_reader.list_events(project_slug=project_slug, actor_username=actor_username)
 
     counts: dict[str, int] = {}
     for payload in snapshot.values():
@@ -2294,6 +2304,7 @@ def _first_pending_queue_page(
     status_filter: str,
     updated_after: object,
     show_conflicts_only: bool,
+    actor_username: str = "",
 ) -> tuple[list[list[object]], int, int] | None:
     normalized_status_filter = (status_filter or "all").strip().lower()
     if normalized_status_filter not in {"", "all", "pending"}:
@@ -2313,6 +2324,7 @@ def _first_pending_queue_page(
             status_filter=status_filter,
             updated_after=updated_after,
             show_conflicts_only=show_conflicts_only,
+            actor_username=actor_username,
         )
         if actual_page in visited_pages:
             return None
@@ -2436,6 +2448,7 @@ def _save_selected_validation_with_refresh(
         status_filter=status_filter,
         updated_after=updated_after,
         show_conflicts_only=show_conflicts_only,
+        actor_username=validator,
     )
     refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
 
@@ -2458,6 +2471,7 @@ def _save_selected_validation_with_refresh(
             updated_after=updated_after,
             conflict_detection_key=conflict_key,
             show_conflicts_only=show_conflicts_only,
+            actor_username=validator,
         )
         refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
         refreshed_index = _find_detection_row_index(refreshed_rows, selected_key) if selected_key else 0
@@ -2477,6 +2491,7 @@ def _save_selected_validation_with_refresh(
                 status_filter=status_filter,
                 updated_after=updated_after,
                 show_conflicts_only=show_conflicts_only,
+                actor_username=validator,
             )
             if first_pending_page is not None:
                 refreshed_rows, refreshed_page, pending_index = first_pending_page
@@ -2528,6 +2543,7 @@ def _reapply_last_conflict_validation_with_refresh(
             status_filter=status_filter,
             updated_after=updated_after,
             show_conflicts_only=show_conflicts_only,
+            actor_username=validator,
         )
         refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
         return (
@@ -2636,6 +2652,7 @@ def _batch_validate_conflicts(
         status_filter=status_filter,
         updated_after=updated_after,
         show_conflicts_only=False,
+        actor_username=validator_name,
     )
     refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
 
@@ -2896,11 +2913,14 @@ def create_app() -> gr.Blocks:
             or (_env_hf_token() or "").strip()
             or None
         ),
+        actor_token_provider=lambda _project, username: auth_service.get_hf_token_for_user(username),
         enable_hf_project_state=runtime_config.hf_project_state_writes_enabled,
+        enable_hf_bucket_validations=runtime_config.hf_bucket_validations_enabled,
     )
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
     hf_state_sync = HfProjectStateStoreSync()
+    hf_bucket_initializer = HfBucketValidationInitializer()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
     report_cache_ttl_seconds = 30.0
 
@@ -3160,6 +3180,7 @@ def create_app() -> gr.Blocks:
                 username_input, session_output, login_button, error_message = create_login_page(
                     auth_service,
                     allow_username_login=allow_username_login,
+                    enable_oauth_login=_is_running_in_hf_space(),
                     auth_mode_label=auth_mode_description,
                 )
 
@@ -3318,6 +3339,27 @@ def create_app() -> gr.Blocks:
                                 gr.update(),
                                 session,
                             )
+                        if (
+                            runtime_config.hf_bucket_validations_enabled
+                            and not runtime_config.hf_project_state_writes_enabled
+                        ):
+                            return (
+                                "Project was not created: enable BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED "
+                                "together with BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED so the private "
+                                "_state repo durably records its validation bucket.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
 
                         project = Project(
                             project_id=str(uuid4()),
@@ -3357,6 +3399,34 @@ def create_app() -> gr.Blocks:
                         project.state_schema_version = HF_PROJECT_STATE_SCHEMA_VERSION
                         project.state_status = "ready"
                         state_repo_action = "initialized" if state_result.initialized else "connected"
+                        bucket_message = ""
+                        if runtime_config.hf_bucket_validations_enabled:
+                            try:
+                                bucket_result = hf_bucket_initializer.initialize(
+                                    project_slug=project.project_slug,
+                                    dataset_repo_id=project.dataset_repo_id,
+                                    token=operation_token,
+                                )
+                            except HfBucketValidationError as exc:
+                                return (
+                                    f"Project was not created because its private validation bucket could not be initialized: {exc}",
+                                    _project_rows(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    session,
+                                )
+                            project.validation_backend = HF_BUCKET_VALIDATION_BACKEND
+                            project.validation_bucket_id = bucket_result.bucket_id
+                            bucket_action = "initialized" if bucket_result.initialized else "connected"
+                            bucket_message = f" Validation bucket {bucket_action}: {bucket_result.bucket_id}."
 
                         created = admin_manager.register_project(project)
                         if not created:
@@ -3390,9 +3460,9 @@ def create_app() -> gr.Blocks:
 
                         return (
                             (
-                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}."
+                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}.{bucket_message}"
                                 if persisted
-                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}), but could not persist bootstrap files: {persist_error}"
+                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}).{bucket_message} Could not persist bootstrap files: {persist_error}"
                             ),
                             _project_rows(),
                             gr.update(choices=admin_projects, value=slug),
@@ -4401,6 +4471,7 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     if not project_slug:
                         return [], "", 1
@@ -4420,6 +4491,7 @@ def create_app() -> gr.Blocks:
                         status_filter=status_filter_value,
                         updated_after=updated_after_value,
                         show_conflicts_only=only_conflicts,
+                        actor_username=_validator_name_from_session(session),
                     )
                     rows = _sort_rows_by_confidence_desc(rows)
                     return rows, status_text, updated_page
@@ -4433,6 +4505,7 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     return refresh(
                         project_slug,
@@ -4443,6 +4516,7 @@ def create_app() -> gr.Blocks:
                         status_filter_value,
                         updated_after_value,
                         only_conflicts,
+                        session,
                     )
 
                 def go_prev(
@@ -4454,6 +4528,7 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     return refresh(
                         project_slug,
@@ -4464,6 +4539,7 @@ def create_app() -> gr.Blocks:
                         status_filter_value,
                         updated_after_value,
                         only_conflicts,
+                        session,
                     )
 
                 def refresh_for_selected_project(project_slug: str, session):
@@ -4617,10 +4693,10 @@ def create_app() -> gr.Blocks:
                     _invalidate_report_cache(project_slug)
                     return result
 
-                def build_report_for_project(project_slug: str) -> str:
+                def build_report_for_project(project_slug: str, session=None) -> str:
                     if not project_slug:
                         return "Select a project to generate report"
-                    return _build_validation_report(validation_repository, project_slug)
+                    return _build_validation_report(validation_repository, project_slug, _validator_name_from_session(session))
 
                 def save_corrected_species_option(
                     project_slug: str,
@@ -4707,6 +4783,7 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 )
@@ -4721,6 +4798,7 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 )
@@ -4735,6 +4813,7 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 )
@@ -5236,7 +5315,10 @@ def create_app() -> gr.Blocks:
                     if not items:
                         return None, f"Project '{slug}' has no detections loaded for export."
 
-                    snapshot = validation_repository.load_current_snapshot(project_slug=slug)
+                    snapshot = validation_repository.load_current_snapshot(
+                        project_slug=slug,
+                        actor_username=_validator_name_from_session(session),
+                    )
                     output_path = _write_validation_export(
                         items,
                         snapshot,
@@ -5286,8 +5368,14 @@ def create_app() -> gr.Blocks:
                         return cached[1]
 
                     items = service_ref["queue"].list_all_detections(project_slug=slug)
-                    snapshot = validation_repository.load_current_snapshot(project_slug=slug)
-                    events = validation_repository.list_events(project_slug=slug)
+                    snapshot = validation_repository.load_current_snapshot(
+                        project_slug=slug,
+                        actor_username=_validator_name_from_session(session),
+                    )
+                    events = validation_repository.list_events(
+                        project_slug=slug,
+                        actor_username=_validator_name_from_session(session),
+                    )
                     total_recordings = len(items)
 
                     species_totals: dict[str, dict[str, int]] = {}
@@ -5499,12 +5587,14 @@ def create_app() -> gr.Blocks:
                     demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
                     hf_project_state_label = "enabled" if runtime_config.hf_project_state_writes_enabled else "disabled"
+                    hf_bucket_validation_label = "enabled" if runtime_config.hf_bucket_validations_enabled else "disabled"
                     hf_project_state_repos_label = str(len(runtime_config.hf_project_state_repos))
                     hf_space_label = os.getenv("SPACE_ID") or "local runtime"
                     health_html = settings_health_html(
                         [
                             ("State backend", state_label, state_tone),
                             ("HF project-state writes", hf_project_state_label, "ok" if runtime_config.hf_project_state_writes_enabled else "info"),
+                            ("HF Bucket validations", hf_bucket_validation_label, "ok" if runtime_config.hf_bucket_validations_enabled else "info"),
                             ("HF project-state repos", hf_project_state_repos_label, "ok" if runtime_config.hf_project_state_repos else "info"),
                             ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
                             ("Destructive write guard", "enabled", "ok"),

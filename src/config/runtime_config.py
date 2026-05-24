@@ -32,6 +32,7 @@ class RuntimeConfig:
     supabase_service_role_key: str | None = None
     auth_mode: str = "auto"
     hf_project_state_writes_enabled: bool = False
+    hf_bucket_validations_enabled: bool = False
     hf_project_state_repos: tuple[str, ...] = ()
 
     @classmethod
@@ -108,6 +109,8 @@ class RuntimeConfig:
             auth_mode = "auto"
         raw_hf_project_state_writes = (os.getenv("BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED") or "").strip().lower()
         hf_project_state_writes_enabled = raw_hf_project_state_writes in {"1", "true", "yes", "on"}
+        raw_hf_bucket_validations = (os.getenv("BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED") or "").strip().lower()
+        hf_bucket_validations_enabled = raw_hf_bucket_validations in {"1", "true", "yes", "on"}
         raw_hf_project_state_repos = (os.getenv("BIRDNET_HF_PROJECT_STATE_REPOS") or "").strip()
         hf_project_state_repos = tuple(
             repo.strip()
@@ -142,6 +145,7 @@ class RuntimeConfig:
             supabase_service_role_key=supabase_service_role_key,
             auth_mode=auth_mode,
             hf_project_state_writes_enabled=hf_project_state_writes_enabled,
+            hf_bucket_validations_enabled=hf_bucket_validations_enabled,
             hf_project_state_repos=hf_project_state_repos,
         )
 
