@@ -338,6 +338,8 @@ def test_build_validation_export_rows_keep_detections_metadata_and_current_valid
                 "validator": "scientist",
                 "updated_at": "2026-05-22T12:00:00+00:00",
                 "version": 2,
+                "conflict": True,
+                "conflict_reason": "parallel_events_same_version",
             }
         },
         project_slug="analysis-project",
@@ -359,6 +361,8 @@ def test_build_validation_export_rows_keep_detections_metadata_and_current_valid
     assert rows[0]["validation_status"] == "positive"
     assert rows[0]["validation_effective_species"] == "Corrected species"
     assert rows[0]["validation_version"] == 2
+    assert rows[0]["validation_conflict"] is True
+    assert rows[0]["validation_conflict_reason"] == "parallel_events_same_version"
     assert rows[1]["validation_status"] == "pending"
     assert rows[1]["validation_effective_species"] == "Species B"
     assert rows[1]["validation_reviewed"] is False
@@ -458,6 +462,22 @@ def test_page_to_table_marks_conflict_row() -> None:
         scientific_name="",
         min_confidence=0.0,
         conflict_detection_key="dkey_01",
+    )
+
+    assert rows[0][8] == "CONFLICT"
+    assert rows[0][9] == "HIGH"
+
+
+def test_page_to_table_marks_persisted_backend_conflict_row() -> None:
+    reader = FakeSnapshotReader()
+    reader.snapshot["dkey_01"]["conflict"] = True
+    rows, _, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=reader,
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
     )
 
     assert rows[0][8] == "CONFLICT"

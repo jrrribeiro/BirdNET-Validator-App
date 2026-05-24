@@ -39,6 +39,8 @@ class HfBucketFilesApi(Protocol):
 
     def read_text(self, *, bucket_id: str, path_in_bucket: str, token: str) -> str: ...
 
+    def read_texts(self, *, bucket_id: str, paths_in_bucket: list[str], token: str) -> dict[str, str]: ...
+
     def write_files(self, *, bucket_id: str, files: dict[str, bytes], token: str) -> None: ...
 
 
@@ -54,17 +56,35 @@ class HuggingFaceBucketFilesApi:
         ]
 
     def read_text(self, *, bucket_id: str, path_in_bucket: str, token: str) -> str:
+        downloaded = self.read_texts(
+            bucket_id=bucket_id,
+            paths_in_bucket=[path_in_bucket],
+            token=token,
+        )
+        if path_in_bucket not in downloaded:
+            raise FileNotFoundError(path_in_bucket)
+        return downloaded[path_in_bucket]
+
+    def read_texts(self, *, bucket_id: str, paths_in_bucket: list[str], token: str) -> dict[str, str]:
+        if not paths_in_bucket:
+            return {}
         with tempfile.TemporaryDirectory(prefix="birdnet-bucket-read-") as temp_dir:
-            local_path = Path(temp_dir) / Path(path_in_bucket).name
+            downloads: list[tuple[str, Path]] = []
+            for path_in_bucket in paths_in_bucket:
+                local_path = Path(temp_dir) / Path(path_in_bucket)
+                local_path.parent.mkdir(parents=True, exist_ok=True)
+                downloads.append((path_in_bucket, local_path))
             download_bucket_files(
                 bucket_id,
-                [(path_in_bucket, local_path)],
+                downloads,
                 raise_on_missing_files=False,
                 token=token,
             )
-            if not local_path.exists():
-                raise FileNotFoundError(path_in_bucket)
-            return local_path.read_text(encoding="utf-8")
+            return {
+                path_in_bucket: local_path.read_text(encoding="utf-8")
+                for path_in_bucket, local_path in downloads
+                if local_path.exists()
+            }
 
     def write_files(self, *, bucket_id: str, files: dict[str, bytes], token: str) -> None:
         batch_bucket_files(
@@ -180,41 +200,88 @@ class HfBucketValidationRepository:
 
     def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
         _ = actor_username
-        paths = self._api.list_files(bucket_id=self._bucket_id, prefix="events/", token=self._token)
+        paths = [
+            path
+            for path in self._api.list_files(bucket_id=self._bucket_id, prefix="events/", token=self._token)
+            if path.endswith(".json")
+        ]
+        texts = self._api.read_texts(bucket_id=self._bucket_id, paths_in_bucket=paths, token=self._token)
         events: list[dict[str, object]] = []
         for path in sorted(paths):
-            if not path.endswith(".json"):
+            text = texts.get(path)
+            if text is None:
                 continue
-            payload = self._read_json_or_none(path)
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError:
+                continue
             if not isinstance(payload, dict):
                 continue
             if str(payload.get("project_slug") or project_slug).strip() != project_slug:
                 continue
             events.append(payload)
-        return sorted(events, key=lambda event: str(event.get("timestamp") or ""))
+        return sorted(
+            events,
+            key=lambda event: (str(event.get("timestamp") or ""), str(event.get("event_id") or "")),
+        )
 
-    def _snapshot_from_events(self, project_slug: str) -> dict[str, dict[str, object]]:
-        snapshot: dict[str, dict[str, object]] = {}
-        for event in self.list_events(project_slug):
+    @staticmethod
+    def _state_from_event(event: dict[str, object]) -> dict[str, object]:
+        return {
+            "status": event.get("status"),
+            "corrected_species": event.get("corrected_species"),
+            "notes": event.get("notes") or "",
+            "validator": event.get("validator"),
+            "updated_at": event.get("timestamp"),
+            "version": int(event.get("new_version") or 0),
+        }
+
+    @classmethod
+    def _merge_snapshot_and_events(
+        cls,
+        snapshot: dict[str, dict[str, object]],
+        events: list[dict[str, object]],
+    ) -> dict[str, dict[str, object]]:
+        merged = {key: dict(value) for key, value in snapshot.items()}
+        for event in events:
             key = str(event.get("detection_key") or "").strip()
             if not key:
                 continue
-            snapshot[key] = {
-                "status": event.get("status"),
-                "corrected_species": event.get("corrected_species"),
-                "notes": event.get("notes") or "",
-                "validator": event.get("validator"),
-                "updated_at": event.get("timestamp"),
-                "version": int(event.get("new_version") or 0),
-            }
-        return snapshot
+            incoming = cls._state_from_event(event)
+            current = merged.get(key)
+            if current is None:
+                merged[key] = incoming
+                continue
+            incoming_version = int(incoming.get("version") or 0)
+            current_version = int(current.get("version") or 0)
+            if incoming_version > current_version:
+                merged[key] = incoming
+                continue
+            if incoming_version != current_version or incoming_version <= 0:
+                continue
+            state_fields = ("status", "corrected_species", "notes", "validator")
+            incoming_decision = tuple(incoming.get(field) for field in state_fields)
+            current_decision = tuple(current.get(field) for field in state_fields)
+            incoming_is_newer = str(incoming.get("updated_at") or "") > str(current.get("updated_at") or "")
+            if incoming_decision != current_decision:
+                winner = dict(incoming if incoming_is_newer else current)
+                winner["conflict"] = True
+                winner["conflict_reason"] = "parallel_events_same_version"
+                merged[key] = winner
+                continue
+            if incoming_is_newer and not bool(current.get("conflict")):
+                merged[key] = incoming
+        return merged
+
+    def _snapshot_from_events(self, project_slug: str) -> dict[str, dict[str, object]]:
+        return self._merge_snapshot_and_events({}, self.list_events(project_slug))
 
     def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
         _ = actor_username
         with self._lock:
             payload = self._read_json_or_none("snapshots/current.json")
-            items = _extract_items(payload, project_slug)
-            return items if items is not None else self._snapshot_from_events(project_slug)
+            items = _extract_items(payload, project_slug) or {}
+            return self._merge_snapshot_and_events(items, self.list_events(project_slug))
 
     def save_validation(self, project_slug: str, item: Validation, expected_version: int | None = None) -> int:
         project = (project_slug or "").strip()

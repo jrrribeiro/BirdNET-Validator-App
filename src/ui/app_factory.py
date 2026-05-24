@@ -1653,8 +1653,18 @@ def _page_to_table(
             item.end_time,
             str(snapshot.get(item.detection_key, {}).get("status", "pending")),
             int(snapshot.get(item.detection_key, {}).get("version", 0)),
-            "CONFLICT" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
-            "HIGH" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
+            "CONFLICT"
+            if (
+                (conflict_detection_key and item.detection_key == conflict_detection_key)
+                or bool(snapshot.get(item.detection_key, {}).get("conflict"))
+            )
+            else "",
+            "HIGH"
+            if (
+                (conflict_detection_key and item.detection_key == conflict_detection_key)
+                or bool(snapshot.get(item.detection_key, {}).get("conflict"))
+            )
+            else "",
         ]
         for item in items
     ]
@@ -2681,6 +2691,8 @@ _VALIDATION_EXPORT_STATE_COLUMNS = [
     "validation_validator",
     "validation_updated_at",
     "validation_version",
+    "validation_conflict",
+    "validation_conflict_reason",
     "validation_reviewed",
 ]
 
@@ -2765,6 +2777,8 @@ def _build_validation_export_rows(
             "validation_validator": str(state.get("validator") or ""),
             "validation_updated_at": str(state.get("updated_at") or ""),
             "validation_version": int(state.get("version") or 0),
+            "validation_conflict": bool(state.get("conflict")),
+            "validation_conflict_reason": str(state.get("conflict_reason") or ""),
             "validation_reviewed": validation_status.lower() != "pending",
         }
         for raw_key, raw_value in detection.source_metadata.items():

@@ -17,6 +17,7 @@ class FakeBucketApi:
     def __init__(self, files: dict[str, str] | None = None) -> None:
         self.files = dict(files or {})
         self.created: list[tuple[str, str]] = []
+        self.read_batches: list[list[str]] = []
         self.writes: list[dict[str, bytes]] = []
 
     def create_private_bucket(self, *, bucket_id: str, token: str) -> None:
@@ -31,6 +32,11 @@ class FakeBucketApi:
         if path_in_bucket not in self.files:
             raise FileNotFoundError(path_in_bucket)
         return self.files[path_in_bucket]
+
+    def read_texts(self, *, bucket_id: str, paths_in_bucket: list[str], token: str) -> dict[str, str]:
+        _ = (bucket_id, token)
+        self.read_batches.append(list(paths_in_bucket))
+        return {path: self.files[path] for path in paths_in_bucket if path in self.files}
 
     def write_files(self, *, bucket_id: str, files: dict[str, bytes], token: str) -> None:
         _ = (bucket_id, token)
@@ -109,3 +115,87 @@ def test_bucket_snapshot_recovers_from_events_and_rejects_stale_version() -> Non
     assert repository.load_current_snapshot("project-a")["audio-a-0000000001"]["status"] == "positive"
     with pytest.raises(OptimisticLockError):
         repository.save_validation("project-a", _validation(status="negative"), expected_version=0)
+
+
+def test_bucket_snapshot_reconciles_event_missing_after_parallel_snapshot_overwrite() -> None:
+    api = FakeBucketApi(
+        {
+            "snapshots/current.json": json.dumps(
+                {
+                    "project_slug": "project-a",
+                    "items": {
+                        "audio-b-0000000001": {
+                            "status": "negative",
+                            "validator": "validator-b",
+                            "version": 1,
+                        }
+                    },
+                }
+            ),
+            "events/20260524/a.json": json.dumps(
+                {
+                    "event_id": "event-a",
+                    "project_slug": "project-a",
+                    "detection_key": "audio-a-0000000001",
+                    "status": "positive",
+                    "validator": "validator-a",
+                    "timestamp": "2026-05-24T12:00:00+00:00",
+                    "new_version": 1,
+                }
+            ),
+            "events/20260524/b.json": json.dumps(
+                {
+                    "event_id": "event-b",
+                    "project_slug": "project-a",
+                    "detection_key": "audio-b-0000000001",
+                    "status": "negative",
+                    "validator": "validator-b",
+                    "timestamp": "2026-05-24T12:00:01+00:00",
+                    "new_version": 1,
+                }
+            ),
+        }
+    )
+    repository = HfBucketValidationRepository(bucket_id="owner/audio_validation_state", token="hf_user", api=api)
+
+    snapshot = repository.load_current_snapshot("project-a")
+
+    assert set(snapshot) == {"audio-a-0000000001", "audio-b-0000000001"}
+    assert snapshot["audio-a-0000000001"]["status"] == "positive"
+    assert api.read_batches == [["events/20260524/a.json", "events/20260524/b.json"]]
+
+
+def test_bucket_snapshot_marks_parallel_same_version_decisions_as_conflict() -> None:
+    api = FakeBucketApi(
+        {
+            "events/20260524/a.json": json.dumps(
+                {
+                    "event_id": "event-a",
+                    "project_slug": "project-a",
+                    "detection_key": "audio-a-0000000001",
+                    "status": "positive",
+                    "validator": "validator-a",
+                    "timestamp": "2026-05-24T12:00:00+00:00",
+                    "new_version": 1,
+                }
+            ),
+            "events/20260524/b.json": json.dumps(
+                {
+                    "event_id": "event-b",
+                    "project_slug": "project-a",
+                    "detection_key": "audio-a-0000000001",
+                    "status": "negative",
+                    "validator": "validator-b",
+                    "timestamp": "2026-05-24T12:00:01+00:00",
+                    "new_version": 1,
+                }
+            ),
+        }
+    )
+    repository = HfBucketValidationRepository(bucket_id="owner/audio_validation_state", token="hf_user", api=api)
+
+    state = repository.load_current_snapshot("project-a")["audio-a-0000000001"]
+
+    assert state["status"] == "negative"
+    assert state["conflict"] is True
+    assert state["conflict_reason"] == "parallel_events_same_version"

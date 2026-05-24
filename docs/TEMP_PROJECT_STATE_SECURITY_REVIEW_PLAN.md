@@ -878,3 +878,22 @@ Still required before production enablement:
 2. A multi-validator concurrency/load test at expected review speed.
 3. Onboarding/recovery UI for connecting existing state resources and migrating projects.
 
+### 2026-05-24: Bucket reconciliation and persistent conflict visibility
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Strengthened Bucket event recovery.
+   - Current snapshots are reconciled against append-only validation events.
+   - A snapshot overwritten by a parallel writer no longer silently omits valid events for other detections.
+   - Event payloads are downloaded through a batched read path rather than one request per event file.
+
+2. Persisted evidence of parallel same-version decisions.
+   - If two writers produce different decisions for the same detection version, the reconstructed state is marked with `conflict=true`.
+   - The validation queue surfaces that persisted conflict using the existing conflict workflow.
+   - CSV/XLSX exports now include `validation_conflict` and `validation_conflict_reason`.
+
+Next scalability barrier before real-data enablement:
+
+1. Define checkpoint/compaction or bounded event-window reads so snapshot reconciliation does not require scanning an unbounded event history during high-volume validation.
+2. Exercise simultaneous validators against that strategy before enabling Bucket state for production projects.
+
