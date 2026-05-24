@@ -724,3 +724,29 @@ Validation:
 1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_admin_panel_manager.py tests\unit\test_supabase_state.py -q`: passed.
 2. `python -m compileall app.py src`: passed.
 
+### 2026-05-24: HF project-state validation backend spike
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added an HF-backed validation repository for companion state repos.
+   - Writes one append-only event JSON under `events/YYYYMMDD/`.
+   - Updates `snapshots/current.json` with the latest state.
+   - Preserves optimistic version checks before writing.
+
+2. Added snapshot recovery from events.
+   - If `snapshots/current.json` is missing or invalid, current state can be rebuilt from event files.
+   - Event listing ignores unrelated project events and non-event placeholders.
+
+3. Added a project-aware validation router.
+   - Default behavior remains unchanged.
+   - Filesystem/Supabase remain the active path unless `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true`.
+   - When enabled, projects with `state_backend=hf_project_store`, a `state_repo_id`, and an available token can route writes/reads to the admin-owned `_state` repo.
+
+4. Added Settings health visibility.
+   - The Settings tab now exposes whether HF project-state writes are enabled.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_validation_repository.py tests\unit\test_project_aware_validation_repository.py tests\unit\test_runtime_config.py tests\unit\test_hf_project_state_store.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+

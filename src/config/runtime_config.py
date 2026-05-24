@@ -31,6 +31,7 @@ class RuntimeConfig:
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
     auth_mode: str = "auto"
+    hf_project_state_writes_enabled: bool = False
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -104,6 +105,8 @@ class RuntimeConfig:
         auth_mode = (os.getenv("BIRDNET_AUTH_MODE") or "auto").strip().lower() or "auto"
         if auth_mode not in {"auto", "hf_token", "username", "username_or_token"}:
             auth_mode = "auto"
+        raw_hf_project_state_writes = (os.getenv("BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED") or "").strip().lower()
+        hf_project_state_writes_enabled = raw_hf_project_state_writes in {"1", "true", "yes", "on"}
 
         return cls(
             detection_seed_path=detection_seed_path,
@@ -131,4 +134,5 @@ class RuntimeConfig:
             supabase_url=supabase_url,
             supabase_service_role_key=supabase_service_role_key,
             auth_mode=auth_mode,
+            hf_project_state_writes_enabled=hf_project_state_writes_enabled,
         )

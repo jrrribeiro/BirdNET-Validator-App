@@ -24,6 +24,7 @@ from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection, Project, Role
 from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository, OptimisticLockError
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
+from src.repositories.project_aware_validation_repository import ProjectAwareValidationRepository
 from src.repositories.state_safety import (
     assert_bootstrap_persist_is_safe,
     atomic_write_json_with_backup,
@@ -2778,7 +2779,13 @@ def create_app() -> gr.Blocks:
     loaded_project_order: list[str] = []
     max_loaded_projects = 3
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
-    validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
+    base_validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
+    validation_repository = ProjectAwareValidationRepository(
+        fallback_repository=base_validation_repository,
+        project_lookup=admin_manager.get_project,
+        token_provider=lambda project: (project.dataset_token or "").strip() or _env_hf_token(),
+        enable_hf_project_state=runtime_config.hf_project_state_writes_enabled,
+    )
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
@@ -5252,10 +5259,12 @@ def create_app() -> gr.Blocks:
                     demo_label = "enabled" if runtime_config.enable_demo_bootstrap else "disabled"
                     demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
+                    hf_project_state_label = "enabled" if runtime_config.hf_project_state_writes_enabled else "disabled"
                     hf_space_label = os.getenv("SPACE_ID") or "local runtime"
                     health_html = settings_health_html(
                         [
                             ("State backend", state_label, state_tone),
+                            ("HF project-state writes", hf_project_state_label, "ok" if runtime_config.hf_project_state_writes_enabled else "info"),
                             ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
                             ("Destructive write guard", "enabled", "ok"),
                             ("Local JSON backups", "enabled" if state_label == "Filesystem" else "not used", "ok" if state_label == "Filesystem" else "info"),
