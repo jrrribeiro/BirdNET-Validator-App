@@ -688,3 +688,39 @@ Validation:
 1. `pytest -q`: 182 passed.
 2. `python scripts/check_deployment.py`: passed.
 
+### 2026-05-24: Automatic HF companion state repository on project creation
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added a Hugging Face project state store initializer.
+   - New projects derive a private companion dataset repo from the audio dataset repo.
+   - Example: `jrrribeiro/upload_test2` creates or connects `jrrribeiro/upload_test2_state`.
+   - The state repo is created as a private dataset repository.
+
+2. Added the first state-store manifest files.
+   - `README.md`
+   - `project.json`
+   - `acl.json`
+   - `invites.json`
+   - `snapshots/current.json`
+   - `events/.gitkeep`
+
+3. Added overwrite protection for existing companion state repos.
+   - If `project.json` already exists, the app connects the existing state repo without rewriting current state.
+   - If the repo has files but no project manifest, initialization is blocked to avoid accidental state loss.
+
+4. Added project-level state metadata.
+   - `state_backend`
+   - `state_repo_id`
+   - `state_schema_version`
+   - `state_status`
+
+5. Reduced token persistence risk during project creation.
+   - A session/env token may be used to create the private state repo.
+   - The app only stores a project dataset token when the admin explicitly enters one.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_admin_panel_manager.py tests\unit\test_supabase_state.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+

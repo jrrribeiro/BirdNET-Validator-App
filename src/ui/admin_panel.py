@@ -62,6 +62,10 @@ class AdminPanelManager:
                 "owner_username": p.owner_username,
                 "dataset_token": p.dataset_token,
                 "dataset_token_set": bool((p.dataset_token or "").strip()),
+                "state_backend": p.state_backend,
+                "state_repo_id": p.state_repo_id,
+                "state_schema_version": p.state_schema_version,
+                "state_status": p.state_status,
                 "active": p.active,
             }
             for p in self._projects.values()

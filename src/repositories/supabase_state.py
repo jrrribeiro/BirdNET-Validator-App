@@ -104,6 +104,10 @@ class SupabaseBootstrapStore:
                         visibility=str(row.get("visibility") or "collaborative").strip(),
                         owner_username=(str(row.get("owner_username") or "").strip() or None),
                         dataset_token=(str(row.get("dataset_token") or "").strip() or None),
+                        state_backend=str(row.get("state_backend") or "app_backend").strip() or "app_backend",
+                        state_repo_id=(str(row.get("state_repo_id") or "").strip() or None),
+                        state_schema_version=int(row.get("state_schema_version") or 1),
+                        state_status=str(row.get("state_status") or "not_configured").strip() or "not_configured",
                         active=bool(row.get("active", True)),
                     )
                 )

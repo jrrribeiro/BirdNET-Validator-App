@@ -1,0 +1,138 @@
+import json
+
+import pytest
+
+from src.domain.models import Project
+from src.services.hf_project_state_store import (
+    HF_PROJECT_STATE_BACKEND,
+    HfProjectStateStoreError,
+    HfProjectStateStoreInitializer,
+    default_state_repo_id,
+)
+
+
+class FakeHfProjectStateApi:
+    def __init__(self, existing_files: list[str] | None = None) -> None:
+        self.created: list[dict[str, object]] = []
+        self.commits: list[dict[str, object]] = []
+        self.visibility_updates: list[dict[str, object]] = []
+        self.existing_files = existing_files or []
+
+    def create_repo(self, **kwargs):  # noqa: ANN001
+        self.created.append(dict(kwargs))
+        return object()
+
+    def create_commit(self, **kwargs):  # noqa: ANN001
+        self.commits.append(dict(kwargs))
+        return object()
+
+    def list_repo_files(self, **kwargs):  # noqa: ANN001
+        return list(self.existing_files)
+
+    def update_repo_visibility(self, **kwargs):  # noqa: ANN001
+        self.visibility_updates.append(dict(kwargs))
+        return {"private": True}
+
+
+def _project() -> Project:
+    return Project(
+        project_slug="upload-test2",
+        name="Upload Test 2",
+        dataset_repo_id="jrrribeiro/upload_test2",
+        owner_username="jrrribeiro",
+    )
+
+
+def test_default_state_repo_id_uses_dataset_namespace_and_state_suffix() -> None:
+    assert default_state_repo_id("jrrribeiro/upload_test2") == "jrrribeiro/upload_test2_state"
+
+
+def test_default_state_repo_id_rejects_invalid_dataset_repo() -> None:
+    with pytest.raises(HfProjectStateStoreError):
+        default_state_repo_id("upload_test2")
+
+
+def test_initialize_creates_private_dataset_and_manifest_commit() -> None:
+    fake_api = FakeHfProjectStateApi()
+    initializer = HfProjectStateStoreInitializer(api=fake_api)
+
+    result = initializer.initialize(
+        project=_project(),
+        creator_username="jrrribeiro",
+        token="hf_test",
+    )
+
+    assert result.state_repo_id == "jrrribeiro/upload_test2_state"
+    assert result.manifest["state_backend"] == HF_PROJECT_STATE_BACKEND
+    assert result.initialized is True
+    assert result.reused_existing is False
+    assert fake_api.created == [
+        {
+            "repo_id": "jrrribeiro/upload_test2_state",
+            "token": "hf_test",
+            "private": True,
+            "repo_type": "dataset",
+            "exist_ok": True,
+        }
+    ]
+    assert fake_api.visibility_updates == [
+        {
+            "repo_id": "jrrribeiro/upload_test2_state",
+            "token": "hf_test",
+            "private": True,
+            "repo_type": "dataset",
+        }
+    ]
+    commit = fake_api.commits[0]
+    assert commit["repo_id"] == "jrrribeiro/upload_test2_state"
+    assert commit["repo_type"] == "dataset"
+    paths = [operation.path_in_repo for operation in commit["operations"]]
+    assert paths == [
+        "README.md",
+        "project.json",
+        "acl.json",
+        "invites.json",
+        "snapshots/current.json",
+        "events/.gitkeep",
+    ]
+    project_payload = json.loads(commit["operations"][1].path_or_fileobj.decode("utf-8"))
+    acl_payload = json.loads(commit["operations"][2].path_or_fileobj.decode("utf-8"))
+    assert project_payload["state_ref"] == "jrrribeiro/upload_test2_state"
+    assert acl_payload["users"]["jrrribeiro"]["role"] == "admin"
+
+
+def test_initialize_reuses_existing_manifest_without_overwriting_state() -> None:
+    fake_api = FakeHfProjectStateApi(existing_files=["README.md", "project.json", "snapshots/current.json"])
+    initializer = HfProjectStateStoreInitializer(api=fake_api)
+
+    result = initializer.initialize(
+        project=_project(),
+        creator_username="jrrribeiro",
+        token="hf_test",
+    )
+
+    assert result.state_repo_id == "jrrribeiro/upload_test2_state"
+    assert result.initialized is False
+    assert result.reused_existing is True
+    assert fake_api.commits == []
+
+
+def test_initialize_refuses_nonempty_repo_without_manifest() -> None:
+    fake_api = FakeHfProjectStateApi(existing_files=["README.md", "events/event.jsonl"])
+    initializer = HfProjectStateStoreInitializer(api=fake_api)
+
+    with pytest.raises(HfProjectStateStoreError, match="Refusing to initialize automatically"):
+        initializer.initialize(
+            project=_project(),
+            creator_username="jrrribeiro",
+            token="hf_test",
+        )
+
+    assert fake_api.commits == []
+
+
+def test_initialize_requires_token() -> None:
+    initializer = HfProjectStateStoreInitializer(api=FakeHfProjectStateApi())
+
+    with pytest.raises(HfProjectStateStoreError):
+        initializer.initialize(project=_project(), creator_username="jrrribeiro", token="")

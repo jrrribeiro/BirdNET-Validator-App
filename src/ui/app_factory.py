@@ -32,6 +32,12 @@ from src.repositories.state_safety import (
 from src.repositories.supabase_state import SupabaseBootstrapStore, SupabaseRestClient, SupabaseStateError, SupabaseValidationRepository
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
+from src.services.hf_project_state_store import (
+    HF_PROJECT_STATE_BACKEND,
+    HF_PROJECT_STATE_SCHEMA_VERSION,
+    HfProjectStateStoreError,
+    HfProjectStateStoreInitializer,
+)
 from src.services.validation_service import ValidationService
 from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
 from src.auth.auth_service import AuthService
@@ -1218,6 +1224,10 @@ def _load_projects_from_file(projects_file_path: str | None) -> list[Project]:
                     visibility=str(row.get("visibility", "collaborative")).strip() or "collaborative",
                     owner_username=(str(row.get("owner_username", "")).strip() or None),
                     dataset_token=(str(row.get("dataset_token", "")).strip() or None),
+                    state_backend=str(row.get("state_backend", "app_backend")).strip() or "app_backend",
+                    state_repo_id=(str(row.get("state_repo_id", "")).strip() or None),
+                    state_schema_version=int(row.get("state_schema_version") or 1),
+                    state_status=str(row.get("state_status", "not_configured")).strip() or "not_configured",
                     active=bool(row.get("active", True)),
                 )
             )
@@ -1299,6 +1309,10 @@ def _persist_bootstrap_state(
             "visibility": str(project.get("visibility", "collaborative")).strip() or "collaborative",
             "owner_username": str(project.get("owner_username", "")).strip() or None,
             "dataset_token": str(project.get("dataset_token", "")).strip() or None,
+            "state_backend": str(project.get("state_backend", "app_backend")).strip() or "app_backend",
+            "state_repo_id": str(project.get("state_repo_id", "")).strip() or None,
+            "state_schema_version": int(project.get("state_schema_version") or 1),
+            "state_status": str(project.get("state_status", "not_configured")).strip() or "not_configured",
             "active": bool(project.get("active", True)),
         }
         for project in project_rows
@@ -2766,6 +2780,7 @@ def create_app() -> gr.Blocks:
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
     validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
     validation_service = ValidationService(validation_repository)
+    hf_state_initializer = HfProjectStateStoreInitializer()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
     report_cache_ttl_seconds = 30.0
 
@@ -3078,24 +3093,70 @@ def create_app() -> gr.Blocks:
                         name = (name or "").strip()
                         repo_id = (repo_id or "").strip()
                         visibility_value = (visibility or "collaborative").strip().lower()
-                        project_token_value = (project_token or "").strip() or _session_hf_token(session) or None
+                        explicit_project_token = (project_token or "").strip() or None
+                        operation_token = explicit_project_token or _session_hf_token(session) or _env_hf_token()
                         if not slug or not name or not repo_id:
                             return "Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
                         if visibility_value not in {"private", "collaborative"}:
                             return "Visibility must be private or collaborative.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
-
-                        created = admin_manager.register_project(
-                            Project(
-                                project_id=str(uuid4()),
-                                project_slug=slug,
-                                name=name,
-                                dataset_repo_id=repo_id,
-                                visibility=visibility_value,
-                                owner_username=session.username,
-                                dataset_token=project_token_value,
-                                active=True,
+                        if admin_manager.get_project(slug) is not None:
+                            admin_projects = _admin_projects_for_session(session)
+                            return (
+                                f"Project '{slug}' already exists.",
+                                _project_rows(),
+                                gr.update(choices=admin_projects),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(choices=admin_projects),
+                                gr.update(choices=admin_projects),
+                                gr.update(choices=["all", *admin_projects], value="all"),
+                                gr.update(),
+                                session,
                             )
+
+                        project = Project(
+                            project_id=str(uuid4()),
+                            project_slug=slug,
+                            name=name,
+                            dataset_repo_id=repo_id,
+                            visibility=visibility_value,
+                            owner_username=session.username,
+                            dataset_token=explicit_project_token,
+                            active=True,
                         )
+                        try:
+                            state_result = hf_state_initializer.initialize(
+                                project=project,
+                                creator_username=session.username,
+                                token=operation_token,
+                            )
+                        except HfProjectStateStoreError as exc:
+                            return (
+                                f"Project was not created because the private companion state repo could not be initialized: {exc}",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        project.state_backend = HF_PROJECT_STATE_BACKEND
+                        project.state_repo_id = state_result.state_repo_id
+                        project.state_schema_version = HF_PROJECT_STATE_SCHEMA_VERSION
+                        project.state_status = "ready"
+                        state_repo_action = "initialized" if state_result.initialized else "connected"
+
+                        created = admin_manager.register_project(project)
                         if not created:
                             admin_projects = _admin_projects_for_session(session)
                             return (
@@ -3124,9 +3185,9 @@ def create_app() -> gr.Blocks:
 
                         return (
                             (
-                                f"Project '{slug}' created successfully."
+                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}."
                                 if persisted
-                                else f"Project '{slug}' created, but could not persist bootstrap files: {persist_error}"
+                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}), but could not persist bootstrap files: {persist_error}"
                             ),
                             _project_rows(),
                             gr.update(choices=admin_projects, value=slug),

@@ -946,6 +946,10 @@ def test_load_projects_from_file_reads_valid_payload(tmp_path: Path) -> None:
             "project_slug": "project-a",
             "name": "Project A",
             "dataset_repo_id": "org/project-a",
+            "state_backend": "hf_project_store",
+            "state_repo_id": "org/project-a_state",
+            "state_schema_version": 1,
+            "state_status": "ready",
             "active": True,
         }
     ]
@@ -956,6 +960,9 @@ def test_load_projects_from_file_reads_valid_payload(tmp_path: Path) -> None:
 
     assert len(projects) == 1
     assert projects[0].project_slug == "project-a"
+    assert projects[0].state_backend == "hf_project_store"
+    assert projects[0].state_repo_id == "org/project-a_state"
+    assert projects[0].state_status == "ready"
 
 
 def test_load_user_access_from_file_reads_valid_payload(tmp_path: Path) -> None:
@@ -1053,6 +1060,44 @@ def test_persist_bootstrap_state_allows_explicit_delete_and_creates_backups(tmp_
     assert json.loads(users_file.read_text(encoding="utf-8")) == {}
     assert list((tmp_path / ".backups").glob("projects.json.*.bak"))
     assert list((tmp_path / ".backups").glob("user_access.json.*.bak"))
+
+
+def test_persist_bootstrap_state_writes_project_state_metadata(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    users_file = tmp_path / "user_access.json"
+    invites_file = tmp_path / "invites.json"
+    projects_file.write_text(json.dumps([]), encoding="utf-8")
+    users_file.write_text(json.dumps({}), encoding="utf-8")
+    invites_file.write_text(json.dumps({}), encoding="utf-8")
+
+    auth_service = AuthService()
+    auth_service.upsert_user_project_role("owner", "project-a", Role.admin)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+    admin_manager.register_project(
+        Project(
+            project_slug="project-a",
+            name="Project A",
+            dataset_repo_id="org/project-a",
+            owner_username="owner",
+            state_backend="hf_project_store",
+            state_repo_id="org/project-a_state",
+            state_status="ready",
+        )
+    )
+
+    _persist_bootstrap_state(
+        projects_path=projects_file,
+        user_access_path=users_file,
+        invites_path=invites_file,
+        admin_manager=admin_manager,
+        auth_service=auth_service,
+    )
+
+    payload = json.loads(projects_file.read_text(encoding="utf-8"))
+    assert payload[0]["state_backend"] == "hf_project_store"
+    assert payload[0]["state_repo_id"] == "org/project-a_state"
+    assert payload[0]["state_schema_version"] == 1
+    assert payload[0]["state_status"] == "ready"
 
 
 def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp_path: Path) -> None:
