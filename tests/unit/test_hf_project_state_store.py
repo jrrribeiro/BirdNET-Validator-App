@@ -6,6 +6,7 @@ from src.domain.models import Project
 from src.services.hf_project_state_store import (
     HF_PROJECT_STATE_BACKEND,
     HfProjectStateStoreError,
+    HfProjectStateStoreConnector,
     HfProjectStateStoreInitializer,
     HfProjectStateStoreLoader,
     HfProjectStateStoreSync,
@@ -318,3 +319,76 @@ def test_load_project_state_skips_archived_project() -> None:
     )
 
     assert loader.load_project_state(state_repo_id="jrrribeiro/upload_test2_state", token="hf_read") is None
+
+
+def _connector_loader(*, visibility: str = "collaborative", owner: str = "jrrribeiro") -> HfProjectStateStoreLoader:
+    return HfProjectStateStoreLoader(
+        api=FakeHfProjectStateReadApi(
+            {
+                "project.json": json.dumps(
+                    {
+                        "schema_version": 1,
+                        "project_slug": "upload-test2",
+                        "project_name": "Upload Test 2",
+                        "dataset_repo_id": "jrrribeiro/upload_test2",
+                        "state_status": "ready",
+                        "owner_username": owner,
+                        "visibility": visibility,
+                        "active": True,
+                    }
+                ),
+                "acl.json": json.dumps(
+                    {
+                        "schema_version": 1,
+                        "project_slug": "upload-test2",
+                        "users": {
+                            "jrrribeiro": {"role": "admin", "active": True},
+                            "validator-a": {"role": "validator", "active": True},
+                        },
+                    }
+                ),
+                "invites.json": json.dumps({"schema_version": 1, "project_slug": "upload-test2", "pending": {}}),
+            }
+        )
+    )
+
+
+def test_connector_allows_acl_admin_with_authenticated_token() -> None:
+    connector = HfProjectStateStoreConnector(loader=_connector_loader())
+
+    loaded = connector.connect_admin_project(
+        state_repo_id="jrrribeiro/upload_test2_state",
+        token="hf_admin",
+        actor_username="jrrribeiro",
+    )
+
+    assert loaded.project.project_slug == "upload-test2"
+
+
+def test_connector_rejects_validator_or_missing_authenticated_token() -> None:
+    connector = HfProjectStateStoreConnector(loader=_connector_loader())
+
+    with pytest.raises(HfProjectStateStoreError, match="ADMIN"):
+        connector.connect_admin_project(
+            state_repo_id="jrrribeiro/upload_test2_state",
+            token="hf_validator",
+            actor_username="validator-a",
+        )
+
+    with pytest.raises(HfProjectStateStoreError, match="Sign in"):
+        connector.connect_admin_project(
+            state_repo_id="jrrribeiro/upload_test2_state",
+            token="",
+            actor_username="jrrribeiro",
+        )
+
+
+def test_connector_restricts_private_project_connection_to_owner() -> None:
+    connector = HfProjectStateStoreConnector(loader=_connector_loader(visibility="private", owner="owner-account"))
+
+    with pytest.raises(HfProjectStateStoreError, match="Only the owner"):
+        connector.connect_admin_project(
+            state_repo_id="jrrribeiro/upload_test2_state",
+            token="hf_admin",
+            actor_username="jrrribeiro",
+        )

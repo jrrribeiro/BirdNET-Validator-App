@@ -203,6 +203,8 @@ Optional runtime settings:
 
 Enable `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED` whenever Bucket validations are enabled. The app will refuse new Bucket-backed projects without the private `_state` manifest persistence needed for recovery after redeploys.
 
+Projects previously created with a private `_state` repository can be recovered from the **Admin** tab using **Connect Existing State**. Sign in with the Hugging Face account that is recorded as an administrator in that repository's `acl.json`, then provide the `_state` repo id (for example, `owner/audio_dataset_state`). The app loads the saved manifest, ACL, and pending invites; it does not accept a new local definition over an existing state repository.
+
 Legacy Supabase state backend, available while migrating existing projects:
 
 - `BIRDNET_STATE_BACKEND=supabase`

@@ -523,6 +523,44 @@ class HfProjectStateStoreLoader:
         )
 
 
+class HfProjectStateStoreConnector:
+    """Loads an existing project state only for an authorized project admin."""
+
+    def __init__(self, loader: HfProjectStateStoreLoader | None = None) -> None:
+        self._loader = loader or HfProjectStateStoreLoader()
+
+    def connect_admin_project(
+        self,
+        *,
+        state_repo_id: str,
+        token: str | None,
+        actor_username: str,
+    ) -> HfProjectStateStoreLoadedProject:
+        token_value = (token or "").strip()
+        actor = (actor_username or "").strip()
+        if not token_value:
+            raise HfProjectStateStoreError(
+                "Sign in with your Hugging Face account or token before connecting a private project state repository."
+            )
+        if not actor:
+            raise HfProjectStateStoreError("An authenticated Hugging Face identity is required to connect a project.")
+
+        loaded = self._loader.load_project_state(state_repo_id=state_repo_id, token=token_value)
+        if loaded is None:
+            raise HfProjectStateStoreError("This project state is archived and cannot be connected as an active project.")
+
+        role = loaded.user_access.get(actor, {}).get(loaded.project.project_slug)
+        if role != Role.admin:
+            raise HfProjectStateStoreError(
+                "Only an ADMIN recorded in this project's ACL can connect its private state repository."
+            )
+
+        owner = (loaded.project.owner_username or "").strip()
+        if loaded.project.visibility == "private" and owner and owner != actor:
+            raise HfProjectStateStoreError("Only the owner can connect a private project state repository.")
+        return loaded
+
+
 class HfProjectStateStoreSync:
     def __init__(self, api: HfProjectStateApi | None = None) -> None:
         self._api = api or HfApi()

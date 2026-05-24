@@ -915,5 +915,29 @@ Remaining validation before real-data enablement:
 
 1. Exercise simultaneous validators against the compacted strategy and measure latency at expected review speed.
 2. Confirm multi-user Bucket authorization in a real Space.
-3. Implement onboarding/recovery UI for connecting and migrating existing state resources.
+3. Implement migration/import tooling for existing non-HF project state resources.
+
+### 2026-05-24: Secure existing-state connection flow
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added an Admin recovery action for existing private `_state` repositories.
+   - The admin enters an existing companion repository id in **Project management** and chooses **Connect Existing State**.
+   - The app loads its saved project manifest, ACL, and pending invites using the signed-in user's Hugging Face session authorization.
+   - Connected project state is made available in the current workspace without rewriting the authoritative `_state` files.
+
+2. Enforced recovery authorization before state is attached to the workspace.
+   - The authenticated identity must be listed as `admin` in the stored ACL.
+   - Private projects can only be connected by their recorded owner.
+   - Missing authenticated tokens and archived state repositories are rejected.
+
+3. Prevented state takeover through the creation screen.
+   - If project creation discovers an existing `_state` manifest, it no longer registers the newly entered project definition.
+   - The admin is directed to the connection flow so the existing manifest and ACL remain authoritative.
+
+Still required before production enablement:
+
+1. Exercise simultaneous validators against the compacted strategy and measure latency at expected review speed.
+2. Confirm multi-user Bucket authorization in a real Space.
+3. Add assisted migration/import verification for legacy filesystem or Supabase project state.
 

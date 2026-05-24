@@ -42,6 +42,7 @@ from src.services.hf_project_state_store import (
     HF_PROJECT_STATE_BACKEND,
     HF_PROJECT_STATE_SCHEMA_VERSION,
     HfProjectStateStoreError,
+    HfProjectStateStoreConnector,
     HfProjectStateStoreInitializer,
     HfProjectStateStoreLoadedProject,
     HfProjectStateStoreLoader,
@@ -2933,6 +2934,7 @@ def create_app() -> gr.Blocks:
     )
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
+    hf_state_connector = HfProjectStateStoreConnector()
     hf_state_sync = HfProjectStateStoreSync()
     hf_bucket_initializer = HfBucketValidationInitializer()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
@@ -3159,6 +3161,7 @@ def create_app() -> gr.Blocks:
             session=None,
             sync_project_slugs: set[str] | None = None,
             archived_projects: list[Project] | None = None,
+            sync_hf_state: bool = True,
         ) -> tuple[bool, str]:
             try:
                 _persist_bootstrap_state(
@@ -3170,10 +3173,14 @@ def create_app() -> gr.Blocks:
                     state_store=state_store,
                     allowed_removed_project_slugs=allowed_removed_project_slugs,
                 )
-                sync_errors = _sync_hf_admin_state(
-                    session=session,
-                    sync_project_slugs=sync_project_slugs,
-                    archived_projects=archived_projects,
+                sync_errors = (
+                    _sync_hf_admin_state(
+                        session=session,
+                        sync_project_slugs=sync_project_slugs,
+                        archived_projects=archived_projects,
+                    )
+                    if sync_hf_state
+                    else []
                 )
                 if sync_errors:
                     return False, "HF project-state sync failed: " + " | ".join(sync_errors)
@@ -3311,6 +3318,11 @@ def create_app() -> gr.Blocks:
                             elem_id="bn-admin-projects-table",
                             elem_classes=["bn-dataframe", "bn-polished-dataframe", "bn-admin-dataframe"],
                         )
+                        connect_state_repo = gr.Textbox(
+                            label="Connect existing private project state repository",
+                            placeholder="owner/audio_dataset_state",
+                        )
+                        connect_state_message = gr.Markdown()
 
                     with gr.Row(elem_classes=["bn-admin-action-row"]):
                         create_project_btn = gr.Button(
@@ -3321,6 +3333,10 @@ def create_app() -> gr.Blocks:
                             "Refresh List",
                             elem_classes=["bn-admin-action", "bn-admin-action-blue"],
                         )
+                    connect_state_btn = gr.Button(
+                        "Connect Existing State",
+                        elem_classes=["bn-admin-action", "bn-admin-action-blue"],
+                    )
 
                     def create_project(session, slug: str, name: str, repo_id: str, visibility: str, project_token: str):
                         if session is None:
@@ -3394,6 +3410,24 @@ def create_app() -> gr.Blocks:
                         except HfProjectStateStoreError as exc:
                             return (
                                 f"Project was not created because the private companion state repo could not be initialized: {exc}",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        if state_result.reused_existing:
+                            return (
+                                "An existing private state repository was found. Use Connect Existing State so its "
+                                "saved project manifest and ACL remain authoritative.",
                                 _project_rows(),
                                 gr.update(),
                                 gr.update(),
@@ -3489,6 +3523,120 @@ def create_app() -> gr.Blocks:
                             gr.update(choices=admin_projects, value=slug),
                             gr.update(choices=["all", *admin_projects], value="all"),
                             refreshed_warning,
+                            refreshed_session,
+                        )
+
+                    def connect_existing_state(session, state_repo_id: str):
+                        if session is None:
+                            return (
+                                "Access denied. Login required.",
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        repo_id = (state_repo_id or "").strip()
+                        if not repo_id:
+                            return (
+                                "Provide the private `_state` repository id to connect.",
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+                        try:
+                            loaded = hf_state_connector.connect_admin_project(
+                                state_repo_id=repo_id,
+                                token=_session_hf_token(session),
+                                actor_username=session.username,
+                            )
+                        except HfProjectStateStoreError as exc:
+                            return (
+                                f"Project state could not be connected: {exc}",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        slug = loaded.project.project_slug
+                        if admin_manager.get_project(slug) is not None:
+                            return (
+                                f"Project '{slug}' is already registered in this workspace.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        if not admin_manager.register_project(loaded.project):
+                            return (
+                                f"Project '{slug}' could not be connected because its slug is already in use.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        loaded_users = set(loaded.user_access)
+                        for username, project_roles in loaded.user_access.items():
+                            role = project_roles.get(slug)
+                            if role is not None:
+                                auth_service.upsert_user_project_role(username, slug, role)
+                        for username in auth_service.list_usernames(include_inactive=True):
+                            if username not in loaded_users:
+                                auth_service.remove_user_project_role(username, slug)
+                        merged_invites = _merge_project_invites_from_hf_state(
+                            auth_service.export_pending_invites_map(),
+                            loaded.pending_invites,
+                            slug,
+                        )
+                        auth_service.load_pending_invites_map(merged_invites)
+
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_hf_state=False,
+                        )
+                        _invalidate_project_queue(slug)
+                        refreshed_session = _refresh_session_copy(session)
+                        admin_projects = _admin_projects_for_session(refreshed_session)
+                        validation_store = (
+                            f" Validation storage: {loaded.project.validation_bucket_id}."
+                            if loaded.project.validation_bucket_id
+                            else ""
+                        )
+                        message = (
+                            f"Project '{slug}' securely connected from {loaded.state_repo_id}.{validation_store}"
+                            if persisted
+                            else (
+                                f"Project '{slug}' connected from {loaded.state_repo_id}, but local bootstrap "
+                                f"persistence failed: {persist_error}"
+                            )
+                        )
+                        return (
+                            message,
+                            _project_rows(),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=["all", *admin_projects], value="all"),
+                            gr.update(value=""),
                             refreshed_session,
                         )
 
@@ -3940,6 +4088,21 @@ def create_app() -> gr.Blocks:
                         pending_invite_project,
                         pending_invites_filter_project,
                         seed_warning_state,
+                        session_state,
+                    ],
+                )
+
+                connect_state_btn.click(
+                    fn=connect_existing_state,
+                    inputs=[session_state, connect_state_repo],
+                    outputs=[
+                        connect_state_message,
+                        projects_table,
+                        admin_project,
+                        token_project_select,
+                        pending_invite_project,
+                        pending_invites_filter_project,
+                        connect_state_repo,
                         session_state,
                     ],
                 )
