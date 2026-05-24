@@ -64,11 +64,16 @@ class ProjectAwareValidationRepository:
         if actor_username and self._actor_token_provider is not None:
             actor_token = (self._actor_token_provider(project, actor_username) or "").strip()
 
-        if (
-            self._enable_hf_bucket_validations
-            and (project.validation_backend or "").strip() == HF_BUCKET_VALIDATION_BACKEND
-            and (project.validation_bucket_id or "").strip()
-        ):
+        if (project.validation_backend or "").strip() == HF_BUCKET_VALIDATION_BACKEND:
+            if not self._enable_hf_bucket_validations:
+                raise HfBucketValidationError(
+                    "This project's validation state is stored in an HF Bucket, but Bucket validations are disabled "
+                    "in this deployment. Enable the Bucket backend before reading or writing validations."
+                )
+            if not (project.validation_bucket_id or "").strip():
+                raise HfBucketValidationError(
+                    "This project declares HF Bucket validation storage but has no validation bucket id."
+                )
             token = actor_token if actor_username else (self._token_provider(project) or "").strip()
             if not token:
                 raise HfBucketValidationError(

@@ -935,6 +935,10 @@ Implemented on branch `feature/project-state-security-privacy-review`:
    - If project creation discovers an existing `_state` manifest, it no longer registers the newly entered project definition.
    - The admin is directed to the connection flow so the existing manifest and ACL remain authoritative.
 
+4. Prevented validation-state fragmentation during recovery.
+   - A project whose manifest declares Bucket-backed validation state now fails clearly if the deployment has the Bucket backend disabled or the stored Bucket reference is incomplete.
+   - It never silently writes recovered validations to filesystem or Supabase instead of the project-owned Bucket.
+
 Still required before production enablement:
 
 1. Exercise simultaneous validators against the compacted strategy and measure latency at expected review speed.

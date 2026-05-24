@@ -160,6 +160,50 @@ def test_project_aware_repository_bucket_write_does_not_fall_back_to_admin_token
         router.save_validation("project-a", _validation(), expected_version=0)
 
 
+def test_project_aware_repository_never_falls_back_when_declared_bucket_is_disabled() -> None:
+    fallback = FakeValidationStateRepository("fallback")
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="owner/project-a",
+        validation_backend=HF_BUCKET_VALIDATION_BACKEND,
+        validation_bucket_id="owner/project-a_validation_state",
+    )
+    router = ProjectAwareValidationRepository(
+        fallback_repository=fallback,
+        project_lookup=lambda _: project,
+        token_provider=lambda _: "hf_admin_token",
+        actor_token_provider=lambda _project, _username: "hf_validator_token",
+        enable_hf_bucket_validations=False,
+    )
+
+    with pytest.raises(HfBucketValidationError, match="Bucket validations are disabled"):
+        router.save_validation("project-a", _validation(), expected_version=0)
+
+    assert fallback.saved == []
+
+
+def test_project_aware_repository_rejects_declared_bucket_without_bucket_id() -> None:
+    fallback = FakeValidationStateRepository("fallback")
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="owner/project-a",
+        validation_backend=HF_BUCKET_VALIDATION_BACKEND,
+    )
+    router = ProjectAwareValidationRepository(
+        fallback_repository=fallback,
+        project_lookup=lambda _: project,
+        token_provider=lambda _: "hf_admin_token",
+        enable_hf_bucket_validations=True,
+    )
+
+    with pytest.raises(HfBucketValidationError, match="no validation bucket id"):
+        router.load_current_snapshot("project-a")
+
+    assert fallback.saved == []
+
+
 def test_project_aware_repository_recent_events_falls_back_to_bounded_full_events() -> None:
     fallback = FakeValidationStateRepository("fallback")
     fallback.saved = [("project-a", "old"), ("project-a", "new")]
