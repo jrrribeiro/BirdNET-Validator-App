@@ -783,3 +783,32 @@ Validation:
 1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_admin_panel_manager.py tests\unit\test_project_aware_validation_repository.py tests\unit\test_hf_project_state_validation_repository.py -q`: passed.
 2. `python -m compileall app.py src`: passed.
 
+### 2026-05-24: HF project-state recovery bootstrap
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added explicit recovery from admin-owned `_state` repositories.
+   - New env var: `BIRDNET_HF_PROJECT_STATE_REPOS`.
+   - Accepts comma, semicolon, or newline-separated repo IDs.
+   - Example: `BIRDNET_HF_PROJECT_STATE_REPOS=jrrribeiro/upload_test2_state`.
+
+2. Added a project-state loader.
+   - Reads `project.json`, `acl.json`, and `invites.json`.
+   - Reconstructs `Project`, project-scoped user roles, and pending invites.
+   - Skips archived projects.
+   - Rejects future schema versions instead of guessing.
+
+3. Added bootstrap overlay behavior.
+   - HF project-state data overlays only the matching project slug.
+   - Existing unrelated projects, access entries, and invites are preserved.
+   - Loaded ACL/invites replace stale local/Supabase entries for the same project.
+
+4. Added recovery status visibility.
+   - Settings health now reports how many HF project-state repos are configured.
+   - Bootstrap warnings report missing tokens or repo-specific load failures.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_runtime_config.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+

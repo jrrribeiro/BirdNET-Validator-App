@@ -38,6 +38,8 @@ from src.services.hf_project_state_store import (
     HF_PROJECT_STATE_SCHEMA_VERSION,
     HfProjectStateStoreError,
     HfProjectStateStoreInitializer,
+    HfProjectStateStoreLoadedProject,
+    HfProjectStateStoreLoader,
     HfProjectStateStoreSync,
 )
 from src.services.validation_service import ValidationService
@@ -1284,6 +1286,92 @@ def _load_pending_invites_from_file(invites_file_path: str | None) -> dict[str, 
     return payload if isinstance(payload, dict) else {}
 
 
+def _merge_project_access_from_hf_state(
+    base: dict[str, dict[str, Role]],
+    incoming: dict[str, dict[str, Role]],
+    project_slug: str,
+) -> dict[str, dict[str, Role]]:
+    merged: dict[str, dict[str, Role]] = {
+        username: {
+            slug: role
+            for slug, role in roles.items()
+            if slug != project_slug
+        }
+        for username, roles in base.items()
+        if isinstance(roles, dict)
+    }
+    for username, roles in incoming.items():
+        role = roles.get(project_slug) if isinstance(roles, dict) else None
+        if role is not None:
+            merged.setdefault(username, {})[project_slug] = role
+    return {username: roles for username, roles in merged.items() if roles}
+
+
+def _merge_project_invites_from_hf_state(
+    base: dict[str, dict[str, dict[str, str]]],
+    incoming: dict[str, dict[str, dict[str, str]]],
+    project_slug: str,
+) -> dict[str, dict[str, dict[str, str]]]:
+    merged: dict[str, dict[str, dict[str, str]]] = {
+        invite_key: {
+            slug: invite
+            for slug, invite in invites.items()
+            if slug != project_slug
+        }
+        for invite_key, invites in base.items()
+        if isinstance(invites, dict)
+    }
+    for invite_key, invites in incoming.items():
+        invite = invites.get(project_slug) if isinstance(invites, dict) else None
+        if invite is not None:
+            merged.setdefault(invite_key, {})[project_slug] = invite
+    return {invite_key: invites for invite_key, invites in merged.items() if invites}
+
+
+def _overlay_hf_project_state(
+    *,
+    projects: list[Project],
+    user_access: dict[str, dict[str, Role]],
+    pending_invites: dict[str, dict[str, dict[str, str]]],
+    loaded_state: list[HfProjectStateStoreLoadedProject],
+) -> tuple[list[Project], dict[str, dict[str, Role]], dict[str, dict[str, dict[str, str]]]]:
+    by_slug = {project.project_slug: project for project in projects}
+    merged_access = dict(user_access)
+    merged_invites = dict(pending_invites)
+    for loaded in loaded_state:
+        project = loaded.project
+        by_slug[project.project_slug] = project
+        merged_access = _merge_project_access_from_hf_state(merged_access, loaded.user_access, project.project_slug)
+        merged_invites = _merge_project_invites_from_hf_state(merged_invites, loaded.pending_invites, project.project_slug)
+    return list(by_slug.values()), merged_access, merged_invites
+
+
+def _load_hf_project_state_repos(
+    *,
+    state_repo_ids: tuple[str, ...],
+    token: str | None,
+    loader: HfProjectStateStoreLoader | None = None,
+) -> tuple[list[HfProjectStateStoreLoadedProject], list[str]]:
+    repo_ids = tuple(repo.strip() for repo in (state_repo_ids or ()) if repo and repo.strip())
+    if not repo_ids:
+        return [], []
+    token_value = (token or "").strip()
+    if not token_value:
+        return [], ["HF project-state repos are configured, but no HF token is available to read them."]
+
+    state_loader = loader or HfProjectStateStoreLoader()
+    loaded: list[HfProjectStateStoreLoadedProject] = []
+    errors: list[str] = []
+    for repo_id in repo_ids:
+        try:
+            state = state_loader.load_project_state(state_repo_id=repo_id, token=token_value)
+            if state is not None:
+                loaded.append(state)
+        except Exception as exc:
+            errors.append(f"{repo_id}: {exc}")
+    return loaded, errors
+
+
 def _resolve_bootstrap_file_paths(runtime_config: RuntimeConfig) -> tuple[Path, Path, Path]:
     bootstrap_dir = Path(runtime_config.bootstrap_base_dir)
     projects_path = Path(runtime_config.projects_file_path) if runtime_config.projects_file_path else (bootstrap_dir / "projects.json")
@@ -1354,6 +1442,8 @@ def _bootstrap_auth_and_projects(
     user_access_file_path: str | None = None,
     invites_file_path: str | None = None,
     state_store: SupabaseBootstrapStore | None = None,
+    hf_project_state_token: str | None = None,
+    hf_project_state_loader: HfProjectStateStoreLoader | None = None,
 ) -> str:
     if state_store is not None:
         projects = state_store.load_projects()
@@ -1363,6 +1453,19 @@ def _bootstrap_auth_and_projects(
         projects = _load_projects_from_file(projects_file_path or runtime_config.projects_file_path)
         user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
         pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
+
+    hf_loaded_state, hf_load_errors = _load_hf_project_state_repos(
+        state_repo_ids=runtime_config.hf_project_state_repos,
+        token=hf_project_state_token,
+        loader=hf_project_state_loader,
+    )
+    if hf_loaded_state:
+        projects, user_access, pending_invites = _overlay_hf_project_state(
+            projects=projects,
+            user_access=user_access,
+            pending_invites=pending_invites,
+            loaded_state=hf_loaded_state,
+        )
 
     if runtime_config.enable_demo_bootstrap and not projects and not user_access:
         projects = _default_projects()
@@ -1410,10 +1513,12 @@ def _bootstrap_auth_and_projects(
             "Emergency admin access was granted to username 'admin_user'."
         )
 
-    if not projects:
-        return ""
-
-    return emergency_admin_message
+    warnings = [emergency_admin_message] if emergency_admin_message else []
+    if hf_load_errors:
+        warnings.append("⚠️ Some HF project-state repos could not be loaded: " + " | ".join(hf_load_errors))
+    if hf_loaded_state:
+        warnings.append(f"Loaded {len(hf_loaded_state)} project(s) from HF project-state repo(s).")
+    return "\n\n".join(warnings)
 
 
 def _build_supabase_state(runtime_config: RuntimeConfig) -> tuple[SupabaseBootstrapStore | None, SupabaseValidationRepository | None, str]:
@@ -2757,6 +2862,7 @@ def create_app() -> gr.Blocks:
         user_access_file_path=str(user_access_file_path),
         invites_file_path=str(invites_file_path),
         state_store=state_store,
+        hf_project_state_token=_env_hf_token(),
     )
 
     def _current_project_map() -> dict[str, Project]:
@@ -5393,11 +5499,13 @@ def create_app() -> gr.Blocks:
                     demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
                     hf_project_state_label = "enabled" if runtime_config.hf_project_state_writes_enabled else "disabled"
+                    hf_project_state_repos_label = str(len(runtime_config.hf_project_state_repos))
                     hf_space_label = os.getenv("SPACE_ID") or "local runtime"
                     health_html = settings_health_html(
                         [
                             ("State backend", state_label, state_tone),
                             ("HF project-state writes", hf_project_state_label, "ok" if runtime_config.hf_project_state_writes_enabled else "info"),
+                            ("HF project-state repos", hf_project_state_repos_label, "ok" if runtime_config.hf_project_state_repos else "info"),
                             ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
                             ("Destructive write guard", "enabled", "ok"),
                             ("Local JSON backups", "enabled" if state_label == "Filesystem" else "not used", "ok" if state_label == "Filesystem" else "info"),

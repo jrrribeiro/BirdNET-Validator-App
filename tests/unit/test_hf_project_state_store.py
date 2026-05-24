@@ -7,6 +7,7 @@ from src.services.hf_project_state_store import (
     HF_PROJECT_STATE_BACKEND,
     HfProjectStateStoreError,
     HfProjectStateStoreInitializer,
+    HfProjectStateStoreLoader,
     HfProjectStateStoreSync,
     default_state_repo_id,
 )
@@ -33,6 +34,17 @@ class FakeHfProjectStateApi:
     def update_repo_visibility(self, **kwargs):  # noqa: ANN001
         self.visibility_updates.append(dict(kwargs))
         return {"private": True}
+
+
+class FakeHfProjectStateReadApi:
+    def __init__(self, files: dict[str, str]) -> None:
+        self.files = dict(files)
+
+    def read_text(self, **kwargs):  # noqa: ANN001
+        path = str(kwargs["path_in_repo"])
+        if path not in self.files:
+            raise FileNotFoundError(path)
+        return self.files[path]
 
 
 def _project() -> Project:
@@ -225,3 +237,84 @@ def test_sync_project_state_requires_token() -> None:
             pending_invites={},
             token="",
         )
+
+
+def test_load_project_state_recovers_project_acl_and_invites() -> None:
+    loader = HfProjectStateStoreLoader(
+        api=FakeHfProjectStateReadApi(
+            {
+                "project.json": json.dumps(
+                    {
+                        "schema_version": 1,
+                        "project_id": "project-state-id",
+                        "project_slug": "upload-test2",
+                        "project_name": "Upload Test 2",
+                        "dataset_repo_id": "jrrribeiro/upload_test2",
+                        "state_status": "ready",
+                        "owner_username": "jrrribeiro",
+                        "visibility": "collaborative",
+                        "active": True,
+                    }
+                ),
+                "acl.json": json.dumps(
+                    {
+                        "schema_version": 1,
+                        "project_slug": "upload-test2",
+                        "users": {
+                            "jrrribeiro": {"role": "admin", "active": True},
+                            "validator-a": {"role": "validator", "active": True},
+                            "inactive": {"role": "validator", "active": False},
+                        },
+                    }
+                ),
+                "invites.json": json.dumps(
+                    {
+                        "schema_version": 1,
+                        "project_slug": "upload-test2",
+                        "pending": {
+                            "validator-b": {
+                                "role": "validator",
+                                "invited_by": "jrrribeiro",
+                                "created_at": "2026-05-24T12:00:00+00:00",
+                                "expires_at": "2026-05-25T12:00:00+00:00",
+                                "username": "validator-b",
+                                "invitee_email": "",
+                            }
+                        },
+                    }
+                ),
+            }
+        )
+    )
+
+    loaded = loader.load_project_state(state_repo_id="jrrribeiro/upload_test2_state", token="hf_read")
+
+    assert loaded is not None
+    assert loaded.project.project_slug == "upload-test2"
+    assert loaded.project.state_backend == HF_PROJECT_STATE_BACKEND
+    assert loaded.project.state_repo_id == "jrrribeiro/upload_test2_state"
+    assert loaded.user_access["jrrribeiro"]["upload-test2"].value == "admin"
+    assert loaded.user_access["validator-a"]["upload-test2"].value == "validator"
+    assert "inactive" not in loaded.user_access
+    assert loaded.pending_invites["validator-b"]["upload-test2"]["role"] == "validator"
+
+
+def test_load_project_state_skips_archived_project() -> None:
+    loader = HfProjectStateStoreLoader(
+        api=FakeHfProjectStateReadApi(
+            {
+                "project.json": json.dumps(
+                    {
+                        "schema_version": 1,
+                        "project_slug": "upload-test2",
+                        "project_name": "Upload Test 2",
+                        "dataset_repo_id": "jrrribeiro/upload_test2",
+                        "state_status": "archived",
+                        "active": False,
+                    }
+                )
+            }
+        )
+    )
+
+    assert loader.load_project_state(state_repo_id="jrrribeiro/upload_test2_state", token="hf_read") is None

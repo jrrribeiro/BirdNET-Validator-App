@@ -41,6 +41,7 @@ from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
 from src.domain.models import Detection, Project, Role
 from src.repositories.state_safety import StateSafetyError
+from src.services.hf_project_state_store import HfProjectStateStoreLoadedProject
 from src.ui.admin_panel import AdminPanelManager
 
 
@@ -1199,6 +1200,94 @@ def test_bootstrap_auth_and_projects_uses_demo_bootstrap_when_enabled(tmp_path: 
     assert auth_service.login("demo_user") is not None
     assert auth_service.login("admin_user") is not None
     assert any(p["project_slug"] == "demo-project" for p in admin_manager.list_projects())
+
+
+def test_bootstrap_auth_and_projects_loads_configured_hf_project_state(tmp_path: Path) -> None:
+    class FakeStateLoader:
+        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
+            assert state_repo_id == "owner/project-a_state"
+            assert token == "hf_read"
+            project = Project(
+                project_slug="project-a",
+                name="Project A",
+                dataset_repo_id="owner/project-a",
+                owner_username="owner",
+                state_backend="hf_project_store",
+                state_repo_id=state_repo_id,
+            )
+            return HfProjectStateStoreLoadedProject(
+                state_repo_id=state_repo_id,
+                project=project,
+                user_access={"owner": {"project-a": Role.admin}, "validator": {"project-a": Role.validator}},
+                pending_invites={
+                    "pending-user": {
+                        "project-a": {
+                            "role": "validator",
+                            "invited_by": "owner",
+                            "created_at": "2026-05-24T12:00:00+00:00",
+                            "expires_at": "2099-05-24T12:00:00+00:00",
+                            "username": "pending-user",
+                            "invitee_email": "",
+                        }
+                    }
+                },
+            )
+
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        hf_project_state_repos=("owner/project-a_state",),
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    warning = _bootstrap_auth_and_projects(
+        auth_service,
+        admin_manager,
+        runtime_config,
+        hf_project_state_token="hf_read",
+        hf_project_state_loader=FakeStateLoader(),
+    )
+
+    assert "Loaded 1 project" in warning
+    assert admin_manager.get_project("project-a") is not None
+    assert auth_service.login("owner") is not None
+    assert auth_service.get_user_role_for_project("validator", "project-a") == Role.validator
+    assert len(auth_service.list_pending_invites("pending-user")) == 1
+
+
+def test_bootstrap_auth_and_projects_reports_hf_project_state_load_errors(tmp_path: Path) -> None:
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        hf_project_state_repos=("owner/project-a_state",),
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+
+    assert "no HF token" in warning
 
 
 def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_path: Path) -> None:
