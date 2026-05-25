@@ -172,6 +172,12 @@ currently authenticated local Hugging Face account and never prints or saves
 tokens. Every remote write is a small diagnostic JSON object under
 `diagnostics/organization-permission-spike/`.
 
+For this permission spike only, create a new temporary personal User Access
+Token with the `write` role in each account. This deliberately isolates the
+organization-role question: a read-only token would fail even if the
+organization permission were sufficient. Revoke both temporary tokens after
+the spike. Production must later use the narrowest proven authorization path.
+
 Authenticate the admin account in the terminal:
 
 ```powershell
