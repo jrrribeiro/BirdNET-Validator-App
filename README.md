@@ -198,10 +198,10 @@ Optional runtime settings:
 - `BIRDNET_INVITE_TTL_HOURS` (default `72`)
 - `BIRDNET_PAGE_SIZE` (default `25`)
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
-- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (create/use the private `_state` dataset repo and run the OAuth authorization proof)
+- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (experimental `_state` diagnostics and recovery only while a new collaborative backend is selected)
 - `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED=true` (legacy experimental access only for projects already declaring Bucket state; new projects no longer create Buckets)
 
-New projects use their private `_state` repository while OAuth multi-user authorization is being qualified. The personal private Bucket experiment failed its two-account validator access test and is not selected for newly created projects.
+Do not create real collaborative projects with either experimental backend yet. The personal private Bucket experiment failed its two-account validator access test. The private `_state` OAuth experiment also failed as a direct validation store: `contribute-repos` allowed repository contribution only through Pull Requests rather than durable direct writes to `main`.
 
 Projects previously created with a private `_state` repository can be recovered from the **Admin** tab using **Connect Existing State**. Sign in with the Hugging Face account that is recorded as an administrator in that repository's `acl.json`, then provide the `_state` repo id (for example, `owner/audio_dataset_state`). The app loads the saved manifest, ACL, and pending invites; it does not accept a new local definition over an existing state repository.
 
@@ -213,7 +213,7 @@ Legacy Supabase state backend, available while migrating existing projects:
 
 When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`. New community deployments should prefer admin-owned Hugging Face project state once the high-frequency state backend is enabled and verified.
 
-The Bucket validation backend remains available only to diagnose or migrate existing experimental Bucket projects. For new collaborative projects, use the **Private state authorization** action in the **Projects** tab to prove that each signed-in account can read and write the private `_state` repository using its own OAuth authorization.
+The Bucket validation backend remains available only to diagnose or migrate existing experimental Bucket projects. The **Private state OAuth diagnostic** action in **Projects** now reports when an experimental `_state` repository is limited to Pull Request contributions and must not be treated as a production validation store.
 
 Optional invite email settings:
 

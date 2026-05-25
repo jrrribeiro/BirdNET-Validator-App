@@ -1,6 +1,6 @@
 # Private HF State + OAuth + Batching Implementation Plan
 
-Status: proposed replacement for the experimental personal Bucket validation path
+Status: permission proof failed; retained as investigation record
 Created: 2026-05-25
 Target branch: `feature/project-state-security-privacy-review`
 
@@ -25,6 +25,14 @@ The experimental admin-owned private Bucket path must remain disabled by
 default. The two-user test demonstrated that an invited validator could not
 access the personal private Bucket using their own Hugging Face authorization.
 
+The private personal `_state` OAuth path also cannot become the default
+validation backend as designed. On 2026-05-25, an OAuth-authenticated admin
+ran the permission diagnostic against an initialized private state repository.
+The manifest was read, but a direct diagnostic commit was rejected with `403
+Forbidden` and the Hub required `create_pr=1`. Pull Request-only contributions
+are appropriate for reviewed content submissions, not a high-frequency
+validation event stream.
+
 ## What Is Confirmed And What Requires Proof
 
 ### Confirmed by official documentation
@@ -40,13 +48,9 @@ access the personal private Bucket using their own Hugging Face authorization.
    public numbers. The general free-user API request allowance is measured in
    five-minute windows and may change.
 
-### Proof required before production architecture is accepted
+### Permission proof result
 
-The documentation does not state unambiguously whether a repository created
-through the app by project admin A can be read and written through
-`contribute-repos` by invited validator B without a separate Hub-level share.
-
-This must be tested before batching or migration becomes the default path:
+The following proof was designed before implementation:
 
 1. Admin A signs into the Space through OAuth.
 2. Admin A creates a private `*_state` repository through the app.
@@ -56,12 +60,20 @@ This must be tested before batching or migration becomes the default path:
    validation write using only B's OAuth token.
 6. Admin A reloads the project and observes that write.
 
-Pass condition: B reads and writes the private state repository without any
-administrator token stored in the app or shared with B.
+Observed result:
 
-Fail condition: B receives `401`, `403`, or masked `404`. If it fails, a
-personal-repository `_state` design cannot satisfy free multi-user
-collaboration by itself, and the fallback decision in the final section applies.
+1. A manual-token `upload_test5_state` attempt was invalid for testing OAuth
+   scopes and was discarded as evidence.
+2. Admin A then authenticated through OAuth and executed the diagnostic on
+   `jrrribeiro/upload_test6_state`.
+3. The diagnostic read the initialized repository but could not commit its
+   proof file directly to `main`.
+4. The Hub returned `403 Forbidden` and explicitly required `create_pr=1`.
+
+Conclusion: this strategy failed before testing validator B. If even the
+creating OAuth identity cannot perform direct state writes, `contribute-repos`
+cannot support durable batched validation updates without a Pull Request merge
+workflow or an administrator credential. Neither meets the target workflow.
 
 ## Target Ownership And Privacy Model
 
@@ -214,7 +226,7 @@ decisions through frequent shared snapshot rewrites.
 Objective: establish whether `contribute-repos` supports the required
 two-account private `_state` collaboration.
 
-Implementation status (2026-05-25): in progress.
+Implementation status (2026-05-25): completed, failed permission gate.
 
 Changes:
 
@@ -251,11 +263,13 @@ Tests:
 3. Manual Space test with two free HF accounts and a fresh private `_state`
    repo.
 
-Exit gate:
+Exit gate outcome:
 
-- Pass: proceed to Phase 1.
-- Fail: stop this personal-repository strategy and implement the fallback
-  decision section; do not mask access using an admin token.
+- Failed. Do not proceed to the `_state` batching phases as a production
+  backend.
+- Preserve the code only as a permission diagnostic until the next backend
+  strategy is chosen.
+- Do not mask the failure using an administrator token.
 
 ## Phase 1 - Backend Selection And Removal Of Unsafe Fallbacks
 

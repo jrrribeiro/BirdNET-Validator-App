@@ -4173,12 +4173,13 @@ def create_app() -> gr.Blocks:
                     allow_custom_value=True,
                 )
                 with gr.Group(elem_classes=["bn-panel-soft"]):
-                    gr.Markdown("### Private state authorization")
+                    gr.Markdown("### Private state OAuth diagnostic")
                     state_authorization_status = gr.Markdown(
-                        "Select an authorized project and verify access using your signed-in Hugging Face account."
+                        "The current OAuth scope may allow Pull Requests rather than direct state writes. "
+                        "Run this diagnostic only when examining an experimental `_state` project."
                     )
                     test_state_authorization_btn = gr.Button(
-                        "Test private state authorization",
+                        "Check OAuth state write capability",
                         elem_classes=["bn-soft-action"],
                     )
                 invitations_info = gr.Markdown(value="")

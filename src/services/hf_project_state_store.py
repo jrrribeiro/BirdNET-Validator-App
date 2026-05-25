@@ -670,6 +670,13 @@ class HfProjectStatePermissionProbe:
                 ],
             )
         except Exception as exc:
+            message = str(exc).lower()
+            if "create_pr=1" in message or "create a pull request" in message:
+                raise HfProjectStateStoreError(
+                    "OAuth access to this private `_state` repository was confirmed only for Pull Request "
+                    "contributions, not direct durable writes to `main`. This permission model is not sufficient "
+                    "for high-frequency collaborative validation state without an administrator merge step."
+                ) from exc
             raise HfProjectStateStoreError(
                 f"State authorization write failed for {state_repo_id} using the signed-in account: {exc}"
             ) from exc

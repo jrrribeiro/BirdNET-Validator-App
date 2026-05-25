@@ -50,6 +50,12 @@ class FakeHfProjectStateReadApi:
         return self.files[path]
 
 
+class PullRequestOnlyHfProjectStateApi(FakeHfProjectStateApi):
+    def create_commit(self, **kwargs):  # noqa: ANN001
+        _ = kwargs
+        raise RuntimeError("403 Forbidden: pass create_pr=1 as a query parameter to create a Pull Request.")
+
+
 def _project() -> Project:
     return Project(
         project_slug="upload-test2",
@@ -294,6 +300,26 @@ def test_permission_probe_requires_personal_token() -> None:
 
     with pytest.raises(HfProjectStateStoreError, match="OAuth"):
         probe.probe(project=project, actor_username="validator-a", token="")
+
+
+def test_permission_probe_explains_pull_request_only_oauth_access() -> None:
+    project = _project()
+    project.state_repo_id = "jrrribeiro/upload_test2_state"
+
+    class FakeLoader:
+        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
+            _ = token
+            return HfProjectStateStoreLoadedProject(
+                state_repo_id=state_repo_id,
+                project=project,
+                user_access={},
+                pending_invites={},
+            )
+
+    probe = HfProjectStatePermissionProbe(loader=FakeLoader(), api=PullRequestOnlyHfProjectStateApi())  # type: ignore[arg-type]
+
+    with pytest.raises(HfProjectStateStoreError, match="Pull Request contributions"):
+        probe.probe(project=project, actor_username="jrrribeiro", token="oauth_token")
 
 
 def test_load_project_state_recovers_project_acl_and_invites() -> None:
