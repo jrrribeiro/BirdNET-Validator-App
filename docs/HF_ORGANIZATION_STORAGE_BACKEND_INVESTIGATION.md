@@ -1,6 +1,6 @@
 # Hugging Face Organization-Owned State Backend Investigation
 
-Status: investigation and permission-spike plan; not approved for production
+Status: token permission spike completed; viable only with organization-wide writer trust
 Created: 2026-05-25
 Target branch: `feature/project-state-security-privacy-review`
 
@@ -110,9 +110,9 @@ feature until a small organization Bucket permission spike succeeds.
 
 ## Security Assessment
 
-### What This Model Would Solve
+### What This Model Solves When Organization Writers Are Trusted
 
-If proven, it would provide:
+The token-based permission spike confirms it can provide:
 
 1. State owned by the project team organization, not by this app maintainer.
 2. Each validator authenticating with their own Hugging Face identity.
@@ -242,15 +242,26 @@ insufficient because the validator did not create the admin-created Bucket;
 |---|---|---|---|---|
 | 2026-05-25 | `jrrribeiro` | `admin` | Create private Bucket `ppbio-rabeca/birdnet-validator-permission-spike` | Passed |
 | 2026-05-25 | `jrrribeiro` | `admin` | Write and read one `262` byte diagnostic marker | Passed |
+| 2026-05-25 | `jonathan2008r` | `write` | Read admin marker and write own marker using own temporary token | Passed |
+| 2026-05-25 | `jonathan2008r` | `contributor` | Read admin marker using own temporary token | Passed |
+| 2026-05-25 | `jonathan2008r` | `contributor` | Write marker to admin-created private Bucket using own temporary token | Failed: `403 Forbidden`, read access only |
 
 Confirmed Bucket state after the administrative proof: `private=True`,
-`total_files=1`, `size=262` bytes. The next decision gate is the second
-account's read and write behavior while assigned the free organization
-`contributor` role.
+`total_files=1`, `size=262` bytes. After the successful `write`-role marker,
+the Bucket held `2` files and `531` bytes.
+
+Permission result: a free-organization `contributor` cannot write validation
+state into a Bucket created by the administrator; the `write` role succeeds.
+Consequently, this backend is technically usable only when every validator
+allowed to submit state is trusted with organization-wide write authority, or
+when paid resource-scoped permissions are introduced.
 
 ### Credential Test B: OAuth In The Space
 
-Run only if Test A proves an acceptable organization permission model.
+Run only if the project governance accepts organization-level `write` access
+for validators. OAuth cannot improve the Hub authorization boundary proven in
+Test A; it can only confirm that the Space can deliver that already-accepted
+permission model without manual token entry.
 
 1. Add a narrowly scoped experimental OAuth/Bucket diagnostic in this feature
    branch only.
@@ -293,9 +304,9 @@ Do not implement this backend as the app default unless all items are true:
    in a free organization share its current `100GB` private allowance.
 5. Batch stress testing confirms that fast validation does not lose state.
 
-If Test A requires organization-wide `write`, the decision is not purely
-technical: this model can support trusted research teams, but not isolated
-arbitrary validators in a multi-project free organization.
+Test A has required organization-wide `write`. The decision is therefore not
+purely technical: this model can support trusted research teams, but not
+isolated arbitrary validators in a multi-project free organization.
 
 ## Most Likely Product Options After The Spike
 
