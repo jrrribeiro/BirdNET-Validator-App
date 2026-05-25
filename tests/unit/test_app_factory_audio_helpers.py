@@ -64,6 +64,12 @@ class FakeAudioService:
         self.cleaned.append(cache_key)
 
 
+class InaccessibleAudioService:
+    def fetch(self, dataset_repo: str, audio_id: str, **kwargs: object) -> FakeFetchResult:
+        _ = (dataset_repo, audio_id, kwargs)
+        raise RuntimeError("404 Client Error: Repository Not Found")
+
+
 class FakeValidationService:
     def __init__(self) -> None:
         self.calls: list[dict[str, str]] = []
@@ -238,6 +244,34 @@ def test_fetch_selected_audio_validates_repo() -> None:
     assert path is None
     assert cache_key == ""
     assert "Provide dataset repo" in status
+
+
+def test_fetch_selected_audio_explains_private_dataset_access_for_authenticated_user() -> None:
+    path, cache_key, status = _fetch_selected_audio(
+        audio_service=InaccessibleAudioService(),
+        dataset_repo="owner/private-audio",
+        rows=[["k1", "audio_03", "sp", 0.9, 0.0, 1.0]],
+        selected_index=0,
+        previous_cache_key="",
+        hf_token="hf_validator",
+    )
+
+    assert path is None
+    assert cache_key == ""
+    assert "signed-in Hugging Face account does not have read access" in status
+    assert "public or gated" in status
+
+
+def test_fetch_selected_audio_explains_missing_user_token_for_private_dataset() -> None:
+    _, _, status = _fetch_selected_audio(
+        audio_service=InaccessibleAudioService(),
+        dataset_repo="owner/private-audio",
+        rows=[["k1", "audio_03", "sp", 0.9, 0.0, 1.0]],
+        selected_index=0,
+        previous_cache_key="old",
+    )
+
+    assert "No personal Hugging Face token is active" in status
 
 
 def test_cleanup_selected_audio() -> None:

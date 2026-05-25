@@ -27,7 +27,6 @@ from src.repositories.in_memory_detection_repository import InMemoryDetectionRep
 from src.repositories.hf_bucket_validation_repository import (
     HF_BUCKET_VALIDATION_BACKEND,
     HfBucketValidationError,
-    HfBucketValidationInitializer,
 )
 from src.repositories.project_aware_validation_repository import ProjectAwareValidationRepository
 from src.repositories.state_safety import (
@@ -46,6 +45,7 @@ from src.services.hf_project_state_store import (
     HfProjectStateStoreInitializer,
     HfProjectStateStoreLoadedProject,
     HfProjectStateStoreLoader,
+    HfProjectStatePermissionProbe,
     HfProjectStateStoreSync,
 )
 from src.services.validation_service import ValidationService
@@ -1849,6 +1849,24 @@ def _extract_expected_version(rows: object, selected_index: int) -> int:
     return int(value)
 
 
+def _audio_fetch_error_message(dataset_repo: str, exc: Exception, hf_token: str | None) -> str:
+    raw_message = str(exc)
+    lower_message = raw_message.lower()
+    access_markers = ("401", "403", "404", "repository not found", "unauthorized", "forbidden")
+    if any(marker in lower_message for marker in access_markers):
+        identity_hint = (
+            "The signed-in Hugging Face account does not have read access"
+            if (hf_token or "").strip()
+            else "No personal Hugging Face token is active for this session"
+        )
+        return (
+            f"Cannot read audio dataset '{dataset_repo}'. {identity_hint}. "
+            "For collaborative validation, make the audio dataset public or gated and grant this Hugging Face "
+            "account access, then sign in with that account's token."
+        )
+    return f"Failed to load audio: {raw_message}"
+
+
 def _fetch_selected_audio(
     audio_service: _AudioServiceProtocol,
     dataset_repo: str,
@@ -1877,9 +1895,10 @@ def _fetch_selected_audio(
         status = f"Audio loaded ({result.source}) for audio_id={audio_id}"
         return result.local_path, result.cache_key, status
     except Exception as exc:
+        status = _audio_fetch_error_message(repo, exc, hf_token)
         if previous_cache_key:
-            return None, previous_cache_key, f"Failed to load audio: {exc}"
-        return None, "", f"Failed to load audio: {exc}"
+            return None, previous_cache_key, status
+        return None, "", status
 
 
 def _load_pcm_wave(audio_path: Path) -> tuple[int, np.ndarray]:
@@ -2935,8 +2954,8 @@ def create_app() -> gr.Blocks:
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
     hf_state_connector = HfProjectStateStoreConnector()
+    hf_state_permission_probe = HfProjectStatePermissionProbe()
     hf_state_sync = HfProjectStateStoreSync()
-    hf_bucket_initializer = HfBucketValidationInitializer()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
     report_cache_ttl_seconds = 30.0
 
@@ -3369,28 +3388,6 @@ def create_app() -> gr.Blocks:
                                 gr.update(),
                                 session,
                             )
-                        if (
-                            runtime_config.hf_bucket_validations_enabled
-                            and not runtime_config.hf_project_state_writes_enabled
-                        ):
-                            return (
-                                "Project was not created: enable BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED "
-                                "together with BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED so the private "
-                                "_state repo durably records its validation bucket.",
-                                _project_rows(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                gr.update(),
-                                session,
-                            )
-
                         project = Project(
                             project_id=str(uuid4()),
                             project_slug=slug,
@@ -3447,34 +3444,6 @@ def create_app() -> gr.Blocks:
                         project.state_schema_version = HF_PROJECT_STATE_SCHEMA_VERSION
                         project.state_status = "ready"
                         state_repo_action = "initialized" if state_result.initialized else "connected"
-                        bucket_message = ""
-                        if runtime_config.hf_bucket_validations_enabled:
-                            try:
-                                bucket_result = hf_bucket_initializer.initialize(
-                                    project_slug=project.project_slug,
-                                    dataset_repo_id=project.dataset_repo_id,
-                                    token=operation_token,
-                                )
-                            except HfBucketValidationError as exc:
-                                return (
-                                    f"Project was not created because its private validation bucket could not be initialized: {exc}",
-                                    _project_rows(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    gr.update(),
-                                    session,
-                                )
-                            project.validation_backend = HF_BUCKET_VALIDATION_BACKEND
-                            project.validation_bucket_id = bucket_result.bucket_id
-                            bucket_action = "initialized" if bucket_result.initialized else "connected"
-                            bucket_message = f" Validation bucket {bucket_action}: {bucket_result.bucket_id}."
 
                         created = admin_manager.register_project(project)
                         if not created:
@@ -3508,9 +3477,9 @@ def create_app() -> gr.Blocks:
 
                         return (
                             (
-                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}.{bucket_message}"
+                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}."
                                 if persisted
-                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}).{bucket_message} Could not persist bootstrap files: {persist_error}"
+                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}). Could not persist bootstrap files: {persist_error}"
                             ),
                             _project_rows(),
                             gr.update(choices=admin_projects, value=slug),
@@ -4181,6 +4150,15 @@ def create_app() -> gr.Blocks:
                     interactive=False,
                     allow_custom_value=True,
                 )
+                with gr.Group(elem_classes=["bn-panel-soft"]):
+                    gr.Markdown("### Private state authorization")
+                    state_authorization_status = gr.Markdown(
+                        "Select an authorized project and verify access using your signed-in Hugging Face account."
+                    )
+                    test_state_authorization_btn = gr.Button(
+                        "Test private state authorization",
+                        elem_classes=["bn-soft-action"],
+                    )
                 invitations_info = gr.Markdown(value="")
                 invitations_overview = gr.HTML(value=invite_panel_html(0))
                 invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
@@ -4406,10 +4384,38 @@ def create_app() -> gr.Blocks:
                         return selected, dataset_repo_id, project_overview_html(_project_rows(), session.authorized_projects, selected), project_context_html(project_row, role_label)
                     return None, "", project_overview_html([], []), project_context_html(None)
 
+                def test_private_state_authorization(selected: str, session):
+                    if session is None:
+                        return "Login with your Hugging Face account before running the state authorization test."
+                    project_slug = (selected or "").strip()
+                    project = admin_manager.get_project(project_slug) if project_slug else None
+                    if project is None or project_slug not in session.authorized_projects:
+                        return "Select a project that is authorized for the signed-in account."
+                    if (project.state_backend or "").strip() != HF_PROJECT_STATE_BACKEND:
+                        return "This project does not use a private Hugging Face `_state` repository."
+                    try:
+                        result = hf_state_permission_probe.probe(
+                            project=project,
+                            actor_username=session.username,
+                            token=_session_hf_token(session),
+                        )
+                    except HfProjectStateStoreError as exc:
+                        return f"State authorization test failed: {exc}"
+                    return (
+                        f"State authorization verified for **{result.actor_username}**. "
+                        f"A private diagnostic write was confirmed in `{result.state_repo_id}`."
+                    )
+
                 project_selector.change(
                     fn=update_selected_project,
                     inputs=[project_selector, session_state],
                     outputs=[selected_project_state, selected_dataset_repo_state, project_overview, project_context_display],
+                )
+
+                test_state_authorization_btn.click(
+                    fn=test_private_state_authorization,
+                    inputs=[project_selector, session_state],
+                    outputs=[state_authorization_status],
                 )
 
                 create_project_event.then(
@@ -4656,20 +4662,23 @@ def create_app() -> gr.Blocks:
                     if not species_name:
                         return [], "Select a species to start validation", 1
 
-                    rows, status_text, updated_page = _page_to_table(
-                        service=service_ref["queue"],
-                        snapshot_reader=validation_repository,
-                        project_slug=project_slug,
-                        page=page,
-                        scientific_name=species_name,
-                        min_confidence=confidence,
-                        page_size=10,
-                        validator_filter=validator_filter_value,
-                        status_filter=status_filter_value,
-                        updated_after=updated_after_value,
-                        show_conflicts_only=only_conflicts,
-                        actor_username=_validator_name_from_session(session),
-                    )
+                    try:
+                        rows, status_text, updated_page = _page_to_table(
+                            service=service_ref["queue"],
+                            snapshot_reader=validation_repository,
+                            project_slug=project_slug,
+                            page=page,
+                            scientific_name=species_name,
+                            min_confidence=confidence,
+                            page_size=10,
+                            validator_filter=validator_filter_value,
+                            status_filter=status_filter_value,
+                            updated_after=updated_after_value,
+                            show_conflicts_only=only_conflicts,
+                            actor_username=_validator_name_from_session(session),
+                        )
+                    except HfBucketValidationError as exc:
+                        return [], str(exc), 1
                     rows = _sort_rows_by_confidence_desc(rows)
                     return rows, status_text, updated_page
 
@@ -5772,14 +5781,14 @@ def create_app() -> gr.Blocks:
                     demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
                     hf_project_state_label = "enabled" if runtime_config.hf_project_state_writes_enabled else "disabled"
-                    hf_bucket_validation_label = "enabled" if runtime_config.hf_bucket_validations_enabled else "disabled"
+                    hf_bucket_validation_label = "legacy experimental" if runtime_config.hf_bucket_validations_enabled else "disabled"
                     hf_project_state_repos_label = str(len(runtime_config.hf_project_state_repos))
                     hf_space_label = os.getenv("SPACE_ID") or "local runtime"
                     health_html = settings_health_html(
                         [
                             ("State backend", state_label, state_tone),
                             ("HF project-state writes", hf_project_state_label, "ok" if runtime_config.hf_project_state_writes_enabled else "info"),
-                            ("HF Bucket validations", hf_bucket_validation_label, "ok" if runtime_config.hf_bucket_validations_enabled else "info"),
+                            ("HF Bucket validations", hf_bucket_validation_label, "warn" if runtime_config.hf_bucket_validations_enabled else "info"),
                             ("HF project-state repos", hf_project_state_repos_label, "ok" if runtime_config.hf_project_state_repos else "info"),
                             ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
                             ("Destructive write guard", "enabled", "ok"),

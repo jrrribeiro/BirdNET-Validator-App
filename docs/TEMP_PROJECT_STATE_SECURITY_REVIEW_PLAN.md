@@ -4,6 +4,13 @@ Status: planning document
 Created: 2026-05-21  
 Scope: BirdNET Validator App project persistence, authentication, authorization, secret handling, and validation-state ownership
 
+> Update (2026-05-25): the experimental personal private Bucket path failed its
+> two-account validator authorization test. The replacement implementation plan
+> is documented in
+> [`HF_PRIVATE_STATE_OAUTH_BATCHING_IMPLEMENTATION_PLAN.md`](HF_PRIVATE_STATE_OAUTH_BATCHING_IMPLEMENTATION_PLAN.md).
+> Bucket-backed validation must remain experimental and disabled by default
+> while the private `_state` OAuth permission proof is evaluated.
+
 ## Purpose
 
 This document records the next structural review for the BirdNET Validator App after the Gradio UI and current Supabase-backed workflows reached a usable test state.

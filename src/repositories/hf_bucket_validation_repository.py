@@ -214,6 +214,16 @@ class HfBucketValidationRepository:
         if not self._token:
             raise HfBucketValidationError("A Hugging Face token is required to access validation state.")
 
+    def _bucket_access_error(self, exc: Exception) -> Exception:
+        message = str(exc).lower()
+        access_markers = ("401", "403", "404", "bucketnotfound", "bucket not found", "unauthorized", "forbidden")
+        if any(marker in message for marker in access_markers):
+            return HfBucketValidationError(
+                f"The signed-in Hugging Face account cannot access validation bucket '{self._bucket_id}'. "
+                "An invitation inside this app does not grant Hugging Face Bucket permissions."
+            )
+        return exc
+
     def _read_json_or_none(self, path_in_bucket: str) -> object | None:
         try:
             text = self._api.read_text(
@@ -223,27 +233,38 @@ class HfBucketValidationRepository:
             )
         except FileNotFoundError:
             return None
+        except Exception as exc:
+            raise self._bucket_access_error(exc) from exc
         try:
             return json.loads(text)
         except json.JSONDecodeError:
             return None
 
     def _active_event_paths(self) -> list[str]:
-        return [
-            path
-            for path in self._api.list_files(bucket_id=self._bucket_id, prefix="events/", token=self._token)
-            if path.endswith(".json")
-        ]
+        try:
+            return [
+                path
+                for path in self._api.list_files(bucket_id=self._bucket_id, prefix="events/", token=self._token)
+                if path.endswith(".json")
+            ]
+        except Exception as exc:
+            raise self._bucket_access_error(exc) from exc
 
     def _archive_paths(self) -> list[str]:
-        return [
-            path
-            for path in self._api.list_files(bucket_id=self._bucket_id, prefix="archives/events/", token=self._token)
-            if path.endswith(".jsonl")
-        ]
+        try:
+            return [
+                path
+                for path in self._api.list_files(bucket_id=self._bucket_id, prefix="archives/events/", token=self._token)
+                if path.endswith(".jsonl")
+            ]
+        except Exception as exc:
+            raise self._bucket_access_error(exc) from exc
 
     def _read_event_files(self, paths: list[str], *, project_slug: str) -> list[dict[str, object]]:
-        texts = self._api.read_texts(bucket_id=self._bucket_id, paths_in_bucket=paths, token=self._token)
+        try:
+            texts = self._api.read_texts(bucket_id=self._bucket_id, paths_in_bucket=paths, token=self._token)
+        except Exception as exc:
+            raise self._bucket_access_error(exc) from exc
         events: list[dict[str, object]] = []
         for path in sorted(paths):
             text = texts.get(path)
@@ -404,15 +425,18 @@ class HfBucketValidationRepository:
                 "compacted_event_count": len(events),
                 "items": reconciled_items,
             }
-            self._api.write_files(
-                bucket_id=self._bucket_id,
-                token=self._token,
-                files={
-                    archive_path: archive_text.encode("utf-8"),
-                    "snapshots/current.json": _json_bytes(snapshot),
-                },
-                delete_paths=active_paths,
-            )
+            try:
+                self._api.write_files(
+                    bucket_id=self._bucket_id,
+                    token=self._token,
+                    files={
+                        archive_path: archive_text.encode("utf-8"),
+                        "snapshots/current.json": _json_bytes(snapshot),
+                    },
+                    delete_paths=active_paths,
+                )
+            except Exception as exc:
+                raise self._bucket_access_error(exc) from exc
             return HfBucketCompactionResult(
                 archive_path=archive_path,
                 compacted_event_count=len(events),
@@ -459,12 +483,15 @@ class HfBucketValidationRepository:
                 "updated_at": timestamp,
                 "items": items,
             }
-            self._api.write_files(
-                bucket_id=self._bucket_id,
-                token=self._token,
-                files={
-                    f"events/{now.strftime('%Y%m%d')}/{event_id}.json": _json_bytes(event),
-                    "snapshots/current.json": _json_bytes(snapshot),
-                },
-            )
+            try:
+                self._api.write_files(
+                    bucket_id=self._bucket_id,
+                    token=self._token,
+                    files={
+                        f"events/{now.strftime('%Y%m%d')}/{event_id}.json": _json_bytes(event),
+                        "snapshots/current.json": _json_bytes(snapshot),
+                    },
+                )
+            except Exception as exc:
+                raise self._bucket_access_error(exc) from exc
             return new_version

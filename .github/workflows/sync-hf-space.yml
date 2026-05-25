@@ -2,7 +2,7 @@ name: Sync app to Hugging Face Space
 
 on:
   push:
-    branches: [main]
+    branches: [main, feature/project-state-security-privacy-review]
   workflow_dispatch:
 
 jobs:
@@ -11,7 +11,7 @@ jobs:
     permissions:
       contents: read
     concurrency:
-      group: sync-hf-space-main
+      group: sync-hf-space-${{ github.ref_name }}
       cancel-in-progress: true
     env:
       FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
@@ -70,7 +70,7 @@ jobs:
                   repo_type="space",
                   folder_path=".",
                   path_in_repo=".",
-                  commit_message="Sync app from GitHub Actions",
+                  commit_message=f"Sync app from GitHub Actions ({os.environ.get('GITHUB_REF_NAME', 'unknown-ref')})",
                   ignore_patterns=[
                       ".git/*",
                       ".github/*",
@@ -84,7 +84,7 @@ jobs:
           for attempt in range(len(retry_delays) + 1):
               try:
                   upload()
-                  print(f"Uploaded GitHub main to Hugging Face Space {space_id}.")
+                  print(f"Uploaded GitHub ref {os.environ.get('GITHUB_REF_NAME', 'unknown-ref')} to Hugging Face Space {space_id}.")
                   break
               except HfHubHTTPError as exc:
                   status = getattr(exc.response, "status_code", None)

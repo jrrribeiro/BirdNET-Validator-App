@@ -8,6 +8,8 @@ from src.services.hf_project_state_store import (
     HfProjectStateStoreError,
     HfProjectStateStoreConnector,
     HfProjectStateStoreInitializer,
+    HfProjectStatePermissionProbe,
+    HfProjectStateStoreLoadedProject,
     HfProjectStateStoreLoader,
     HfProjectStateStoreSync,
     default_state_repo_id,
@@ -131,6 +133,22 @@ def test_initialize_reuses_existing_manifest_without_overwriting_state() -> None
     assert fake_api.commits == []
 
 
+def test_initialize_completes_repo_created_with_hub_scaffolding_only() -> None:
+    fake_api = FakeHfProjectStateApi(existing_files=[".gitattributes"])
+    initializer = HfProjectStateStoreInitializer(api=fake_api)
+
+    result = initializer.initialize(
+        project=_project(),
+        creator_username="jrrribeiro",
+        token="hf_test",
+    )
+
+    assert result.initialized is True
+    assert result.reused_existing is False
+    assert len(fake_api.commits) == 1
+    assert "project.json" in [operation.path_in_repo for operation in fake_api.commits[0]["operations"]]
+
+
 def test_initialize_refuses_nonempty_repo_without_manifest() -> None:
     fake_api = FakeHfProjectStateApi(existing_files=["README.md", "events/event.jsonl"])
     initializer = HfProjectStateStoreInitializer(api=fake_api)
@@ -238,6 +256,44 @@ def test_sync_project_state_requires_token() -> None:
             pending_invites={},
             token="",
         )
+
+
+def test_permission_probe_writes_isolated_diagnostic_with_acting_token_only() -> None:
+    fake_api = FakeHfProjectStateApi()
+    project = _project()
+    project.state_repo_id = "jrrribeiro/upload_test2_state"
+
+    class FakeLoader:
+        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
+            assert state_repo_id == project.state_repo_id
+            assert token == "hf_validator"
+            return HfProjectStateStoreLoadedProject(
+                state_repo_id=state_repo_id,
+                project=project,
+                user_access={},
+                pending_invites={},
+            )
+
+    probe = HfProjectStatePermissionProbe(loader=FakeLoader(), api=fake_api)  # type: ignore[arg-type]
+    result = probe.probe(project=project, actor_username="validator-a", token="hf_validator")
+
+    assert result.actor_username == "validator-a"
+    assert result.diagnostic_path.startswith("diagnostics/oauth-permission-proof/")
+    commit = fake_api.commits[0]
+    assert commit["token"] == "hf_validator"
+    assert commit["operations"][0].path_in_repo == result.diagnostic_path
+    serialized = commit["operations"][0].path_or_fileobj.decode("utf-8")
+    assert "validator-a" in serialized
+    assert "hf_validator" not in serialized
+
+
+def test_permission_probe_requires_personal_token() -> None:
+    project = _project()
+    project.state_repo_id = "jrrribeiro/upload_test2_state"
+    probe = HfProjectStatePermissionProbe(api=FakeHfProjectStateApi())
+
+    with pytest.raises(HfProjectStateStoreError, match="OAuth"):
+        probe.probe(project=project, actor_username="validator-a", token="")
 
 
 def test_load_project_state_recovers_project_acl_and_invites() -> None:

@@ -13,6 +13,7 @@ from src.domain.models import Project, Role
 
 HF_PROJECT_STATE_BACKEND = "hf_project_store"
 HF_PROJECT_STATE_SCHEMA_VERSION = 1
+HF_PROJECT_STATE_REPO_SCAFFOLDING_FILES = {".gitattributes"}
 
 
 class HfProjectStateStoreError(Exception):
@@ -48,7 +49,27 @@ class HfProjectStateApi(Protocol):
         token: str | None = None,
     ) -> list[str]: ...
 
+    # NOTE: huggingface_hub renamed visibility APIs over time.
+    # We call `update_repo_settings(private=...)` when available, and fall back to older names.
+    def update_repo_settings(
+        self,
+        repo_id: str,
+        *,
+        private: bool | None = None,
+        token: str | None = None,
+        repo_type: str | None = None,
+    ) -> object: ...
+
     def update_repo_visibility(
+        self,
+        repo_id: str,
+        private: bool = False,
+        *,
+        token: str | None = None,
+        repo_type: str | None = None,
+    ) -> object: ...
+
+    def set_repo_visibility(
         self,
         repo_id: str,
         private: bool = False,
@@ -81,6 +102,14 @@ class HfProjectStateStoreInitResult:
 class HfProjectStateStoreSyncResult:
     state_repo_id: str
     synced_paths: list[str]
+
+
+@dataclass(frozen=True)
+class HfProjectStatePermissionProbeResult:
+    state_repo_id: str
+    actor_username: str
+    diagnostic_path: str
+    verified_at: str
 
 
 @dataclass(frozen=True)
@@ -368,12 +397,30 @@ class HfProjectStateStoreInitializer:
                 repo_type="dataset",
                 exist_ok=True,
             )
-            self._api.update_repo_visibility(
-                repo_id=resolved_state_repo_id,
-                private=True,
-                token=token_value,
-                repo_type="dataset",
-            )
+            # Enforce privacy even when the repo already exists.
+            # huggingface_hub>=0.26: update_repo_settings(private=...)
+            # older: update_repo_visibility / set_repo_visibility.
+            if hasattr(self._api, "update_repo_settings"):
+                self._api.update_repo_settings(
+                    repo_id=resolved_state_repo_id,
+                    private=True,
+                    token=token_value,
+                    repo_type="dataset",
+                )
+            elif hasattr(self._api, "update_repo_visibility"):
+                self._api.update_repo_visibility(
+                    repo_id=resolved_state_repo_id,
+                    private=True,
+                    token=token_value,
+                    repo_type="dataset",
+                )
+            elif hasattr(self._api, "set_repo_visibility"):
+                self._api.set_repo_visibility(
+                    repo_id=resolved_state_repo_id,
+                    private=True,
+                    token=token_value,
+                    repo_type="dataset",
+                )
             existing_files = set(
                 self._api.list_repo_files(
                     repo_id=resolved_state_repo_id,
@@ -388,8 +435,9 @@ class HfProjectStateStoreInitializer:
                     initialized=False,
                     reused_existing=True,
                 )
-            if existing_files:
-                sample = ", ".join(sorted(existing_files)[:5])
+            unexpected_files = existing_files - HF_PROJECT_STATE_REPO_SCAFFOLDING_FILES
+            if unexpected_files:
+                sample = ", ".join(sorted(unexpected_files)[:5])
                 raise HfProjectStateStoreError(
                     "The companion state repo already contains files but no project.json manifest. "
                     f"Refusing to initialize automatically to avoid overwriting existing state. Existing files: {sample}"
@@ -559,6 +607,79 @@ class HfProjectStateStoreConnector:
         if loaded.project.visibility == "private" and owner and owner != actor:
             raise HfProjectStateStoreError("Only the owner can connect a private project state repository.")
         return loaded
+
+
+class HfProjectStatePermissionProbe:
+    """Prove that the acting OAuth identity can read and write a private state repo."""
+
+    def __init__(
+        self,
+        *,
+        loader: HfProjectStateStoreLoader | None = None,
+        api: HfProjectStateApi | None = None,
+    ) -> None:
+        self._loader = loader or HfProjectStateStoreLoader()
+        self._api = api or HfApi()
+
+    def probe(
+        self,
+        *,
+        project: Project,
+        actor_username: str,
+        token: str | None,
+    ) -> HfProjectStatePermissionProbeResult:
+        actor = (actor_username or "").strip()
+        token_value = (token or "").strip()
+        state_repo_id = (project.state_repo_id or "").strip()
+        if not actor or not token_value:
+            raise HfProjectStateStoreError(
+                "Sign in with your Hugging Face OAuth account before testing private state authorization."
+            )
+        if not state_repo_id:
+            raise HfProjectStateStoreError("This project has no private `_state` repository to test.")
+
+        try:
+            loaded = self._loader.load_project_state(state_repo_id=state_repo_id, token=token_value)
+        except Exception as exc:
+            raise HfProjectStateStoreError(
+                f"State authorization read failed for {state_repo_id} using the signed-in account: {exc}"
+            ) from exc
+        if loaded is None or loaded.project.project_slug != project.project_slug:
+            raise HfProjectStateStoreError("The private state manifest does not match the selected project.")
+
+        verified_at = datetime.now(UTC).isoformat()
+        diagnostic_id = str(uuid4())
+        diagnostic_path = f"diagnostics/oauth-permission-proof/{diagnostic_id}.json"
+        payload = {
+            "schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
+            "diagnostic_type": "oauth_permission_proof",
+            "project_slug": project.project_slug,
+            "state_repo_id": state_repo_id,
+            "actor_username": actor,
+            "verified_at": verified_at,
+            "diagnostic_id": diagnostic_id,
+        }
+        try:
+            self._api.create_commit(
+                repo_id=state_repo_id,
+                repo_type="dataset",
+                token=token_value,
+                commit_message=f"Verify OAuth state access for {actor}",
+                operations=[
+                    CommitOperationAdd(path_in_repo=diagnostic_path, path_or_fileobj=_json_bytes(payload)),
+                ],
+            )
+        except Exception as exc:
+            raise HfProjectStateStoreError(
+                f"State authorization write failed for {state_repo_id} using the signed-in account: {exc}"
+            ) from exc
+
+        return HfProjectStatePermissionProbeResult(
+            state_repo_id=state_repo_id,
+            actor_username=actor,
+            diagnostic_path=diagnostic_path,
+            verified_at=verified_at,
+        )
 
 
 class HfProjectStateStoreSync:

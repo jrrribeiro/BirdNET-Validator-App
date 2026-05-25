@@ -8,7 +8,7 @@ from src.repositories.hf_bucket_validation_repository import (
     HfBucketValidationError,
     HfBucketValidationRepository,
 )
-from src.repositories.hf_project_state_validation_repository import HfProjectStateValidationRepository
+from src.repositories.hf_project_state_validation_repository import HfProjectStateValidationError, HfProjectStateValidationRepository
 from src.services.hf_project_state_store import HF_PROJECT_STATE_BACKEND
 
 
@@ -87,8 +87,17 @@ class ProjectAwareValidationRepository:
                 self._hf_cache[cache_key] = repository
             return repository
 
-        token = actor_token or (self._token_provider(project) or "").strip()
+        token = actor_token if actor_username else (self._token_provider(project) or "").strip()
         if not token:
+            if (
+                actor_username
+                and self._enable_hf_project_state
+                and (project.state_backend or "").strip() == HF_PROJECT_STATE_BACKEND
+                and (project.state_repo_id or "").strip()
+            ):
+                raise HfProjectStateValidationError(
+                    "Private project-state validation requires the signed-in validator's Hugging Face authorization."
+                )
             return self._fallback
 
         if not self._enable_hf_project_state:

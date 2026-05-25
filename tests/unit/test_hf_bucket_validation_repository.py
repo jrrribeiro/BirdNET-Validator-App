@@ -55,6 +55,12 @@ class FakeBucketApi:
             self.files.pop(path, None)
 
 
+class InaccessibleBucketApi(FakeBucketApi):
+    def read_text(self, *, bucket_id: str, path_in_bucket: str, token: str) -> str:
+        _ = (bucket_id, path_in_bucket, token)
+        raise RuntimeError("404 Client Error: BucketNotFound")
+
+
 def _validation(status: str = "positive") -> Validation:
     return Validation(
         detection_key="audio-a-0000000001",
@@ -104,6 +110,17 @@ def test_save_validation_writes_event_and_snapshot_without_repo_commit() -> None
     assert "snapshots/current.json" in paths
     assert any(path.startswith("events/") for path in paths)
     assert repository.load_current_snapshot("project-a")["audio-a-0000000001"]["version"] == 1
+
+
+def test_bucket_access_error_explains_that_app_invite_is_not_hub_permission() -> None:
+    repository = HfBucketValidationRepository(
+        bucket_id="owner/audio_validation_state",
+        token="hf_user",
+        api=InaccessibleBucketApi(),
+    )
+
+    with pytest.raises(HfBucketValidationError, match="invitation inside this app does not grant"):
+        repository.load_current_snapshot("project-a")
 
 
 def test_bucket_snapshot_recovers_from_events_and_rejects_stale_version() -> None:
