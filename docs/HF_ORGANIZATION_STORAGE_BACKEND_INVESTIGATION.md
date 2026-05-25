@@ -236,6 +236,18 @@ Expected likely result based on the role documentation: `contributor` is
 insufficient because the validator did not create the admin-created Bucket;
 `write` may succeed but grants organization-wide write powers.
 
+#### Observed Progress
+
+| Date | Account | Organization role | Operation | Result |
+|---|---|---|---|---|
+| 2026-05-25 | `jrrribeiro` | `admin` | Create private Bucket `ppbio-rabeca/birdnet-validator-permission-spike` | Passed |
+| 2026-05-25 | `jrrribeiro` | `admin` | Write and read one `262` byte diagnostic marker | Passed |
+
+Confirmed Bucket state after the administrative proof: `private=True`,
+`total_files=1`, `size=262` bytes. The next decision gate is the second
+account's read and write behavior while assigned the free organization
+`contributor` role.
+
 ### Credential Test B: OAuth In The Space
 
 Run only if Test A proves an acceptable organization permission model.
