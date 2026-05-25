@@ -158,11 +158,60 @@ document the minimum organization role required.
 
 ### Setup
 
-1. Create one temporary free Hugging Face organization for the spike.
-2. The admin account creates a private Bucket inside that organization, for
-   example `<test-org>/validator-state-permission-test`.
+1. Organization created for the spike: `ppbio-rabeca` (non-profit, confirmed
+   publicly on 2026-05-25).
+2. The admin account creates a private Bucket inside that organization:
+   `ppbio-rabeca/birdnet-validator-permission-spike`.
 3. Do not upload real recordings or validation data; use two small JSON files.
 4. Invite the second account into the organization first as `contributor`.
+
+### Executable Probe Utility
+
+The branch contains `scripts/probe_hf_org_bucket_access.py`. It uses the
+currently authenticated local Hugging Face account and never prints or saves
+tokens. Every remote write is a small diagnostic JSON object under
+`diagnostics/organization-permission-spike/`.
+
+Authenticate the admin account in the terminal:
+
+```powershell
+hf auth login --force
+python scripts\probe_hf_org_bucket_access.py identity
+python scripts\probe_hf_org_bucket_access.py create
+```
+
+Then invite the second account to `ppbio-rabeca` as `contributor`, authenticate
+that account in the terminal, and run:
+
+```powershell
+hf auth login --force
+python scripts\probe_hf_org_bucket_access.py identity
+python scripts\probe_hf_org_bucket_access.py read
+python scripts\probe_hf_org_bucket_access.py write --role-label contributor
+```
+
+If only the write command fails, change that second user's organization role to
+`write` temporarily and run:
+
+```powershell
+python scripts\probe_hf_org_bucket_access.py write --role-label write
+```
+
+Finally authenticate the administrator again and verify the marker:
+
+```powershell
+hf auth login --force
+python scripts\probe_hf_org_bucket_access.py read
+python scripts\probe_hf_org_bucket_access.py list
+```
+
+Do not delete the Bucket until the test result has been recorded. Cleanup is
+available only through an explicit confirmation:
+
+```powershell
+python scripts\probe_hf_org_bucket_access.py delete `
+  --confirm-delete ppbio-rabeca/birdnet-validator-permission-spike
+```
 
 ### Credential Test A: User Tokens Outside The App
 
