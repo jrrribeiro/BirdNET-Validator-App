@@ -430,6 +430,10 @@ Evaluate in this order:
 3. A paid or institution-supported organization architecture only as an
    optional advanced deployment, never as the default requirement for users.
 
+The organization-owned Storage Bucket investigation and permission-spike gate
+are documented in
+[`HF_ORGANIZATION_STORAGE_BACKEND_INVESTIGATION.md`](HF_ORGANIZATION_STORAGE_BACKEND_INVESTIGATION.md).
+
 ## Implementation Order
 
 Do not implement batching first. The correct order is:
