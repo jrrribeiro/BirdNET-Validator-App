@@ -30,6 +30,7 @@ class Session:
     created_at: datetime
     last_activity: datetime
     expires_at: datetime
+    authentication_method: str = "username"
 
     def is_expired(self) -> bool:
         """Check if session has expired."""
@@ -216,6 +217,7 @@ class AuthService:
         self,
         username: str,
         auto_promote_to_admin: bool = False,
+        authentication_method: str = "username",
     ) -> Optional[Session]:
         if username not in self._user_access:
             if not auto_promote_to_admin:
@@ -251,6 +253,7 @@ class AuthService:
             created_at=now,
             last_activity=now,
             expires_at=now + timedelta(minutes=self.session_ttl_minutes),
+            authentication_method=authentication_method,
         )
 
         self._sessions[session_id] = session
@@ -276,6 +279,7 @@ class AuthService:
             username=username,
             token=token_value,
             email=email_value,
+            authentication_method="hf_token",
         )
 
     def login_with_verified_hf_identity(
@@ -284,6 +288,7 @@ class AuthService:
         username: str,
         token: str,
         email: str | None = None,
+        authentication_method: str = "oauth",
     ) -> tuple[Optional[Session], str]:
         """Create a session from an identity already verified by Hugging Face OAuth."""
         username_value = (username or "").strip()
@@ -299,6 +304,7 @@ class AuthService:
         session = self.login_internal(
             username=username_value,
             auto_promote_to_admin=is_first_user,
+            authentication_method=authentication_method,
         )
         if session is None:
             return None, f"User '{username_value}' is not invited to any project yet"

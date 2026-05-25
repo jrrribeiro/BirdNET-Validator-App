@@ -51,6 +51,7 @@ def test_perform_login_allows_hf_token_when_username_disabled(monkeypatch) -> No
 
     assert session_id
     assert "Welcome, hf_user" in message
+    assert auth_service.get_session(session_id).authentication_method == "hf_token"
 
 
 def test_perform_oauth_login_uses_verified_profile_and_token() -> None:
@@ -67,6 +68,7 @@ def test_perform_oauth_login_uses_verified_profile_and_token() -> None:
 
     assert session_id
     assert "Welcome, oauth_user" in message
+    assert auth_service.get_session(session_id).authentication_method == "oauth"
     assert auth_service.get_hf_token_for_user("oauth_user") == "oauth_token"
     assert auth_service.get_known_email_for_user("oauth_user") == "oauth_user@example.org"
 

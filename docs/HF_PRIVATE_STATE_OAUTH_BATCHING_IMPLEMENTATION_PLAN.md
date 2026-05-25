@@ -231,6 +231,17 @@ Changes:
    Implemented.
 5. Reject state validation submissions that would fall back from a signed-in
    collaborator to an administrator token. Implemented.
+6. Distinguish OAuth sessions from manual-token sessions and reject manual
+   token creation/proof attempts in the hosted Space. Implemented after the
+   first attempted test used manual tokens and therefore did not exercise
+   `contribute-repos`.
+
+Test note:
+
+- `upload_test5_state` was created and tested through manual-token sessions;
+  its failed collaborator write is not a valid OAuth permission proof.
+- The next proof must create a new repository, such as `upload_test6_state`,
+  after the admin completes both OAuth login steps in the hosted Space.
 
 Tests:
 

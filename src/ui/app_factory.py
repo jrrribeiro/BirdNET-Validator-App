@@ -3371,6 +3371,28 @@ def create_app() -> gr.Blocks:
                             return "Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
                         if visibility_value not in {"private", "collaborative"}:
                             return "Visibility must be private or collaborative.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
+                        if (
+                            _is_running_in_hf_space()
+                            and runtime_config.hf_project_state_writes_enabled
+                            and getattr(session, "authentication_method", "") != "oauth"
+                        ):
+                            return (
+                                "Private `_state` test projects must be created through OAuth. Return to Login, complete "
+                                "both Hugging Face sign-in steps, and create a new test project; a project created through "
+                                "manual token login cannot prove `contribute-repos` authorization.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
                         if admin_manager.get_project(slug) is not None:
                             admin_projects = _admin_projects_for_session(session)
                             return (
@@ -4387,6 +4409,12 @@ def create_app() -> gr.Blocks:
                 def test_private_state_authorization(selected: str, session):
                     if session is None:
                         return "Login with your Hugging Face account before running the state authorization test."
+                    if getattr(session, "authentication_method", "") != "oauth":
+                        return (
+                            "This authorization proof requires OAuth. Return to Login and complete both steps: "
+                            "**1. Sign in with Hugging Face** and **2. Enter workspace with OAuth authorization**. "
+                            "Manual token login does not test `contribute-repos`."
+                        )
                     project_slug = (selected or "").strip()
                     project = admin_manager.get_project(project_slug) if project_slug else None
                     if project is None or project_slug not in session.authorized_projects:

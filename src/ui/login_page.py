@@ -71,6 +71,7 @@ def perform_oauth_login(
         username=username,
         token=oauth_token.token,
         email=email,
+        authentication_method="oauth",
     )
     if session is None:
         return "", message
@@ -103,10 +104,20 @@ def create_login_page(
 
             oauth_continue_button = None
             if enable_oauth_login:
-                gr.LoginButton("Sign in with Hugging Face", logout_value="Sign out ({})")
-                oauth_continue_button = gr.Button("Continue with signed-in account", variant="primary")
+                gr.Markdown(
+                    "**OAuth access required for private collaborative state.** "
+                    "Complete both steps below; signing into Hugging Face alone does not open an app session."
+                )
+                gr.LoginButton("1. Sign in with Hugging Face", logout_value="Sign out ({})")
+                oauth_continue_button = gr.Button(
+                    "2. Enter workspace with OAuth authorization",
+                    variant="primary",
+                )
 
-            gr.Markdown("Manual token access is available as a fallback for development or restricted deployments.")
+            gr.Markdown(
+                "Manual token access is available for development or legacy access, "
+                "but cannot be used for the private collaborative state authorization test."
+            )
             username_input = gr.Textbox(
                 label="Username",
                 placeholder="Enter your username" if allow_username_login else "Username login disabled in this deployment",
@@ -114,7 +125,7 @@ def create_login_page(
                 interactive=allow_username_login,
             )
             hf_token_input = gr.Textbox(
-                label="Hugging Face Token (recommended)",
+                label="Hugging Face Token (legacy/development only)",
                 placeholder="hf_xxx...",
                 type="password",
                 lines=1,

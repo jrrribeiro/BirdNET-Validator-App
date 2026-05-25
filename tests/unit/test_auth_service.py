@@ -211,6 +211,7 @@ class TestAuthService:
 
         assert session is not None
         assert "Welcome" in message
+        assert session.authentication_method == "hf_token"
         assert service.get_hf_token_for_user("hf_user") == "hf_test_token"
         assert service.get_known_email_for_user("hf_user") == "hf_user@example.org"
 
@@ -225,6 +226,7 @@ class TestAuthService:
 
         assert session is not None
         assert session.username == "oauth_user"
+        assert session.authentication_method == "oauth"
         assert "Welcome, oauth_user" in message
         assert service.get_hf_token_for_user("oauth_user") == "oauth_access_token"
         assert service.get_known_email_for_user("oauth_user") == "oauth_user@example.org"
