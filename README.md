@@ -10,7 +10,6 @@ app_file: app.py
 hf_oauth: true
 hf_oauth_scopes:
   - read-repos
-  - contribute-repos
 pinned: false
 ---
 
@@ -178,7 +177,7 @@ User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
 - SDK: `Gradio`
 - Python: `3.11`
 - OAuth: enabled (`hf_oauth: true` in this README metadata)
-- OAuth scopes: `read-repos` for authorized datasets and `contribute-repos` for project state stores created through this app
+- OAuth scopes: `read-repos` only; trusted-team validation writes use each collaborator's explicitly entered personal token
 
 2. Push this repository to the Space.
 
@@ -199,11 +198,24 @@ Optional runtime settings:
 - `BIRDNET_PAGE_SIZE` (default `25`)
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
 - `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (experimental `_state` diagnostics and recovery only while a new collaborative backend is selected)
-- `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED=true` (legacy experimental access only for projects already declaring Bucket state; new projects no longer create Buckets)
+- `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED=true` (legacy experimental access for existing Bucket projects)
+- `BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED=true` (private HF-only delivery mode for small trusted teams)
+- `BIRDNET_HF_PROJECT_STATE_REPOS=project-org/audio-dataset_state` (comma-separated private state repos restored after Space rebuild)
 
-Do not create real collaborative projects with either experimental backend yet. The personal private Bucket experiment failed its two-account validator access test. The private `_state` OAuth experiment also failed as a direct validation store: `contribute-repos` allowed repository contribution only through Pull Requests rather than durable direct writes to `main`.
+The HF trusted-team mode is intended only for confidential projects whose validators are known collaborators. It creates a private `_state` repository for infrequent configuration/ACL updates and a private Storage Bucket for validation events and snapshots. The source dataset must already be private and owned by a Hugging Face organization; personal-namespace datasets are rejected in this mode because they did not support the required second-user write workflow in testing. The demonstrated free-tier permission path uses a dedicated project organization whose trusted validators have Hugging Face `write` membership; users outside the organization cannot access its private resources. Select `collaborative` when creating the project inside the app: this authorizes approved app members and does not make the Hugging Face resources public. Each member works with their own HF authorization, and the app does not persist a shared project token for projects created in this mode.
 
-Projects previously created with a private `_state` repository can be recovered from the **Admin** tab using **Connect Existing State**. Sign in with the Hugging Face account that is recorded as an administrator in that repository's `acl.json`, then provide the `_state` repo id (for example, `owner/audio_dataset_state`). The app loads the saved manifest, ACL, and pending invites; it does not accept a new local definition over an existing state repository.
+Recommended trusted-team Space settings:
+
+```text
+BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED=true
+BIRDNET_AUTH_MODE=hf_token
+BIRDNET_HF_PROJECT_STATE_REPOS=project-org/audio-dataset_state
+HF_TOKEN=<administrator token stored as a Space secret for startup restore>
+```
+
+After creating a project, add its generated `_state` repository to `BIRDNET_HF_PROJECT_STATE_REPOS` before relying on rebuild recovery. Each administrator and validator should open **Projects > Private project storage access** and pass the access check with their own token before validating real records; the check writes and removes only a small diagnostic marker. A private personal Bucket did not permit the invited second-user workflow in testing; the confirmed collaborative route is an organization-owned private dataset and Bucket with trusted `write` members. The private `_state` OAuth experiment also failed as a high-frequency direct validation store because `contribute-repos` permitted contribution through Pull Requests rather than direct durable writes to `main`.
+
+Projects previously created with a private `_state` repository can be recovered from the **Admin** tab using **Connect Existing State**. Sign in with the Hugging Face account that is recorded as an administrator in that repository's `acl.json`, then provide the `_state` repo id (for example, `project-org/audio_dataset_state`). In trusted-team mode, recovery accepts only a manifest that declares a private validation Bucket and still points to a private, organization-owned collaborative project. The app loads the saved manifest, ACL, and pending invites; it does not accept a new local definition over an existing state repository.
 
 Legacy Supabase state backend, available while migrating existing projects:
 
@@ -211,9 +223,9 @@ Legacy Supabase state backend, available while migrating existing projects:
 - `SUPABASE_URL` (Secret, example: `https://xxxx.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY` (Secret)
 
-When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`. New community deployments should prefer admin-owned Hugging Face project state once the high-frequency state backend is enabled and verified.
+When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`. For eventual public distribution, the planned backend is administrator-owned Supabase provisioned through OAuth with an Edge Function validating Hugging Face identity; see `docs/TEMP_BYO_SUPABASE_EDGE_FUNCTION_HF_IDENTITY_PLAN.md`.
 
-The Bucket validation backend remains available only to diagnose or migrate existing experimental Bucket projects. The **Private state OAuth diagnostic** action in **Projects** now reports when an experimental `_state` repository is limited to Pull Request contributions and must not be treated as a production validation store.
+The **Private state OAuth diagnostic** action in **Projects** applies to experimental direct `_state` writes. In trusted-team mode, frequent validation state uses the Bucket rather than direct repository commits.
 
 Optional invite email settings:
 
@@ -532,6 +544,10 @@ python -m src.uploader_cli.main start --repo-id alice/birdnet-2026 --segments C:
 - `BIRDNET_STATE_BACKEND`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED`
+- `BIRDNET_HF_PROJECT_STATE_REPOS`
+- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED`
+- `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED`
 
 ### Uploader CLI Environment Variables
 

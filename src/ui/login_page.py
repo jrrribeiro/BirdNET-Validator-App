@@ -84,6 +84,7 @@ def create_login_page(
     allow_username_login: bool = True,
     enable_oauth_login: bool = False,
     auth_mode_label: str = "",
+    trusted_team_mode: bool = False,
 ) -> Tuple[gr.Textbox, gr.Textbox, gr.Button, gr.Markdown]:
     """Create a Gradio login page with username input and session tracking.
 
@@ -98,34 +99,41 @@ def create_login_page(
             gr.Markdown("")
         with gr.Column(scale=6):
             gr.Markdown("# BirdNET Validation Platform")
-            gr.Markdown("Sign in with your Hugging Face account to access project validation workflows.")
+            gr.Markdown(
+                (
+                    "Use your own Hugging Face authorization to access private project validation workflows."
+                    if trusted_team_mode
+                    else "Sign in with your Hugging Face account to access project validation workflows."
+                )
+            )
             if auth_mode_label:
                 gr.Markdown(auth_mode_label)
 
-            oauth_continue_button = None
-            if enable_oauth_login:
+            if trusted_team_mode:
                 gr.Markdown(
-                    "**OAuth access required for private collaborative state.** "
-                    "Complete both steps below; signing into Hugging Face alone does not open an app session."
+                    "### Personal token access\n"
+                    "This is the validated access method for private trusted-team projects. "
+                    "Use a token from your own account with permission to read the project's private dataset "
+                    "and write to its private validation Bucket."
                 )
-                gr.LoginButton("1. Sign in with Hugging Face", logout_value="Sign out ({})")
-                oauth_continue_button = gr.Button(
-                    "2. Enter workspace with OAuth authorization",
-                    variant="primary",
+            else:
+                gr.Markdown(
+                    "Manual token access is available for development or legacy access, "
+                    "but cannot be used for the private collaborative state authorization test."
                 )
-
-            gr.Markdown(
-                "Manual token access is available for development or legacy access, "
-                "but cannot be used for the private collaborative state authorization test."
-            )
             username_input = gr.Textbox(
                 label="Username",
                 placeholder="Enter your username" if allow_username_login else "Username login disabled in this deployment",
                 lines=1,
                 interactive=allow_username_login,
+                visible=allow_username_login,
             )
             hf_token_input = gr.Textbox(
-                label="Hugging Face Token (legacy/development only)",
+                label=(
+                    "Personal Hugging Face Token"
+                    if trusted_team_mode
+                    else "Hugging Face Token (legacy/development only)"
+                ),
                 placeholder="hf_xxx...",
                 type="password",
                 lines=1,
@@ -133,7 +141,32 @@ def create_login_page(
 
             error_message = gr.Markdown()
 
-            login_button = gr.Button("Login", variant="primary", scale=1)
+            login_button = gr.Button(
+                "Enter with personal token" if trusted_team_mode else "Login",
+                variant="primary",
+                scale=1,
+            )
+
+            oauth_continue_button = None
+            if enable_oauth_login:
+                gr.Markdown(
+                    (
+                        "### Optional OAuth test\n"
+                        "The hosted Space can sign you in with Hugging Face OAuth. "
+                        "For this interim private-storage mode, complete the personal-token test above before "
+                        "using real validation data because OAuth Bucket writes have not yet been proven."
+                        if trusted_team_mode
+                        else (
+                            "**OAuth access required for private collaborative state.** "
+                            "Complete both steps below; signing into Hugging Face alone does not open an app session."
+                        )
+                    )
+                )
+                gr.LoginButton("1. Sign in with Hugging Face", logout_value="Sign out ({})")
+                oauth_continue_button = gr.Button(
+                    "2. Enter workspace with OAuth authorization",
+                    variant="secondary" if trusted_team_mode else "primary",
+                )
 
             session_output = gr.Textbox(
                 label="Session ID",

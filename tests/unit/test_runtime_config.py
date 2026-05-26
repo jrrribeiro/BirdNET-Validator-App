@@ -31,3 +31,19 @@ def test_runtime_config_reads_bucket_validation_flag(monkeypatch) -> None:  # no
     config = RuntimeConfig.from_env()
 
     assert config.hf_bucket_validations_enabled is True
+
+
+def test_runtime_config_reads_hf_trusted_team_mode_flag(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.setenv("BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED", "true")
+
+    config = RuntimeConfig.from_env()
+
+    assert config.hf_trusted_team_mode_enabled is True
+
+
+def test_runtime_config_disables_hf_trusted_team_mode_by_default(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.delenv("BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED", raising=False)
+
+    config = RuntimeConfig.from_env()
+
+    assert config.hf_trusted_team_mode_enabled is False

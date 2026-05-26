@@ -1449,8 +1449,15 @@ select {
 
 
 def app_header_html(state_backend_message: str = "") -> str:
-    backend_text = "Supabase ready" if "Supabase state backend enabled" in state_backend_message else "Filesystem state"
-    backend_class = "bn-pill-ok" if "Supabase state backend enabled" in state_backend_message else "bn-pill-warn"
+    if "HF trusted-team project storage enabled" in state_backend_message:
+        backend_text = "Private HF state ready"
+        backend_class = "bn-pill-ok"
+    elif "Supabase state backend enabled" in state_backend_message:
+        backend_text = "Supabase ready"
+        backend_class = "bn-pill-ok"
+    else:
+        backend_text = "Filesystem state"
+        backend_class = "bn-pill-warn"
     return f"""
     <div class="bn-app-header">
       <div>

@@ -26,7 +26,9 @@ from src.repositories.append_only_validation_repository import AppendOnlyValidat
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
 from src.repositories.hf_bucket_validation_repository import (
     HF_BUCKET_VALIDATION_BACKEND,
+    HfBucketPermissionProbe,
     HfBucketValidationError,
+    HfBucketValidationInitializer,
 )
 from src.repositories.project_aware_validation_repository import ProjectAwareValidationRepository
 from src.repositories.state_safety import (
@@ -1559,6 +1561,67 @@ def _is_running_in_hf_space() -> bool:
     return bool((os.getenv("SPACE_ID") or os.getenv("SPACE_HOST") or "").strip())
 
 
+def _validate_hf_trusted_team_source_dataset(
+    *,
+    project: Project,
+    token: str | None,
+    api: HfApi | None = None,
+) -> None:
+    if (project.visibility or "").strip().lower() != "collaborative":
+        raise HfBucketValidationError(
+            "Trusted-team projects must use app visibility 'collaborative'. "
+            "The Hugging Face dataset and storage remain private; collaborative visibility enables approved "
+            "team members inside this app."
+        )
+    token_value = (token or "").strip()
+    if not token_value:
+        raise HfBucketValidationError("Trusted-team HF storage requires the administrator's Hugging Face authorization during project setup.")
+
+    client = api or HfApi()
+    namespace = project.dataset_repo_id.split("/", 1)[0].strip()
+    try:
+        client.get_organization_overview(namespace, token=token_value)
+    except Exception as exc:
+        raise HfBucketValidationError(
+            "Trusted-team HF storage requires the private dataset to be owned by a dedicated Hugging Face "
+            f"organization. Could not verify organization '{namespace}': {exc}"
+        ) from exc
+    try:
+        dataset_info = client.repo_info(
+            repo_id=project.dataset_repo_id,
+            repo_type="dataset",
+            token=token_value,
+        )
+    except Exception as exc:
+        raise HfBucketValidationError(f"Could not verify the Hugging Face dataset before creating private state: {exc}") from exc
+    if not bool(getattr(dataset_info, "private", False)):
+        raise HfBucketValidationError(
+            "Trusted-team HF storage only accepts a private dataset. Make the dataset private in Hugging Face "
+            "before creating the validation project."
+        )
+
+
+def _initialize_hf_trusted_team_storage(
+    *,
+    project: Project,
+    token: str | None,
+    api: HfApi | None = None,
+    bucket_initializer: HfBucketValidationInitializer | None = None,
+):
+    _validate_hf_trusted_team_source_dataset(project=project, token=token, api=api)
+    token_value = (token or "").strip()
+    initializer = bucket_initializer or HfBucketValidationInitializer()
+    result = initializer.initialize(
+        project_slug=project.project_slug,
+        dataset_repo_id=project.dataset_repo_id,
+        token=token_value,
+    )
+    project.dataset_token = None
+    project.validation_backend = HF_BUCKET_VALIDATION_BACKEND
+    project.validation_bucket_id = result.bucket_id
+    return result
+
+
 def _resolve_username_login_policy(runtime_config: RuntimeConfig) -> tuple[bool, str, str]:
     mode = (runtime_config.auth_mode or "auto").strip().lower()
     if mode == "username":
@@ -2904,6 +2967,8 @@ def create_app() -> gr.Blocks:
 
     projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
     state_store, supabase_validation_repository, state_backend_message = _build_supabase_state(runtime_config)
+    if runtime_config.hf_trusted_team_mode_enabled:
+        state_backend_message = "HF trusted-team project storage enabled."
     allow_username_login, auth_mode_label, auth_mode_description = _resolve_username_login_policy(runtime_config)
     bootstrap_warning = _bootstrap_auth_and_projects(
         auth_service,
@@ -2938,6 +3003,8 @@ def create_app() -> gr.Blocks:
     max_loaded_projects = 3
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
     base_validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
+    hf_state_writes_enabled = runtime_config.hf_project_state_writes_enabled or runtime_config.hf_trusted_team_mode_enabled
+    hf_bucket_validations_enabled = runtime_config.hf_bucket_validations_enabled or runtime_config.hf_trusted_team_mode_enabled
     validation_repository = ProjectAwareValidationRepository(
         fallback_repository=base_validation_repository,
         project_lookup=admin_manager.get_project,
@@ -2948,11 +3015,13 @@ def create_app() -> gr.Blocks:
             or None
         ),
         actor_token_provider=lambda _project, username: auth_service.get_hf_token_for_user(username),
-        enable_hf_project_state=runtime_config.hf_project_state_writes_enabled,
-        enable_hf_bucket_validations=runtime_config.hf_bucket_validations_enabled,
+        enable_hf_project_state=hf_state_writes_enabled,
+        enable_hf_bucket_validations=hf_bucket_validations_enabled,
     )
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
+    hf_bucket_initializer = HfBucketValidationInitializer()
+    hf_bucket_permission_probe = HfBucketPermissionProbe()
     hf_state_connector = HfProjectStateStoreConnector()
     hf_state_permission_probe = HfProjectStatePermissionProbe()
     hf_state_sync = HfProjectStateStoreSync()
@@ -3124,7 +3193,7 @@ def create_app() -> gr.Blocks:
             sync_project_slugs: set[str] | None = None,
             archived_projects: list[Project] | None = None,
         ) -> list[str]:
-            if not runtime_config.hf_project_state_writes_enabled:
+            if not hf_state_writes_enabled:
                 return []
 
             user_access = auth_service.export_user_access_map(include_inactive=True)
@@ -3214,14 +3283,24 @@ def create_app() -> gr.Blocks:
                     section_header_html(
                         "Secure access",
                         "Sign in with your Hugging Face identity",
-                        "Your account controls project access, validator attribution, and private dataset access.",
+                        (
+                            "Each trusted collaborator accesses private data and validation storage with their own Hugging Face token."
+                            if runtime_config.hf_trusted_team_mode_enabled
+                            else "Your account controls project access, validator attribution, and private dataset access."
+                        ),
                     )
                 )
                 username_input, session_output, login_button, error_message = create_login_page(
                     auth_service,
                     allow_username_login=allow_username_login,
                     enable_oauth_login=_is_running_in_hf_space(),
-                    auth_mode_label=auth_mode_description,
+                    auth_mode_label=(
+                        "Private HF trusted-team mode is active. Personal token login is the validated workflow; "
+                        "project data remain private to authorized Hugging Face organization members."
+                        if runtime_config.hf_trusted_team_mode_enabled
+                        else auth_mode_description
+                    ),
+                    trusted_team_mode=runtime_config.hf_trusted_team_mode_enabled,
                 )
 
                 # Store session ID when login succeeds
@@ -3300,6 +3379,16 @@ def create_app() -> gr.Blocks:
                                 class_name="bn-panel-soft",
                             )
                         )
+                        if runtime_config.hf_trusted_team_mode_enabled:
+                            gr.HTML(
+                                inline_hint_html(
+                                    "Private HF trusted-team mode is active. Source datasets must be private. "
+                                    "Choose collaborative visibility; the data remain private on Hugging Face. Before "
+                                    "assigning validators here, add each trusted collaborator with write access to the "
+                                    "project's dedicated Hugging Face organization.",
+                                    "info",
+                                )
+                            )
                         with gr.Row():
                             create_project_slug = gr.Textbox(
                                 label="New Project Slug",
@@ -3319,7 +3408,11 @@ def create_app() -> gr.Blocks:
                                 value="collaborative",
                             )
                             create_project_token = gr.Textbox(
-                                label="Project HF Token (optional)",
+                                label=(
+                                    "One-time setup HF token (not stored)"
+                                    if runtime_config.hf_trusted_team_mode_enabled
+                                    else "Project HF Token (optional)"
+                                ),
                                 placeholder="hf_xxx...",
                                 type="password",
                             )
@@ -3373,7 +3466,8 @@ def create_app() -> gr.Blocks:
                             return "Visibility must be private or collaborative.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
                         if (
                             _is_running_in_hf_space()
-                            and runtime_config.hf_project_state_writes_enabled
+                            and hf_state_writes_enabled
+                            and not runtime_config.hf_trusted_team_mode_enabled
                             and getattr(session, "authentication_method", "") != "oauth"
                         ):
                             return (
@@ -3417,9 +3511,33 @@ def create_app() -> gr.Blocks:
                             dataset_repo_id=repo_id,
                             visibility=visibility_value,
                             owner_username=session.username,
-                            dataset_token=explicit_project_token,
+                            dataset_token=None if runtime_config.hf_trusted_team_mode_enabled else explicit_project_token,
                             active=True,
                         )
+                        bucket_result = None
+                        if runtime_config.hf_trusted_team_mode_enabled:
+                            try:
+                                bucket_result = _initialize_hf_trusted_team_storage(
+                                    project=project,
+                                    token=operation_token,
+                                    bucket_initializer=hf_bucket_initializer,
+                                )
+                            except HfBucketValidationError as exc:
+                                return (
+                                    f"Project was not created because its private validation Bucket could not be initialized: {exc}",
+                                    _project_rows(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    session,
+                                )
                         try:
                             state_result = hf_state_initializer.initialize(
                                 project=project,
@@ -3466,6 +3584,17 @@ def create_app() -> gr.Blocks:
                         project.state_schema_version = HF_PROJECT_STATE_SCHEMA_VERSION
                         project.state_status = "ready"
                         state_repo_action = "initialized" if state_result.initialized else "connected"
+                        bucket_message = (
+                            f" Private validation Bucket ready: {bucket_result.bucket_id}."
+                            if bucket_result is not None
+                            else ""
+                        )
+                        recovery_message = (
+                            f" Add `{state_result.state_repo_id}` to `BIRDNET_HF_PROJECT_STATE_REPOS` before rebuilding "
+                            "the Space so this project is restored after restart."
+                            if runtime_config.hf_trusted_team_mode_enabled
+                            else ""
+                        )
 
                         created = admin_manager.register_project(project)
                         if not created:
@@ -3499,9 +3628,9 @@ def create_app() -> gr.Blocks:
 
                         return (
                             (
-                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}."
+                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}.{bucket_message}{recovery_message}"
                                 if persisted
-                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}). Could not persist bootstrap files: {persist_error}"
+                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}).{bucket_message}{recovery_message} Could not persist bootstrap files: {persist_error}"
                             ),
                             _project_rows(),
                             gr.update(choices=admin_projects, value=slug),
@@ -3559,6 +3688,39 @@ def create_app() -> gr.Blocks:
                                 gr.update(),
                                 session,
                             )
+
+                        if runtime_config.hf_trusted_team_mode_enabled:
+                            if (
+                                (loaded.project.validation_backend or "").strip() != HF_BUCKET_VALIDATION_BACKEND
+                                or not (loaded.project.validation_bucket_id or "").strip()
+                            ):
+                                return (
+                                    "Project state could not be connected in trusted-team mode because its manifest "
+                                    "does not declare private Hugging Face Bucket validation storage.",
+                                    _project_rows(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    session,
+                                )
+                            try:
+                                _validate_hf_trusted_team_source_dataset(
+                                    project=loaded.project,
+                                    token=_session_hf_token(session),
+                                )
+                            except HfBucketValidationError as exc:
+                                return (
+                                    f"Project state could not be connected in trusted-team mode: {exc}",
+                                    _project_rows(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    session,
+                                )
 
                         slug = loaded.project.project_slug
                         if admin_manager.get_project(slug) is not None:
@@ -3703,6 +3865,18 @@ def create_app() -> gr.Blocks:
                         project = admin_manager.get_project(project_slug)
                         if project is None:
                             return "Select a valid project.", gr.update(), gr.update(), gr.update(), gr.update()
+                        if (
+                            runtime_config.hf_trusted_team_mode_enabled
+                            and (project.validation_backend or "").strip() == HF_BUCKET_VALIDATION_BACKEND
+                        ):
+                            return (
+                                "Trusted-team HF projects never store a shared project token. Each collaborator must sign "
+                                "in using their own Hugging Face authorization.",
+                                gr.update(value=""),
+                                gr.update(value=False),
+                                _project_rows(),
+                                "",
+                            )
 
                         if bool(clear_token):
                             project.dataset_token = None
@@ -4118,7 +4292,7 @@ def create_app() -> gr.Blocks:
 
                 session_state.change(
                     fn=lambda s: (
-                        gr.update(visible=bool(s is not None)),
+                        gr.update(visible=bool(s is not None and not runtime_config.hf_trusted_team_mode_enabled)),
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
@@ -4172,7 +4346,10 @@ def create_app() -> gr.Blocks:
                     interactive=False,
                     allow_custom_value=True,
                 )
-                with gr.Group(elem_classes=["bn-panel-soft"]):
+                with gr.Group(
+                    visible=not runtime_config.hf_trusted_team_mode_enabled,
+                    elem_classes=["bn-panel-soft"],
+                ):
                     gr.Markdown("### Private state OAuth diagnostic")
                     state_authorization_status = gr.Markdown(
                         "The current OAuth scope may allow Pull Requests rather than direct state writes. "
@@ -4180,6 +4357,19 @@ def create_app() -> gr.Blocks:
                     )
                     test_state_authorization_btn = gr.Button(
                         "Check OAuth state write capability",
+                        elem_classes=["bn-soft-action"],
+                    )
+                with gr.Group(
+                    visible=runtime_config.hf_trusted_team_mode_enabled,
+                    elem_classes=["bn-panel-soft"],
+                ):
+                    gr.Markdown("### Private project storage access")
+                    trusted_storage_status = gr.Markdown(
+                        "Run this check once for each trusted collaborator before validation. "
+                        "It verifies private validation storage write access with that user's own Hugging Face token."
+                    )
+                    test_trusted_storage_btn = gr.Button(
+                        "Check private validation storage access",
                         elem_classes=["bn-soft-action"],
                     )
                 invitations_info = gr.Markdown(value="")
@@ -4435,6 +4625,28 @@ def create_app() -> gr.Blocks:
                         f"A private diagnostic write was confirmed in `{result.state_repo_id}`."
                     )
 
+                def test_trusted_storage_authorization(selected: str, session):
+                    if session is None:
+                        return "Login with your Hugging Face account before testing private validation storage."
+                    project_slug = (selected or "").strip()
+                    project = admin_manager.get_project(project_slug) if project_slug else None
+                    if project is None or project_slug not in session.authorized_projects:
+                        return "Select a project that is authorized for the signed-in account."
+                    if (project.validation_backend or "").strip() != HF_BUCKET_VALIDATION_BACKEND:
+                        return "This project does not use private Hugging Face Bucket validation storage."
+                    try:
+                        result = hf_bucket_permission_probe.probe(
+                            bucket_id=project.validation_bucket_id or "",
+                            actor_username=session.username,
+                            token=_session_hf_token(session),
+                        )
+                    except HfBucketValidationError as exc:
+                        return f"Private storage access test failed: {exc}"
+                    return (
+                        f"Private validation storage verified for **{result.actor_username}**. "
+                        f"Read/write access was confirmed in `{result.bucket_id}` and the diagnostic marker was removed."
+                    )
+
                 project_selector.change(
                     fn=update_selected_project,
                     inputs=[project_selector, session_state],
@@ -4445,6 +4657,11 @@ def create_app() -> gr.Blocks:
                     fn=test_private_state_authorization,
                     inputs=[project_selector, session_state],
                     outputs=[state_authorization_status],
+                )
+                test_trusted_storage_btn.click(
+                    fn=test_trusted_storage_authorization,
+                    inputs=[project_selector, session_state],
+                    outputs=[trusted_storage_status],
                 )
 
                 create_project_event.then(
@@ -5793,11 +6010,18 @@ def create_app() -> gr.Blocks:
                 def _render_settings_health():
                     backend = (runtime_config.state_backend or "filesystem").strip().lower()
                     supabase_ready = bool(runtime_config.supabase_url and runtime_config.supabase_service_role_key)
-                    state_label = "Supabase" if backend in {"supabase", "postgres", "postgresql"} and supabase_ready else "Filesystem"
-                    state_tone = "ok" if state_label == "Supabase" else "warn"
+                    if runtime_config.hf_trusted_team_mode_enabled:
+                        state_label = "HF trusted-team"
+                        state_tone = "ok"
+                    else:
+                        state_label = "Supabase" if backend in {"supabase", "postgres", "postgresql"} and supabase_ready else "Filesystem"
+                        state_tone = "ok" if state_label == "Supabase" else "warn"
                     normalized_bootstrap_dir = str(runtime_config.bootstrap_base_dir).replace("\\", "/").rstrip("/")
                     filesystem_durable = normalized_bootstrap_dir == "/data" or normalized_bootstrap_dir.startswith("/data/")
-                    if state_label == "Supabase":
+                    if state_label == "HF trusted-team":
+                        durability_label = "private HF state/Bucket"
+                        durability_tone = "ok"
+                    elif state_label == "Supabase":
                         durability_label = "external durable"
                         durability_tone = "ok"
                     elif filesystem_durable:
@@ -5809,16 +6033,24 @@ def create_app() -> gr.Blocks:
                     demo_label = "enabled" if runtime_config.enable_demo_bootstrap else "disabled"
                     demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
-                    hf_project_state_label = "enabled" if runtime_config.hf_project_state_writes_enabled else "disabled"
-                    hf_bucket_validation_label = "legacy experimental" if runtime_config.hf_bucket_validations_enabled else "disabled"
+                    hf_project_state_label = "enabled" if hf_state_writes_enabled else "disabled"
+                    hf_bucket_validation_label = (
+                        "trusted-team active"
+                        if runtime_config.hf_trusted_team_mode_enabled
+                        else ("legacy experimental" if runtime_config.hf_bucket_validations_enabled else "disabled")
+                    )
                     hf_project_state_repos_label = str(len(runtime_config.hf_project_state_repos))
                     hf_space_label = os.getenv("SPACE_ID") or "local runtime"
                     health_html = settings_health_html(
                         [
                             ("State backend", state_label, state_tone),
-                            ("HF project-state writes", hf_project_state_label, "ok" if runtime_config.hf_project_state_writes_enabled else "info"),
-                            ("HF Bucket validations", hf_bucket_validation_label, "warn" if runtime_config.hf_bucket_validations_enabled else "info"),
-                            ("HF project-state repos", hf_project_state_repos_label, "ok" if runtime_config.hf_project_state_repos else "info"),
+                            ("HF project-state writes", hf_project_state_label, "ok" if hf_state_writes_enabled else "info"),
+                            ("HF Bucket validations", hf_bucket_validation_label, "ok" if runtime_config.hf_trusted_team_mode_enabled else ("warn" if runtime_config.hf_bucket_validations_enabled else "info")),
+                            (
+                                "HF project-state repos",
+                                hf_project_state_repos_label,
+                                "ok" if runtime_config.hf_project_state_repos else ("warn" if runtime_config.hf_trusted_team_mode_enabled else "info"),
+                            ),
                             ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
                             ("Destructive write guard", "enabled", "ok"),
                             ("Local JSON backups", "enabled" if state_label == "Filesystem" else "not used", "ok" if state_label == "Filesystem" else "info"),
@@ -5833,8 +6065,18 @@ def create_app() -> gr.Blocks:
                         ]
                     )
                     status_text = (
-                        "Supabase persistence is active. Project and ACL removals are guarded against accidental broad overwrites."
-                        if state_label == "Supabase"
+                        (
+                            "HF trusted-team storage is active. Private dataset access and Bucket writes require each "
+                            "trusted collaborator's own Hugging Face permissions; "
+                            + (
+                                "no project-state repository is configured, so projects will not be restored after a rebuild."
+                                if not runtime_config.hf_project_state_repos
+                                else "configured state repositories will be used for restart recovery."
+                            )
+                            if state_label == "HF trusted-team"
+                            else "Supabase persistence is active. Project and ACL removals are guarded against accidental broad overwrites."
+                        )
+                        if state_label in {"HF trusted-team", "Supabase"}
                         else (
                             "Filesystem persistence is active with local JSON backups and destructive-write guards. "
                             "On free Spaces without persistent storage, local files are still not durable across rebuilds."

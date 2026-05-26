@@ -123,6 +123,14 @@ class HfBucketCompactionResult:
     compacted_event_count: int
 
 
+@dataclass(frozen=True)
+class HfBucketPermissionProbeResult:
+    bucket_id: str
+    actor_username: str
+    diagnostic_path: str
+    verified_at: str
+
+
 class HfBucketValidationInitializer:
     """Create a private mutable validation store owned by the project admin."""
 
@@ -171,6 +179,88 @@ class HfBucketValidationInitializer:
         except Exception as exc:
             raise HfBucketValidationError(f"Could not initialize private HF validation bucket {bucket_id}: {exc}") from exc
         return HfBucketValidationInitResult(bucket_id=bucket_id, initialized=True, reused_existing=False)
+
+
+class HfBucketPermissionProbe:
+    """Verify a user's private Bucket access without changing validation state."""
+
+    def __init__(self, api: HfBucketFilesApi | None = None) -> None:
+        self._api = api or HuggingFaceBucketFilesApi()
+
+    def probe(
+        self,
+        *,
+        bucket_id: str,
+        actor_username: str,
+        token: str | None,
+    ) -> HfBucketPermissionProbeResult:
+        bucket = (bucket_id or "").strip()
+        actor = (actor_username or "").strip()
+        token_value = (token or "").strip()
+        if not bucket or not actor or not token_value:
+            raise HfBucketValidationError(
+                "Select a project and sign in with your own Hugging Face authorization before testing private storage access."
+            )
+
+        verified_at = datetime.now(UTC).isoformat()
+        diagnostic_path = f"diagnostics/access-proof/{uuid4()}.json"
+        payload = {
+            "schema_version": HF_BUCKET_VALIDATION_SCHEMA_VERSION,
+            "diagnostic_type": "private_bucket_access_proof",
+            "actor_username": actor,
+            "bucket_id": bucket,
+            "verified_at": verified_at,
+            "contains_project_data": False,
+        }
+        marker_written = False
+        try:
+            self._api.read_text(
+                bucket_id=bucket,
+                path_in_bucket="metadata/project.json",
+                token=token_value,
+            )
+            self._api.write_files(
+                bucket_id=bucket,
+                token=token_value,
+                files={diagnostic_path: _json_bytes(payload)},
+            )
+            marker_written = True
+            written_payload = json.loads(
+                self._api.read_text(
+                    bucket_id=bucket,
+                    path_in_bucket=diagnostic_path,
+                    token=token_value,
+                )
+            )
+            if written_payload.get("actor_username") != actor:
+                raise HfBucketValidationError("The private storage diagnostic marker could not be verified.")
+        except HfBucketValidationError:
+            raise
+        except Exception as exc:
+            raise HfBucketValidationError(
+                f"Private Bucket read/write test failed for '{bucket}' using the signed-in Hugging Face account: {exc}"
+            ) from exc
+        finally:
+            if marker_written:
+                try:
+                    self._api.write_files(
+                        bucket_id=bucket,
+                        token=token_value,
+                        files={},
+                        delete_paths=[diagnostic_path],
+                    )
+                except Exception as exc:
+                    raise HfBucketValidationError(
+                        "Private Bucket access was verified, but the diagnostic marker could not be removed: "
+                        f"{exc}"
+                    ) from exc
+
+        return HfBucketPermissionProbeResult(
+            bucket_id=bucket,
+            actor_username=actor,
+            diagnostic_path=diagnostic_path,
+            verified_at=verified_at,
+        )
 
 
 def _json_bytes(payload: object) -> bytes:

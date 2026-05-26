@@ -6,6 +6,7 @@ from src.domain.models import Validation
 from src.repositories.append_only_validation_repository import OptimisticLockError
 from src.repositories.hf_bucket_validation_repository import (
     HF_BUCKET_VALIDATION_BACKEND,
+    HfBucketPermissionProbe,
     HfBucketValidationError,
     HfBucketValidationInitializer,
     HfBucketValidationRepository,
@@ -97,6 +98,22 @@ def test_initializer_reuses_manifest_but_refuses_unknown_existing_data() -> None
     unsafe = HfBucketValidationInitializer(api=FakeBucketApi({"other.txt": "data"}))
     with pytest.raises(HfBucketValidationError, match="refusing automatic initialization"):
         unsafe.initialize(project_slug="project-a", dataset_repo_id="owner/audio", token="hf_admin")
+
+
+def test_bucket_permission_probe_reads_writes_verifies_and_removes_marker() -> None:
+    api = FakeBucketApi({"metadata/project.json": "{}"})
+    probe = HfBucketPermissionProbe(api=api)
+
+    result = probe.probe(
+        bucket_id="owner/audio_validation_state",
+        actor_username="validator-a",
+        token="hf_validator",
+    )
+
+    assert result.bucket_id == "owner/audio_validation_state"
+    assert result.actor_username == "validator-a"
+    assert result.diagnostic_path not in api.files
+    assert api.deletes[-1] == [result.diagnostic_path]
 
 
 def test_save_validation_writes_event_and_snapshot_without_repo_commit() -> None:
