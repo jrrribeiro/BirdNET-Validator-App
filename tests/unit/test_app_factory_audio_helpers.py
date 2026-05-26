@@ -385,7 +385,7 @@ def test_fetch_selected_audio_validates_repo() -> None:
     assert "Provide dataset repo" in status
 
 
-def test_fetch_selected_audio_explains_private_dataset_access_for_authenticated_user() -> None:
+def test_fetch_selected_audio_explains_private_dataset_access_uses_backend_credential() -> None:
     path, cache_key, status = _fetch_selected_audio(
         audio_service=InaccessibleAudioService(),
         dataset_repo="owner/private-audio",
@@ -397,11 +397,11 @@ def test_fetch_selected_audio_explains_private_dataset_access_for_authenticated_
 
     assert path is None
     assert cache_key == ""
-    assert "signed-in Hugging Face account does not have read access" in status
-    assert "public or gated" in status
+    assert "credential used by the app does not have read access" in status
+    assert "BIRDNET_HF_STORAGE_TOKEN" in status
 
 
-def test_fetch_selected_audio_explains_missing_user_token_for_private_dataset() -> None:
+def test_fetch_selected_audio_explains_missing_private_dataset_credential() -> None:
     _, _, status = _fetch_selected_audio(
         audio_service=InaccessibleAudioService(),
         dataset_repo="owner/private-audio",
@@ -410,7 +410,7 @@ def test_fetch_selected_audio_explains_missing_user_token_for_private_dataset() 
         previous_cache_key="old",
     )
 
-    assert "No personal Hugging Face token is active" in status
+    assert "No credential with private dataset read access was provided" in status
 
 
 def test_cleanup_selected_audio() -> None:

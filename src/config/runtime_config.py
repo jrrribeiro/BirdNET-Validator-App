@@ -113,7 +113,11 @@ class RuntimeConfig:
         raw_hf_bucket_validations = (os.getenv("BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED") or "").strip().lower()
         hf_bucket_validations_enabled = raw_hf_bucket_validations in {"1", "true", "yes", "on"}
         raw_hf_admin_storage_mode = (os.getenv("BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED") or "").strip().lower()
-        hf_admin_storage_mode_enabled = raw_hf_admin_storage_mode in {"1", "true", "yes", "on"}
+        has_dedicated_hf_storage_secret = bool((os.getenv("BIRDNET_HF_STORAGE_TOKEN") or "").strip())
+        hf_admin_storage_mode_enabled = (
+            raw_hf_admin_storage_mode in {"1", "true", "yes", "on"}
+            or has_dedicated_hf_storage_secret
+        )
         raw_hf_project_state_repos = (os.getenv("BIRDNET_HF_PROJECT_STATE_REPOS") or "").strip()
         hf_project_state_repos = tuple(
             repo.strip()

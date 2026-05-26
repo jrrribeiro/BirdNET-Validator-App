@@ -43,7 +43,17 @@ def test_runtime_config_reads_hf_admin_storage_mode_flag(monkeypatch) -> None:  
 
 def test_runtime_config_disables_hf_admin_storage_mode_by_default(monkeypatch) -> None:  # noqa: ANN001
     monkeypatch.delenv("BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED", raising=False)
+    monkeypatch.delenv("BIRDNET_HF_STORAGE_TOKEN", raising=False)
 
     config = RuntimeConfig.from_env()
 
     assert config.hf_admin_storage_mode_enabled is False
+
+
+def test_runtime_config_enables_hf_admin_storage_mode_when_dedicated_secret_exists(monkeypatch) -> None:  # noqa: ANN001
+    monkeypatch.delenv("BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED", raising=False)
+    monkeypatch.setenv("BIRDNET_HF_STORAGE_TOKEN", "hf_storage_secret")
+
+    config = RuntimeConfig.from_env()
+
+    assert config.hf_admin_storage_mode_enabled is True

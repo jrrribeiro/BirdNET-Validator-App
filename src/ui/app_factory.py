@@ -1969,14 +1969,14 @@ def _audio_fetch_error_message(dataset_repo: str, exc: Exception, hf_token: str 
     access_markers = ("401", "403", "404", "repository not found", "unauthorized", "forbidden")
     if any(marker in lower_message for marker in access_markers):
         identity_hint = (
-            "The signed-in Hugging Face account does not have read access"
+            "The credential used by the app does not have read access"
             if (hf_token or "").strip()
-            else "No personal Hugging Face token is active for this session"
+            else "No credential with private dataset read access was provided"
         )
         return (
             f"Cannot read audio dataset '{dataset_repo}'. {identity_hint}. "
-            "For collaborative validation, make the audio dataset public or gated and grant this Hugging Face "
-            "account access, then sign in with that account's token."
+            "For administrator-owned private storage, confirm `BIRDNET_HF_STORAGE_TOKEN` is configured in the "
+            "Space and belongs to the personal account that owns this private dataset."
         )
     return f"Failed to load audio: {raw_message}"
 

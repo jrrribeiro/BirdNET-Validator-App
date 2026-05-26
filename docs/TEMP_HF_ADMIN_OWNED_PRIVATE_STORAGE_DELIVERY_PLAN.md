@@ -43,7 +43,7 @@ For public distribution to independent administrators, this model is not suffici
 
 ## Implemented Behavior
 
-1. `BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true` activates this mode.
+1. `BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true` activates this mode; configuring `BIRDNET_HF_STORAGE_TOKEN` also activates it automatically.
 2. `BIRDNET_HF_STORAGE_TOKEN` is read server-side and never saved in project records or shown in the UI. `HF_TOKEN` remains a compatibility fallback.
 3. New projects require a private dataset in the personal namespace belonging to the configured storage credential.
 4. New projects automatically initialize a private validation Bucket and private companion `_state` repository.

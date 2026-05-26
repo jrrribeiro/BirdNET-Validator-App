@@ -206,7 +206,7 @@ The HF administrator-owned storage mode is intended for confidential projects ru
 
 The Space stores the administrator storage credential as a protected secret. Validators log in with their own Hugging Face identity and are invited or assigned inside the app; they do not need repository or Bucket permissions, organization membership, or the administrator token. Resource operations are performed server-side only after the app confirms the user's project role.
 
-When this mode is enabled it takes precedence over any existing Supabase settings: project ACL/invites are restored from private `*_state` repositories and validations are read and written in the project's private Bucket.
+When this mode is enabled it takes precedence over any existing Supabase settings: project ACL/invites are restored from private `*_state` repositories and validations are read and written in the project's private Bucket. Configuring the dedicated `BIRDNET_HF_STORAGE_TOKEN` Secret also enables this mode automatically, preventing a configured private-storage credential from remaining unused behind a legacy backend.
 
 Recommended administrator-owned Space settings:
 
