@@ -4,6 +4,15 @@ Status: token permission spike completed; viable only with organization-wide wri
 Created: 2026-05-25
 Target branch: `feature/project-state-security-privacy-review`
 
+> Architecture follow-up (2026-05-26): after reviewing the official HfApi and
+> programmatic access control documentation, the intended application redesign
+> is maintained in
+> [`HF_ORGANIZATION_PER_PROJECT_APP_REDESIGN_PLAN.md`](HF_ORGANIZATION_PER_PROJECT_APP_REDESIGN_PLAN.md).
+> In free organizations, resource initialization can be automated, but initial
+> member invitations and role administration remain Hub-managed onboarding
+> steps; the documented programmatic member-role endpoint requires a
+> subscription plan and an already existing organization member.
+
 ## Purpose
 
 Evaluate whether a free Hugging Face organization owned and managed by each
