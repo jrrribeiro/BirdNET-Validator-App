@@ -50,7 +50,9 @@ For public distribution to independent administrators, this model is not suffici
 5. Project manifests persist the Bucket reference; ACL and invite changes sync to `_state`.
 6. Validation Bucket reads and writes route through the backend storage credential while retaining the actual validator username in each event.
 7. Dataset metadata and audio fetches route through the backend credential only after server-side authorization of the session and project role.
-8. The administrator can run a backend storage health check; validators do not test or receive direct Bucket permissions.
+8. At startup the app automatically discovers the administrator's private companion `*_state` datasets for rebuild recovery; a manual repo list remains an optional fallback.
+9. This mode takes precedence over configured Supabase persistence so durable project state does not remain dependent on the app operator's Supabase database.
+10. The administrator can run a backend storage health check; validators do not test or receive direct Bucket permissions.
 
 ## Space Configuration
 
@@ -59,7 +61,6 @@ Configure:
 ```text
 BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true
 BIRDNET_AUTH_MODE=hf_token
-BIRDNET_HF_PROJECT_STATE_REPOS=jrrribeiro/audio-dataset_state
 ```
 
 Configure as a Secret:
@@ -74,8 +75,8 @@ Use a scoped credential limited to the administrator's required resources when H
 
 1. Administrator creates a private test dataset in their personal namespace.
 2. Administrator creates the app project; the app reports the generated private `_state` repository and validation Bucket.
-3. Administrator adds that `_state` repository to `BIRDNET_HF_PROJECT_STATE_REPOS` and restarts the Space.
-4. Project is restored with its ACL and Bucket reference intact.
+3. Administrator restarts the Space without manually registering the new `_state` repository.
+4. Project is discovered and restored with its ACL and Bucket reference intact.
 5. Administrator assigns or invites a second Hugging Face account only through the app.
 6. The second account logs in with its own identity, opens the project, loads private audio, and submits validations without Hub resource permissions.
 7. The second account cannot access the private audio dataset, `_state`, or Bucket directly on Hugging Face.

@@ -1388,6 +1388,32 @@ def _load_hf_project_state_repos(
     return loaded, errors
 
 
+def _discover_hf_admin_state_repos(
+    *,
+    token: str | None,
+    api: HfApi | None = None,
+) -> tuple[tuple[str, ...], str]:
+    """Find companion state datasets owned by the configured administrator account."""
+    token_value = (token or "").strip()
+    if not token_value:
+        return (), "Administrator storage mode is enabled, but no HF storage secret is configured for state recovery."
+    client = api or HfApi()
+    try:
+        identity = client.whoami(token=token_value)
+        owner = str(identity.get("name") if isinstance(identity, dict) else "").strip()
+        if not owner:
+            return (), "Could not determine the administrator storage account for automatic state recovery."
+        datasets = client.list_datasets(author=owner, token=token_value)
+        repo_ids = []
+        for dataset in datasets:
+            repo_id = str(getattr(dataset, "id", None) or getattr(dataset, "repo_id", None) or "").strip()
+            if repo_id.casefold().startswith(f"{owner}/".casefold()) and repo_id.casefold().endswith("_state"):
+                repo_ids.append(repo_id)
+        return tuple(sorted(set(repo_ids))), ""
+    except Exception as exc:
+        return (), f"Could not discover private companion state repos automatically: {exc}"
+
+
 def _resolve_bootstrap_file_paths(runtime_config: RuntimeConfig) -> tuple[Path, Path, Path]:
     bootstrap_dir = Path(runtime_config.bootstrap_base_dir)
     projects_path = Path(runtime_config.projects_file_path) if runtime_config.projects_file_path else (bootstrap_dir / "projects.json")
@@ -1462,6 +1488,7 @@ def _bootstrap_auth_and_projects(
     state_store: SupabaseBootstrapStore | None = None,
     hf_project_state_token: str | None = None,
     hf_project_state_loader: HfProjectStateStoreLoader | None = None,
+    hf_project_state_discovery_api: HfApi | None = None,
 ) -> str:
     if state_store is not None:
         projects = state_store.load_projects()
@@ -1472,8 +1499,17 @@ def _bootstrap_auth_and_projects(
         user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
         pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
 
+    configured_state_repos = tuple(runtime_config.hf_project_state_repos)
+    discovery_message = ""
+    discovered_state_repos: tuple[str, ...] = ()
+    if runtime_config.hf_admin_storage_mode_enabled:
+        discovered_state_repos, discovery_message = _discover_hf_admin_state_repos(
+            token=hf_project_state_token,
+            api=hf_project_state_discovery_api,
+        )
+    state_repo_ids = tuple(dict.fromkeys([*configured_state_repos, *discovered_state_repos]))
     hf_loaded_state, hf_load_errors = _load_hf_project_state_repos(
-        state_repo_ids=runtime_config.hf_project_state_repos,
+        state_repo_ids=state_repo_ids,
         token=hf_project_state_token,
         loader=hf_project_state_loader,
     )
@@ -1532,6 +1568,8 @@ def _bootstrap_auth_and_projects(
         )
 
     warnings = [emergency_admin_message] if emergency_admin_message else []
+    if discovery_message:
+        warnings.append(f"⚠️ {discovery_message}")
     if hf_load_errors:
         warnings.append("⚠️ Some HF project-state repos could not be loaded: " + " | ".join(hf_load_errors))
     if hf_loaded_state:
@@ -2981,6 +3019,8 @@ def create_app() -> gr.Blocks:
     projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
     state_store, supabase_validation_repository, state_backend_message = _build_supabase_state(runtime_config)
     if runtime_config.hf_admin_storage_mode_enabled:
+        state_store = None
+        supabase_validation_repository = None
         state_backend_message = "HF admin-owned private storage enabled."
     allow_username_login, auth_mode_label, auth_mode_description = _resolve_username_login_policy(runtime_config)
     bootstrap_warning = _bootstrap_auth_and_projects(
@@ -3624,8 +3664,7 @@ def create_app() -> gr.Blocks:
                             else ""
                         )
                         recovery_message = (
-                            f" Add `{state_result.state_repo_id}` to `BIRDNET_HF_PROJECT_STATE_REPOS` before rebuilding "
-                            "the Space so this project is restored after restart."
+                            " This private state repository will be discovered automatically after a Space restart."
                             if runtime_config.hf_admin_storage_mode_enabled
                             else ""
                         )
@@ -6116,7 +6155,11 @@ def create_app() -> gr.Blocks:
                         if runtime_config.hf_admin_storage_mode_enabled
                         else ("legacy experimental" if runtime_config.hf_bucket_validations_enabled else "disabled")
                     )
-                    hf_project_state_repos_label = str(len(runtime_config.hf_project_state_repos))
+                    hf_project_state_repos_label = (
+                        "automatic discovery"
+                        if runtime_config.hf_admin_storage_mode_enabled
+                        else str(len(runtime_config.hf_project_state_repos))
+                    )
                     hf_space_label = os.getenv("SPACE_ID") or "local runtime"
                     health_html = settings_health_html(
                         [
@@ -6126,7 +6169,7 @@ def create_app() -> gr.Blocks:
                             (
                                 "HF project-state repos",
                                 hf_project_state_repos_label,
-                                "ok" if runtime_config.hf_project_state_repos else ("warn" if runtime_config.hf_admin_storage_mode_enabled else "info"),
+                                "ok" if runtime_config.hf_admin_storage_mode_enabled or runtime_config.hf_project_state_repos else "info",
                             ),
                             ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
                             ("Destructive write guard", "enabled", "ok"),
@@ -6145,11 +6188,7 @@ def create_app() -> gr.Blocks:
                         (
                             "HF administrator-owned storage is active. Private dataset and Bucket access use only the "
                             "protected Space storage credential; validator identities are authorized inside this app; "
-                            + (
-                                "no project-state repository is configured, so projects will not be restored after a rebuild."
-                                if not runtime_config.hf_project_state_repos
-                                else "configured state repositories will be used for restart recovery."
-                            )
+                            "private companion state repositories are discovered automatically for restart recovery."
                             if state_label == "HF admin-owned private storage"
                             else "Supabase persistence is active. Project and ACL removals are guarded against accidental broad overwrites."
                         )

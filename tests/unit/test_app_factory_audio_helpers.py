@@ -33,6 +33,7 @@ from src.ui.app_factory import (
     _load_projects_from_file,
     _load_user_access_from_file,
     _bootstrap_auth_and_projects,
+    _discover_hf_admin_state_repos,
     _persist_bootstrap_state,
     _resolve_username_login_policy,
     _resolve_project_fetch_token,
@@ -94,6 +95,21 @@ class FakeBucketInitializer:
             initialized=True,
             reused_existing=False,
         )
+
+
+class FakeStateDiscoveryApi:
+    def whoami(self, token: str):  # noqa: ANN001
+        assert token == "hf_storage"
+        return {"name": "jrrribeiro"}
+
+    def list_datasets(self, *, author: str, token: str):  # noqa: ANN001
+        assert author == "jrrribeiro"
+        assert token == "hf_storage"
+        return [
+            SimpleNamespace(id="jrrribeiro/project-a_state"),
+            SimpleNamespace(id="jrrribeiro/audio-source"),
+            SimpleNamespace(id="someone-else/project-b_state"),
+        ]
 
 
 class InaccessibleAudioService:
@@ -308,6 +324,16 @@ def test_initialize_hf_admin_storage_requires_collaborative_app_visibility() -> 
         )
 
     assert bucket_initializer.calls == []
+
+
+def test_discover_hf_admin_state_repos_filters_personal_companion_datasets() -> None:
+    repo_ids, warning = _discover_hf_admin_state_repos(
+        token="hf_storage",
+        api=FakeStateDiscoveryApi(),  # type: ignore[arg-type]
+    )
+
+    assert warning == ""
+    assert repo_ids == ("jrrribeiro/project-a_state",)
 
 
 def test_extract_audio_id_from_list_rows() -> None:
