@@ -84,7 +84,7 @@ def create_login_page(
     allow_username_login: bool = True,
     enable_oauth_login: bool = False,
     auth_mode_label: str = "",
-    trusted_team_mode: bool = False,
+    admin_storage_mode: bool = False,
 ) -> Tuple[gr.Textbox, gr.Textbox, gr.Button, gr.Markdown]:
     """Create a Gradio login page with username input and session tracking.
 
@@ -101,20 +101,19 @@ def create_login_page(
             gr.Markdown("# BirdNET Validation Platform")
             gr.Markdown(
                 (
-                    "Use your own Hugging Face authorization to access private project validation workflows."
-                    if trusted_team_mode
+                    "Sign in with your Hugging Face identity. Private project storage is accessed only by the app backend."
+                    if admin_storage_mode
                     else "Sign in with your Hugging Face account to access project validation workflows."
                 )
             )
             if auth_mode_label:
                 gr.Markdown(auth_mode_label)
 
-            if trusted_team_mode:
+            if admin_storage_mode:
                 gr.Markdown(
-                    "### Personal token access\n"
-                    "This is the validated access method for private trusted-team projects. "
-                    "Use a token from your own account with permission to read the project's private dataset "
-                    "and write to its private validation Bucket."
+                    "### Identity verification\n"
+                    "Use a token from your own account only to prove your identity. "
+                    "You do not need direct Hugging Face access to the project's private dataset or validation storage."
                 )
             else:
                 gr.Markdown(
@@ -130,8 +129,8 @@ def create_login_page(
             )
             hf_token_input = gr.Textbox(
                 label=(
-                    "Personal Hugging Face Token"
-                    if trusted_team_mode
+                    "Personal Hugging Face Token (identity verification)"
+                    if admin_storage_mode
                     else "Hugging Face Token (legacy/development only)"
                 ),
                 placeholder="hf_xxx...",
@@ -142,7 +141,7 @@ def create_login_page(
             error_message = gr.Markdown()
 
             login_button = gr.Button(
-                "Enter with personal token" if trusted_team_mode else "Login",
+                "Enter with Hugging Face token" if admin_storage_mode else "Login",
                 variant="primary",
                 scale=1,
             )
@@ -151,11 +150,10 @@ def create_login_page(
             if enable_oauth_login:
                 gr.Markdown(
                     (
-                        "### Optional OAuth test\n"
-                        "The hosted Space can sign you in with Hugging Face OAuth. "
-                        "For this interim private-storage mode, complete the personal-token test above before "
-                        "using real validation data because OAuth Bucket writes have not yet been proven."
-                        if trusted_team_mode
+                        "### Sign in with OAuth\n"
+                        "The hosted Space can verify your Hugging Face identity without requiring a personal token. "
+                        "Project access remains controlled by assignments and invitations inside this app."
+                        if admin_storage_mode
                         else (
                             "**OAuth access required for private collaborative state.** "
                             "Complete both steps below; signing into Hugging Face alone does not open an app session."
@@ -165,7 +163,7 @@ def create_login_page(
                 gr.LoginButton("1. Sign in with Hugging Face", logout_value="Sign out ({})")
                 oauth_continue_button = gr.Button(
                     "2. Enter workspace with OAuth authorization",
-                    variant="secondary" if trusted_team_mode else "primary",
+                    variant="primary",
                 )
 
             session_output = gr.Textbox(

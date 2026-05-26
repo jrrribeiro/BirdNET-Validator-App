@@ -177,7 +177,7 @@ User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
 - SDK: `Gradio`
 - Python: `3.11`
 - OAuth: enabled (`hf_oauth: true` in this README metadata)
-- OAuth scopes: `read-repos` only; trusted-team validation writes use each collaborator's explicitly entered personal token
+- OAuth scopes: `read-repos` only; in administrator-owned storage mode user OAuth is used only for identity
 
 2. Push this repository to the Space.
 
@@ -199,23 +199,25 @@ Optional runtime settings:
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
 - `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (experimental `_state` diagnostics and recovery only while a new collaborative backend is selected)
 - `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED=true` (legacy experimental access for existing Bucket projects)
-- `BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED=true` (private HF-only delivery mode for small trusted teams)
-- `BIRDNET_HF_PROJECT_STATE_REPOS=project-org/audio-dataset_state` (comma-separated private state repos restored after Space rebuild)
+- `BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true` (private HF-only delivery mode for a small trusted team)
+- `BIRDNET_HF_PROJECT_STATE_REPOS=jrrribeiro/audio-dataset_state` (comma-separated private state repos restored after Space rebuild)
 
-The HF trusted-team mode is intended only for confidential projects whose validators are known collaborators. It creates a private `_state` repository for infrequent configuration/ACL updates and a private Storage Bucket for validation events and snapshots. The source dataset must already be private and owned by a Hugging Face organization; personal-namespace datasets are rejected in this mode because they did not support the required second-user write workflow in testing. The demonstrated free-tier permission path uses a dedicated project organization whose trusted validators have Hugging Face `write` membership; users outside the organization cannot access its private resources. Select `collaborative` when creating the project inside the app: this authorizes approved app members and does not make the Hugging Face resources public. Each member works with their own HF authorization, and the app does not persist a shared project token for projects created in this mode.
+The HF administrator-owned storage mode is intended for confidential projects run by a small trusted research team. The source audio dataset must already be private in the administrator's personal Hugging Face namespace. When a project is created, the app creates a private `_state` repository for project/ACL/invite recovery and a private Storage Bucket for validation events and snapshots in that same namespace. Select `collaborative` inside the app: this enables app-managed validators and does not make any Hugging Face resource public.
 
-Recommended trusted-team Space settings:
+The Space stores the administrator storage credential as a protected secret. Validators log in with their own Hugging Face identity and are invited or assigned inside the app; they do not need repository or Bucket permissions, organization membership, or the administrator token. Resource operations are performed server-side only after the app confirms the user's project role.
+
+Recommended administrator-owned Space settings:
 
 ```text
-BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED=true
+BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true
 BIRDNET_AUTH_MODE=hf_token
-BIRDNET_HF_PROJECT_STATE_REPOS=project-org/audio-dataset_state
-HF_TOKEN=<administrator token stored as a Space secret for startup restore>
+BIRDNET_HF_PROJECT_STATE_REPOS=jrrribeiro/audio-dataset_state
+BIRDNET_HF_STORAGE_TOKEN=<administrator token stored only as a Space secret>
 ```
 
-After creating a project, add its generated `_state` repository to `BIRDNET_HF_PROJECT_STATE_REPOS` before relying on rebuild recovery. Each administrator and validator should open **Projects > Private project storage access** and pass the access check with their own token before validating real records; the check writes and removes only a small diagnostic marker. A private personal Bucket did not permit the invited second-user workflow in testing; the confirmed collaborative route is an organization-owned private dataset and Bucket with trusted `write` members. The private `_state` OAuth experiment also failed as a high-frequency direct validation store because `contribute-repos` permitted contribution through Pull Requests rather than direct durable writes to `main`.
+`HF_TOKEN` remains a compatibility fallback for the storage credential, but `BIRDNET_HF_STORAGE_TOKEN` is preferred because its purpose is explicit. Never enter this administrator token in an ordinary user login form. After creating a project, add its generated `_state` repository to `BIRDNET_HF_PROJECT_STATE_REPOS` before relying on rebuild recovery. An administrator may run **Projects > Private storage backend health** to verify the protected backend credential with a temporary marker that is immediately removed.
 
-Projects previously created with a private `_state` repository can be recovered from the **Admin** tab using **Connect Existing State**. Sign in with the Hugging Face account that is recorded as an administrator in that repository's `acl.json`, then provide the `_state` repo id (for example, `project-org/audio_dataset_state`). In trusted-team mode, recovery accepts only a manifest that declares a private validation Bucket and still points to a private, organization-owned collaborative project. The app loads the saved manifest, ACL, and pending invites; it does not accept a new local definition over an existing state repository.
+Projects previously created with a private `_state` repository in this mode can be recovered from the **Admin** tab using **Connect Existing State**. Sign in as an administrator recorded in its `acl.json`, then provide the `_state` repo id (for example, `jrrribeiro/audio_dataset_state`). Recovery accepts only a manifest with private Bucket validation storage and a private personal-namespace source dataset accessible to the configured storage account. The app loads the saved manifest, ACL, and pending invites.
 
 Legacy Supabase state backend, available while migrating existing projects:
 
@@ -225,7 +227,7 @@ Legacy Supabase state backend, available while migrating existing projects:
 
 When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`. For eventual public distribution, the planned backend is administrator-owned Supabase provisioned through OAuth with an Edge Function validating Hugging Face identity; see `docs/TEMP_BYO_SUPABASE_EDGE_FUNCTION_HF_IDENTITY_PLAN.md`.
 
-The **Private state OAuth diagnostic** action in **Projects** applies to experimental direct `_state` writes. In trusted-team mode, frequent validation state uses the Bucket rather than direct repository commits.
+The **Private state OAuth diagnostic** action in **Projects** applies only to experimental direct `_state` writes. In administrator-owned storage mode, frequent validation state uses the Bucket rather than dataset repository commits.
 
 Optional invite email settings:
 
@@ -259,7 +261,7 @@ Notes:
 - The app entrypoint reads `PORT` automatically in Spaces.
 - Keep user/project bootstrap files private if they contain sensitive assignments.
 - Use Supabase or persistent Space storage to keep projects, invites, ACL, and validations across redeploys. The free Space filesystem is ephemeral.
-- Collaborative access is token-per-user: each collaborator logs in with their own Hugging Face token.
+- In administrator-owned storage mode, each collaborator signs in with their own Hugging Face identity, while only the Space backend credential accesses private project storage.
 - Datasets uploaded by `HF_Dataset_Uploader` are read from `index/files.parquet` first; older `index/shards/*.parquet`, CSV, JSONL, and audio-path fallback layouts remain supported.
 
 ## Local Uploader CLI
@@ -544,7 +546,8 @@ python -m src.uploader_cli.main start --repo-id alice/birdnet-2026 --segments C:
 - `BIRDNET_STATE_BACKEND`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
-- `BIRDNET_HF_TRUSTED_TEAM_MODE_ENABLED`
+- `BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED`
+- `BIRDNET_HF_STORAGE_TOKEN` (Secret)
 - `BIRDNET_HF_PROJECT_STATE_REPOS`
 - `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED`
 - `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED`

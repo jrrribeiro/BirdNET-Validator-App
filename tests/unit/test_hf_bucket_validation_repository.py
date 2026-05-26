@@ -129,14 +129,14 @@ def test_save_validation_writes_event_and_snapshot_without_repo_commit() -> None
     assert repository.load_current_snapshot("project-a")["audio-a-0000000001"]["version"] == 1
 
 
-def test_bucket_access_error_explains_that_app_invite_is_not_hub_permission() -> None:
+def test_bucket_access_error_explains_that_app_invite_is_not_direct_hub_permission() -> None:
     repository = HfBucketValidationRepository(
         bucket_id="owner/audio_validation_state",
         token="hf_user",
         api=InaccessibleBucketApi(),
     )
 
-    with pytest.raises(HfBucketValidationError, match="invitation inside this app does not grant"):
+    with pytest.raises(HfBucketValidationError, match="does not grant direct Hub Bucket"):
         repository.load_current_snapshot("project-a")
 
 

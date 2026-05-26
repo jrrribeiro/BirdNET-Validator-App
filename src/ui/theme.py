@@ -1449,8 +1449,8 @@ select {
 
 
 def app_header_html(state_backend_message: str = "") -> str:
-    if "HF trusted-team project storage enabled" in state_backend_message:
-        backend_text = "Private HF state ready"
+    if "HF admin-owned private storage enabled" in state_backend_message:
+        backend_text = "Private HF storage ready"
         backend_class = "bn-pill-ok"
     elif "Supabase state backend enabled" in state_backend_message:
         backend_text = "Supabase ready"

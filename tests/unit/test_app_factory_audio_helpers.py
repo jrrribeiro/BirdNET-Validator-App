@@ -36,7 +36,7 @@ from src.ui.app_factory import (
     _persist_bootstrap_state,
     _resolve_username_login_policy,
     _resolve_project_fetch_token,
-    _initialize_hf_trusted_team_storage,
+    _initialize_hf_admin_storage,
     _write_validation_export,
 )
 from src.auth.auth_service import AuthService
@@ -68,19 +68,16 @@ class FakeAudioService:
 
 
 class FakeDatasetInfoApi:
-    def __init__(self, private: bool, organization_exists: bool = True) -> None:
+    def __init__(self, private: bool, owner_username: str = "jrrribeiro") -> None:
         self.private = private
-        self.organization_exists = organization_exists
+        self.owner_username = owner_username
 
-    def get_organization_overview(self, organization: str, token: str):  # noqa: ANN001
-        assert organization == "project-org"
+    def whoami(self, token: str):  # noqa: ANN001
         assert token == "hf_admin"
-        if not self.organization_exists:
-            raise RuntimeError("404 organization not found")
-        return SimpleNamespace(name=organization)
+        return {"name": self.owner_username}
 
     def repo_info(self, *, repo_id: str, repo_type: str, token: str):  # noqa: ANN001
-        assert repo_id == "project-org/private-audio"
+        assert repo_id == "jrrribeiro/private-audio"
         assert repo_type == "dataset"
         assert token == "hf_admin"
         return SimpleNamespace(private=self.private)
@@ -93,7 +90,7 @@ class FakeBucketInitializer:
     def initialize(self, *, project_slug: str, dataset_repo_id: str, token: str | None):
         self.calls.append((project_slug, dataset_repo_id, token))
         return HfBucketValidationInitResult(
-            bucket_id="project-org/private-audio_validation_state",
+            bucket_id="jrrribeiro/private-audio_validation_state",
             initialized=True,
             reused_existing=False,
         )
@@ -232,39 +229,39 @@ class FakeQueueService:
         return FakeQueueService._Page()
 
 
-def test_initialize_hf_trusted_team_storage_sets_bucket_without_persisting_shared_token() -> None:
+def test_initialize_hf_admin_storage_sets_bucket_without_persisting_shared_token() -> None:
     project = Project(
         project_slug="private-audio",
         name="Private Audio",
-        dataset_repo_id="project-org/private-audio",
+        dataset_repo_id="jrrribeiro/private-audio",
         dataset_token="hf_shared_should_be_removed",
     )
     bucket_initializer = FakeBucketInitializer()
 
-    result = _initialize_hf_trusted_team_storage(
+    result = _initialize_hf_admin_storage(
         project=project,
         token="hf_admin",
         api=FakeDatasetInfoApi(private=True),  # type: ignore[arg-type]
         bucket_initializer=bucket_initializer,  # type: ignore[arg-type]
     )
 
-    assert result.bucket_id == "project-org/private-audio_validation_state"
+    assert result.bucket_id == "jrrribeiro/private-audio_validation_state"
     assert project.validation_bucket_id == result.bucket_id
     assert project.validation_backend == "hf_bucket"
     assert project.dataset_token is None
-    assert bucket_initializer.calls == [("private-audio", "project-org/private-audio", "hf_admin")]
+    assert bucket_initializer.calls == [("private-audio", "jrrribeiro/private-audio", "hf_admin")]
 
 
-def test_initialize_hf_trusted_team_storage_rejects_public_source_dataset() -> None:
+def test_initialize_hf_admin_storage_rejects_public_source_dataset() -> None:
     project = Project(
         project_slug="private-audio",
         name="Private Audio",
-        dataset_repo_id="project-org/private-audio",
+        dataset_repo_id="jrrribeiro/private-audio",
     )
     bucket_initializer = FakeBucketInitializer()
 
     with pytest.raises(HfBucketValidationError, match="only accepts a private dataset"):
-        _initialize_hf_trusted_team_storage(
+        _initialize_hf_admin_storage(
             project=project,
             token="hf_admin",
             api=FakeDatasetInfoApi(private=False),  # type: ignore[arg-type]
@@ -274,36 +271,36 @@ def test_initialize_hf_trusted_team_storage_rejects_public_source_dataset() -> N
     assert bucket_initializer.calls == []
 
 
-def test_initialize_hf_trusted_team_storage_requires_organization_namespace() -> None:
+def test_initialize_hf_admin_storage_requires_storage_owner_personal_namespace() -> None:
     project = Project(
         project_slug="private-audio",
         name="Private Audio",
-        dataset_repo_id="project-org/private-audio",
+        dataset_repo_id="jrrribeiro/private-audio",
     )
     bucket_initializer = FakeBucketInitializer()
 
-    with pytest.raises(HfBucketValidationError, match="dedicated Hugging Face organization"):
-        _initialize_hf_trusted_team_storage(
+    with pytest.raises(HfBucketValidationError, match="personal namespace"):
+        _initialize_hf_admin_storage(
             project=project,
             token="hf_admin",
-            api=FakeDatasetInfoApi(private=True, organization_exists=False),  # type: ignore[arg-type]
+            api=FakeDatasetInfoApi(private=True, owner_username="another-admin"),  # type: ignore[arg-type]
             bucket_initializer=bucket_initializer,  # type: ignore[arg-type]
         )
 
     assert bucket_initializer.calls == []
 
 
-def test_initialize_hf_trusted_team_storage_requires_collaborative_app_visibility() -> None:
+def test_initialize_hf_admin_storage_requires_collaborative_app_visibility() -> None:
     project = Project(
         project_slug="private-audio",
         name="Private Audio",
-        dataset_repo_id="project-org/private-audio",
+        dataset_repo_id="jrrribeiro/private-audio",
         visibility="private",
     )
     bucket_initializer = FakeBucketInitializer()
 
     with pytest.raises(HfBucketValidationError, match="visibility 'collaborative'"):
-        _initialize_hf_trusted_team_storage(
+        _initialize_hf_admin_storage(
             project=project,
             token="hf_admin",
             api=FakeDatasetInfoApi(private=True),  # type: ignore[arg-type]

@@ -238,7 +238,7 @@ class HfBucketPermissionProbe:
             raise
         except Exception as exc:
             raise HfBucketValidationError(
-                f"Private Bucket read/write test failed for '{bucket}' using the signed-in Hugging Face account: {exc}"
+                f"Private Bucket read/write test failed for '{bucket}' using the supplied storage credential: {exc}"
             ) from exc
         finally:
             if marker_written:
@@ -309,8 +309,9 @@ class HfBucketValidationRepository:
         access_markers = ("401", "403", "404", "bucketnotfound", "bucket not found", "unauthorized", "forbidden")
         if any(marker in message for marker in access_markers):
             return HfBucketValidationError(
-                f"The signed-in Hugging Face account cannot access validation bucket '{self._bucket_id}'. "
-                "An invitation inside this app does not grant Hugging Face Bucket permissions."
+                f"The configured credential cannot access validation bucket '{self._bucket_id}'. "
+                "In administrator-owned storage mode, check the protected Space storage secret. "
+                "An invitation inside this app authorizes app access but does not grant direct Hub Bucket permissions."
             )
         return exc
 

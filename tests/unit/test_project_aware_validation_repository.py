@@ -163,6 +163,51 @@ def test_project_aware_repository_bucket_write_does_not_fall_back_to_admin_token
         router.save_validation("project-a", _validation(), expected_version=0)
 
 
+def test_project_aware_repository_admin_storage_routes_validator_write_through_backend_token() -> None:
+    bucket_repo = FakeValidationStateRepository("bucket")
+    received: list[tuple[str, str]] = []
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="owner/project-a",
+        validation_backend=HF_BUCKET_VALIDATION_BACKEND,
+        validation_bucket_id="owner/project-a_validation_state",
+    )
+    router = ProjectAwareValidationRepository(
+        fallback_repository=FakeValidationStateRepository("fallback"),
+        project_lookup=lambda _: project,
+        token_provider=lambda _: "hf_storage_secret",
+        actor_token_provider=lambda _project, _username: "hf_validator_identity_only",
+        enable_hf_bucket_validations=True,
+        use_backend_token_for_bucket=True,
+        bucket_repository_factory=lambda bucket, token: (received.append((bucket, token)) or bucket_repo),
+    )
+
+    assert router.save_validation("project-a", _validation(), expected_version=0) == 1
+    assert received == [("owner/project-a_validation_state", "hf_storage_secret")]
+
+
+def test_project_aware_repository_admin_storage_fails_without_backend_credential() -> None:
+    project = Project(
+        project_slug="project-a",
+        name="Project A",
+        dataset_repo_id="owner/project-a",
+        validation_backend=HF_BUCKET_VALIDATION_BACKEND,
+        validation_bucket_id="owner/project-a_validation_state",
+    )
+    router = ProjectAwareValidationRepository(
+        fallback_repository=FakeValidationStateRepository("fallback"),
+        project_lookup=lambda _: project,
+        token_provider=lambda _: None,
+        actor_token_provider=lambda _project, _username: "hf_validator_identity_only",
+        enable_hf_bucket_validations=True,
+        use_backend_token_for_bucket=True,
+    )
+
+    with pytest.raises(HfBucketValidationError, match="backend storage credential"):
+        router.save_validation("project-a", _validation(), expected_version=0)
+
+
 def test_project_aware_repository_never_falls_back_when_declared_bucket_is_disabled() -> None:
     fallback = FakeValidationStateRepository("fallback")
     project = Project(

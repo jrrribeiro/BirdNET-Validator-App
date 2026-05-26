@@ -28,6 +28,7 @@ class ProjectAwareValidationRepository:
         actor_token_provider: Callable[[Project, str], str | None] | None = None,
         enable_hf_project_state: bool = False,
         enable_hf_bucket_validations: bool = False,
+        use_backend_token_for_bucket: bool = False,
         hf_repository_factory: Callable[[str, str], _ValidationStateRepository] | None = None,
         bucket_repository_factory: Callable[[str, str], _ValidationStateRepository] | None = None,
     ) -> None:
@@ -37,6 +38,7 @@ class ProjectAwareValidationRepository:
         self._actor_token_provider = actor_token_provider
         self._enable_hf_project_state = enable_hf_project_state
         self._enable_hf_bucket_validations = enable_hf_bucket_validations
+        self._use_backend_token_for_bucket = use_backend_token_for_bucket
         self._hf_repository_factory = hf_repository_factory or (
             lambda state_repo_id, token: HfProjectStateValidationRepository(
                 state_repo_id=state_repo_id,
@@ -74,10 +76,18 @@ class ProjectAwareValidationRepository:
                 raise HfBucketValidationError(
                     "This project declares HF Bucket validation storage but has no validation bucket id."
                 )
-            token = actor_token if actor_username else (self._token_provider(project) or "").strip()
+            token = (
+                (self._token_provider(project) or "").strip()
+                if self._use_backend_token_for_bucket
+                else (actor_token if actor_username else (self._token_provider(project) or "").strip())
+            )
             if not token:
                 raise HfBucketValidationError(
-                    "Bucket-backed validation requires the signed-in validator's Hugging Face authorization."
+                    (
+                        "The backend storage credential required for private Bucket validation is not configured."
+                        if self._use_backend_token_for_bucket
+                        else "Bucket-backed validation requires the signed-in validator's Hugging Face authorization."
+                    )
                 )
             bucket_id = (project.validation_bucket_id or "").strip()
             cache_key = (f"bucket:{bucket_id}", token)

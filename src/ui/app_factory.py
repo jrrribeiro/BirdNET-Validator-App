@@ -452,6 +452,12 @@ def _env_hf_token() -> str | None:
     return token or None
 
 
+def _storage_hf_token() -> str | None:
+    """Return the server-side credential used only for admin-owned private project storage."""
+    token = (os.getenv("BIRDNET_HF_STORAGE_TOKEN") or "").strip()
+    return token or _env_hf_token()
+
+
 def _project_dataset_token(project: Project, fallback_token: str | None = None) -> str | None:
     return (project.dataset_token or "").strip() or (fallback_token or "").strip() or _env_hf_token()
 
@@ -1561,7 +1567,7 @@ def _is_running_in_hf_space() -> bool:
     return bool((os.getenv("SPACE_ID") or os.getenv("SPACE_HOST") or "").strip())
 
 
-def _validate_hf_trusted_team_source_dataset(
+def _validate_hf_admin_storage_source_dataset(
     *,
     project: Project,
     token: str | None,
@@ -1569,23 +1575,30 @@ def _validate_hf_trusted_team_source_dataset(
 ) -> None:
     if (project.visibility or "").strip().lower() != "collaborative":
         raise HfBucketValidationError(
-            "Trusted-team projects must use app visibility 'collaborative'. "
-            "The Hugging Face dataset and storage remain private; collaborative visibility enables approved "
-            "team members inside this app."
+            "Admin-owned private storage projects must use app visibility 'collaborative'. "
+            "The Hugging Face dataset and storage remain private; this app visibility enables assigned validators."
         )
     token_value = (token or "").strip()
     if not token_value:
-        raise HfBucketValidationError("Trusted-team HF storage requires the administrator's Hugging Face authorization during project setup.")
+        raise HfBucketValidationError(
+            "Admin-owned HF storage requires BIRDNET_HF_STORAGE_TOKEN to be configured as a Space secret."
+        )
 
     client = api or HfApi()
     namespace = project.dataset_repo_id.split("/", 1)[0].strip()
     try:
-        client.get_organization_overview(namespace, token=token_value)
+        identity = client.whoami(token=token_value)
     except Exception as exc:
         raise HfBucketValidationError(
-            "Trusted-team HF storage requires the private dataset to be owned by a dedicated Hugging Face "
-            f"organization. Could not verify organization '{namespace}': {exc}"
+            f"Could not verify the configured administrator storage credential: {exc}"
         ) from exc
+    owner_username = str(identity.get("name") if isinstance(identity, dict) else "").strip()
+    if not owner_username or owner_username.casefold() != namespace.casefold():
+        raise HfBucketValidationError(
+            "Admin-owned HF storage requires the dataset to be in the personal namespace of the configured "
+            f"storage account. Expected '{owner_username or 'authenticated user'}/...', received "
+            f"'{project.dataset_repo_id}'."
+        )
     try:
         dataset_info = client.repo_info(
             repo_id=project.dataset_repo_id,
@@ -1596,19 +1609,19 @@ def _validate_hf_trusted_team_source_dataset(
         raise HfBucketValidationError(f"Could not verify the Hugging Face dataset before creating private state: {exc}") from exc
     if not bool(getattr(dataset_info, "private", False)):
         raise HfBucketValidationError(
-            "Trusted-team HF storage only accepts a private dataset. Make the dataset private in Hugging Face "
+            "Admin-owned HF storage only accepts a private dataset. Make the dataset private in Hugging Face "
             "before creating the validation project."
         )
 
 
-def _initialize_hf_trusted_team_storage(
+def _initialize_hf_admin_storage(
     *,
     project: Project,
     token: str | None,
     api: HfApi | None = None,
     bucket_initializer: HfBucketValidationInitializer | None = None,
 ):
-    _validate_hf_trusted_team_source_dataset(project=project, token=token, api=api)
+    _validate_hf_admin_storage_source_dataset(project=project, token=token, api=api)
     token_value = (token or "").strip()
     initializer = bucket_initializer or HfBucketValidationInitializer()
     result = initializer.initialize(
@@ -2967,8 +2980,8 @@ def create_app() -> gr.Blocks:
 
     projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
     state_store, supabase_validation_repository, state_backend_message = _build_supabase_state(runtime_config)
-    if runtime_config.hf_trusted_team_mode_enabled:
-        state_backend_message = "HF trusted-team project storage enabled."
+    if runtime_config.hf_admin_storage_mode_enabled:
+        state_backend_message = "HF admin-owned private storage enabled."
     allow_username_login, auth_mode_label, auth_mode_description = _resolve_username_login_policy(runtime_config)
     bootstrap_warning = _bootstrap_auth_and_projects(
         auth_service,
@@ -2978,7 +2991,7 @@ def create_app() -> gr.Blocks:
         user_access_file_path=str(user_access_file_path),
         invites_file_path=str(invites_file_path),
         state_store=state_store,
-        hf_project_state_token=_env_hf_token(),
+        hf_project_state_token=_storage_hf_token() if runtime_config.hf_admin_storage_mode_enabled else _env_hf_token(),
     )
 
     def _current_project_map() -> dict[str, Project]:
@@ -3003,20 +3016,25 @@ def create_app() -> gr.Blocks:
     max_loaded_projects = 3
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
     base_validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
-    hf_state_writes_enabled = runtime_config.hf_project_state_writes_enabled or runtime_config.hf_trusted_team_mode_enabled
-    hf_bucket_validations_enabled = runtime_config.hf_bucket_validations_enabled or runtime_config.hf_trusted_team_mode_enabled
+    hf_state_writes_enabled = runtime_config.hf_project_state_writes_enabled or runtime_config.hf_admin_storage_mode_enabled
+    hf_bucket_validations_enabled = runtime_config.hf_bucket_validations_enabled or runtime_config.hf_admin_storage_mode_enabled
     validation_repository = ProjectAwareValidationRepository(
         fallback_repository=base_validation_repository,
         project_lookup=admin_manager.get_project,
         token_provider=lambda project: (
-            (project.dataset_token or "").strip()
-            or (auth_service.get_hf_token_for_user((project.owner_username or "").strip()) or "").strip()
-            or (_env_hf_token() or "").strip()
-            or None
-        ),
+            (_storage_hf_token() or "").strip()
+            if runtime_config.hf_admin_storage_mode_enabled
+            and (project.validation_backend or "").strip() == HF_BUCKET_VALIDATION_BACKEND
+            else (
+                (project.dataset_token or "").strip()
+                or (auth_service.get_hf_token_for_user((project.owner_username or "").strip()) or "").strip()
+                or (_env_hf_token() or "").strip()
+            )
+        ) or None,
         actor_token_provider=lambda _project, username: auth_service.get_hf_token_for_user(username),
         enable_hf_project_state=hf_state_writes_enabled,
         enable_hf_bucket_validations=hf_bucket_validations_enabled,
+        use_backend_token_for_bucket=runtime_config.hf_admin_storage_mode_enabled,
     )
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
@@ -3086,6 +3104,14 @@ def create_app() -> gr.Blocks:
             role = auth_service.get_user_role_for_project(session.username, slug)
             return role == Role.admin
 
+        def _can_access_project(session, project_slug: str) -> bool:
+            if session is None:
+                return False
+            slug = (project_slug or "").strip()
+            if not slug or slug not in session.authorized_projects:
+                return False
+            return auth_service.get_user_role_for_project(session.username, slug) in {Role.admin, Role.validator}
+
         def _refresh_session_copy(session):
             if session is None:
                 return None
@@ -3154,6 +3180,8 @@ def create_app() -> gr.Blocks:
             slug = (project_slug or "").strip()
             if not slug:
                 return ""
+            if not _can_access_project(session, slug):
+                return "Access denied. Select a project assigned to your signed-in account."
 
             token = _project_fetch_token(slug, session)
             signature = _project_queue_signature(slug, token)
@@ -3175,6 +3203,8 @@ def create_app() -> gr.Blocks:
             return warning
 
         def _project_state_write_token(project: Project, session=None) -> str | None:
+            if runtime_config.hf_admin_storage_mode_enabled:
+                return _storage_hf_token()
             session_username = str(getattr(session, "username", "") or "").strip()
             session_token = auth_service.get_hf_token_for_user(session_username) if session_username else None
             owner_username = (project.owner_username or "").strip()
@@ -3284,8 +3314,8 @@ def create_app() -> gr.Blocks:
                         "Secure access",
                         "Sign in with your Hugging Face identity",
                         (
-                            "Each trusted collaborator accesses private data and validation storage with their own Hugging Face token."
-                            if runtime_config.hf_trusted_team_mode_enabled
+                            "Validators sign in with their own identity; private datasets and validation storage remain accessible only through this app."
+                            if runtime_config.hf_admin_storage_mode_enabled
                             else "Your account controls project access, validator attribution, and private dataset access."
                         ),
                     )
@@ -3295,12 +3325,12 @@ def create_app() -> gr.Blocks:
                     allow_username_login=allow_username_login,
                     enable_oauth_login=_is_running_in_hf_space(),
                     auth_mode_label=(
-                        "Private HF trusted-team mode is active. Personal token login is the validated workflow; "
-                        "project data remain private to authorized Hugging Face organization members."
-                        if runtime_config.hf_trusted_team_mode_enabled
+                        "Private HF administrator storage is active. Your login verifies identity only; "
+                        "project access is granted by assignments or invitations inside this app."
+                        if runtime_config.hf_admin_storage_mode_enabled
                         else auth_mode_description
                     ),
-                    trusted_team_mode=runtime_config.hf_trusted_team_mode_enabled,
+                    admin_storage_mode=runtime_config.hf_admin_storage_mode_enabled,
                 )
 
                 # Store session ID when login succeeds
@@ -3379,13 +3409,12 @@ def create_app() -> gr.Blocks:
                                 class_name="bn-panel-soft",
                             )
                         )
-                        if runtime_config.hf_trusted_team_mode_enabled:
+                        if runtime_config.hf_admin_storage_mode_enabled:
                             gr.HTML(
                                 inline_hint_html(
-                                    "Private HF trusted-team mode is active. Source datasets must be private. "
-                                    "Choose collaborative visibility; the data remain private on Hugging Face. Before "
-                                    "assigning validators here, add each trusted collaborator with write access to the "
-                                    "project's dedicated Hugging Face organization.",
+                                    "Private administrator-owned HF storage is active. Use a private dataset in your "
+                                    "personal Hugging Face namespace and collaborative visibility in this app. "
+                                    "Validators are assigned here and do not need direct Hub repository access.",
                                     "info",
                                 )
                             )
@@ -3409,12 +3438,13 @@ def create_app() -> gr.Blocks:
                             )
                             create_project_token = gr.Textbox(
                                 label=(
-                                    "One-time setup HF token (not stored)"
-                                    if runtime_config.hf_trusted_team_mode_enabled
+                                    "Storage credential configured as Space secret"
+                                    if runtime_config.hf_admin_storage_mode_enabled
                                     else "Project HF Token (optional)"
                                 ),
                                 placeholder="hf_xxx...",
                                 type="password",
+                                visible=not runtime_config.hf_admin_storage_mode_enabled,
                             )
 
                         create_project_message = gr.Markdown()
@@ -3459,7 +3489,11 @@ def create_app() -> gr.Blocks:
                         repo_id = (repo_id or "").strip()
                         visibility_value = (visibility or "collaborative").strip().lower()
                         explicit_project_token = (project_token or "").strip() or None
-                        operation_token = explicit_project_token or _session_hf_token(session) or _env_hf_token()
+                        operation_token = (
+                            _storage_hf_token()
+                            if runtime_config.hf_admin_storage_mode_enabled
+                            else explicit_project_token or _session_hf_token(session) or _env_hf_token()
+                        )
                         if not slug or not name or not repo_id:
                             return "Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
                         if visibility_value not in {"private", "collaborative"}:
@@ -3467,7 +3501,7 @@ def create_app() -> gr.Blocks:
                         if (
                             _is_running_in_hf_space()
                             and hf_state_writes_enabled
-                            and not runtime_config.hf_trusted_team_mode_enabled
+                            and not runtime_config.hf_admin_storage_mode_enabled
                             and getattr(session, "authentication_method", "") != "oauth"
                         ):
                             return (
@@ -3511,13 +3545,13 @@ def create_app() -> gr.Blocks:
                             dataset_repo_id=repo_id,
                             visibility=visibility_value,
                             owner_username=session.username,
-                            dataset_token=None if runtime_config.hf_trusted_team_mode_enabled else explicit_project_token,
+                            dataset_token=None if runtime_config.hf_admin_storage_mode_enabled else explicit_project_token,
                             active=True,
                         )
                         bucket_result = None
-                        if runtime_config.hf_trusted_team_mode_enabled:
+                        if runtime_config.hf_admin_storage_mode_enabled:
                             try:
-                                bucket_result = _initialize_hf_trusted_team_storage(
+                                bucket_result = _initialize_hf_admin_storage(
                                     project=project,
                                     token=operation_token,
                                     bucket_initializer=hf_bucket_initializer,
@@ -3592,7 +3626,7 @@ def create_app() -> gr.Blocks:
                         recovery_message = (
                             f" Add `{state_result.state_repo_id}` to `BIRDNET_HF_PROJECT_STATE_REPOS` before rebuilding "
                             "the Space so this project is restored after restart."
-                            if runtime_config.hf_trusted_team_mode_enabled
+                            if runtime_config.hf_admin_storage_mode_enabled
                             else ""
                         )
 
@@ -3674,7 +3708,11 @@ def create_app() -> gr.Blocks:
                         try:
                             loaded = hf_state_connector.connect_admin_project(
                                 state_repo_id=repo_id,
-                                token=_session_hf_token(session),
+                                token=(
+                                    _storage_hf_token()
+                                    if runtime_config.hf_admin_storage_mode_enabled
+                                    else _session_hf_token(session)
+                                ),
                                 actor_username=session.username,
                             )
                         except HfProjectStateStoreError as exc:
@@ -3689,14 +3727,14 @@ def create_app() -> gr.Blocks:
                                 session,
                             )
 
-                        if runtime_config.hf_trusted_team_mode_enabled:
+                        if runtime_config.hf_admin_storage_mode_enabled:
                             if (
                                 (loaded.project.validation_backend or "").strip() != HF_BUCKET_VALIDATION_BACKEND
                                 or not (loaded.project.validation_bucket_id or "").strip()
                             ):
                                 return (
-                                    "Project state could not be connected in trusted-team mode because its manifest "
-                                    "does not declare private Hugging Face Bucket validation storage.",
+                                    "Project state could not be connected in administrator-storage mode because its "
+                                    "manifest does not declare private Hugging Face Bucket validation storage.",
                                     _project_rows(),
                                     gr.update(),
                                     gr.update(),
@@ -3706,13 +3744,13 @@ def create_app() -> gr.Blocks:
                                     session,
                                 )
                             try:
-                                _validate_hf_trusted_team_source_dataset(
+                                _validate_hf_admin_storage_source_dataset(
                                     project=loaded.project,
-                                    token=_session_hf_token(session),
+                                    token=_storage_hf_token(),
                                 )
                             except HfBucketValidationError as exc:
                                 return (
-                                    f"Project state could not be connected in trusted-team mode: {exc}",
+                                    f"Project state could not be connected in administrator-storage mode: {exc}",
                                     _project_rows(),
                                     gr.update(),
                                     gr.update(),
@@ -3866,12 +3904,12 @@ def create_app() -> gr.Blocks:
                         if project is None:
                             return "Select a valid project.", gr.update(), gr.update(), gr.update(), gr.update()
                         if (
-                            runtime_config.hf_trusted_team_mode_enabled
+                            runtime_config.hf_admin_storage_mode_enabled
                             and (project.validation_backend or "").strip() == HF_BUCKET_VALIDATION_BACKEND
                         ):
                             return (
-                                "Trusted-team HF projects never store a shared project token. Each collaborator must sign "
-                                "in using their own Hugging Face authorization.",
+                                "Administrator-owned HF projects never store a project token. Private storage access "
+                                "uses only the configured Space secret; validator logins verify identity.",
                                 gr.update(value=""),
                                 gr.update(value=False),
                                 _project_rows(),
@@ -4292,7 +4330,7 @@ def create_app() -> gr.Blocks:
 
                 session_state.change(
                     fn=lambda s: (
-                        gr.update(visible=bool(s is not None and not runtime_config.hf_trusted_team_mode_enabled)),
+                        gr.update(visible=bool(s is not None and not runtime_config.hf_admin_storage_mode_enabled)),
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
@@ -4347,7 +4385,7 @@ def create_app() -> gr.Blocks:
                     allow_custom_value=True,
                 )
                 with gr.Group(
-                    visible=not runtime_config.hf_trusted_team_mode_enabled,
+                    visible=not runtime_config.hf_admin_storage_mode_enabled,
                     elem_classes=["bn-panel-soft"],
                 ):
                     gr.Markdown("### Private state OAuth diagnostic")
@@ -4360,16 +4398,16 @@ def create_app() -> gr.Blocks:
                         elem_classes=["bn-soft-action"],
                     )
                 with gr.Group(
-                    visible=runtime_config.hf_trusted_team_mode_enabled,
+                    visible=runtime_config.hf_admin_storage_mode_enabled,
                     elem_classes=["bn-panel-soft"],
                 ):
-                    gr.Markdown("### Private project storage access")
+                    gr.Markdown("### Private storage backend health")
                     trusted_storage_status = gr.Markdown(
-                        "Run this check once for each trusted collaborator before validation. "
-                        "It verifies private validation storage write access with that user's own Hugging Face token."
+                        "Administrators can verify that this Space can read and write the project's private "
+                        "validation storage. Validators do not require direct Hub storage access."
                     )
                     test_trusted_storage_btn = gr.Button(
-                        "Check private validation storage access",
+                        "Check backend storage access",
                         elem_classes=["bn-soft-action"],
                     )
                 invitations_info = gr.Markdown(value="")
@@ -4588,7 +4626,7 @@ def create_app() -> gr.Blocks:
 
                 def update_selected_project(selected: str, session):
                     """Update state when project is selected."""
-                    if session and selected:
+                    if session and selected and selected in session.authorized_projects:
                         selected_project = admin_manager.get_project(selected)
                         dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
                         role = auth_service.get_user_role_for_project(session.username, selected)
@@ -4627,24 +4665,30 @@ def create_app() -> gr.Blocks:
 
                 def test_trusted_storage_authorization(selected: str, session):
                     if session is None:
-                        return "Login with your Hugging Face account before testing private validation storage."
+                        return "Login before testing private validation storage."
                     project_slug = (selected or "").strip()
                     project = admin_manager.get_project(project_slug) if project_slug else None
                     if project is None or project_slug not in session.authorized_projects:
                         return "Select a project that is authorized for the signed-in account."
+                    if not _is_admin_for_project(session, project_slug):
+                        return (
+                            "Only a project administrator can run this storage health check. "
+                            "Validators receive data through the app after assignment."
+                        )
                     if (project.validation_backend or "").strip() != HF_BUCKET_VALIDATION_BACKEND:
                         return "This project does not use private Hugging Face Bucket validation storage."
                     try:
                         result = hf_bucket_permission_probe.probe(
                             bucket_id=project.validation_bucket_id or "",
                             actor_username=session.username,
-                            token=_session_hf_token(session),
+                            token=_storage_hf_token(),
                         )
                     except HfBucketValidationError as exc:
                         return f"Private storage access test failed: {exc}"
                     return (
-                        f"Private validation storage verified for **{result.actor_username}**. "
-                        f"Read/write access was confirmed in `{result.bucket_id}` and the diagnostic marker was removed."
+                        f"Backend storage verified for **{result.actor_username}**. "
+                        f"The Space read and wrote `{result.bucket_id}` using its protected storage credential; "
+                        "the diagnostic marker was removed."
                     )
 
                 project_selector.change(
@@ -4887,6 +4931,10 @@ def create_app() -> gr.Blocks:
                     return auth_service.get_hf_token_for_user(session.username)
 
                 def _project_fetch_token(project_slug: str, session) -> str | None:
+                    if not _can_access_project(session, project_slug):
+                        return None
+                    if runtime_config.hf_admin_storage_mode_enabled:
+                        return _storage_hf_token()
                     session_token = _session_hf_token(session)
                     project = admin_manager.get_project(project_slug) if project_slug else None
                     return _resolve_project_fetch_token(project, session_token)
@@ -4904,6 +4952,8 @@ def create_app() -> gr.Blocks:
                 ):
                     if not project_slug:
                         return [], "", 1
+                    if not _can_access_project(session, project_slug):
+                        return [], "Access denied. Select a project assigned to your signed-in account.", 1
                     species_name = (species or "").strip()
                     if not species_name:
                         return [], "Select a species to start validation", 1
@@ -4978,6 +5028,9 @@ def create_app() -> gr.Blocks:
                     if not project_slug:
                         return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
 
+                    if not _can_access_project(session, project_slug):
+                        return gr.update(choices=[], value=None, interactive=False), [], "Access denied. Select an assigned project.", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
+
                     warning = _ensure_project_queue_loaded(project_slug, session)
 
                     species_options = _extract_species_options_from_queue(
@@ -5021,6 +5074,8 @@ def create_app() -> gr.Blocks:
                     validator_name_value = _validator_name_from_session(session)
                     if not validator_name_value:
                         return "Login before validating", cache_key, None, rows, page, idx, "", ""
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project", cache_key, None, rows, page, idx, "", ""
                     result = _save_selected_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -5061,9 +5116,12 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     if not project_slug:
                         return "Select a project before reapplying", cache_key, None, rows, page, idx, pending_status, conflict_key
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project", cache_key, None, rows, page, idx, pending_status, conflict_key
                     result = _reapply_last_conflict_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -5101,9 +5159,12 @@ def create_app() -> gr.Blocks:
                     validator_filter_value: str,
                     status_filter_value: str,
                     updated_after_value: object,
+                    session=None,
                 ):
                     if not project_slug:
                         return "Select a project before validating", cache_key, None, rows, page
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project", cache_key, None, rows, page
                     result = _batch_validate_conflicts(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -5128,6 +5189,8 @@ def create_app() -> gr.Blocks:
                 def build_report_for_project(project_slug: str, session=None) -> str:
                     if not project_slug:
                         return "Select a project to generate report"
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project"
                     return _build_validation_report(validation_repository, project_slug, _validator_name_from_session(session))
 
                 def save_corrected_species_option(
@@ -5194,6 +5257,8 @@ def create_app() -> gr.Blocks:
                     return gr.update(value="Favorite", variant="secondary")
 
                 def on_table_select(project_slug: str, repo: str, rows: object, cache_key: str, session, evt: gr.SelectData):
+                    if not _can_access_project(session, project_slug):
+                        return None, None, cache_key, "Access denied for this project", None, _spectrogram_title(None, None)
                     return _select_and_fetch_audio_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
@@ -5262,7 +5327,7 @@ def create_app() -> gr.Blocks:
                 )
 
                 species_filter.change(
-                    fn=lambda project_slug, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: refresh(
+                    fn=lambda project_slug, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts, session: refresh(
                         project_slug,
                         1,
                         species,
@@ -5271,6 +5336,7 @@ def create_app() -> gr.Blocks:
                         status_filter_value,
                         updated_after_value,
                         only_conflicts,
+                        session,
                     ),
                     inputs=[
                         selected_project_state,
@@ -5280,6 +5346,7 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 ).then(
@@ -5739,7 +5806,7 @@ def create_app() -> gr.Blocks:
                     slug = (project_slug or "").strip()
                     if session is None:
                         return None, "Login before exporting project data."
-                    if not slug or slug not in session.authorized_projects:
+                    if not _can_access_project(session, slug):
                         return None, "Choose an authorized project before exporting."
 
                     project = _project_map().get(slug)
@@ -5790,6 +5857,16 @@ def create_app() -> gr.Blocks:
                             1,
                             1,
                             "Select a project to view the dashboard",
+                        )
+                    if not _can_access_project(session, slug):
+                        return (
+                            "",
+                            coverage_bars_html([]),
+                            paged_activity_html("Validator activity", ["Validator", "Validations"], []),
+                            paged_activity_html("Recent activity", ["Timestamp", "Validator", "Status", "Detection"], []),
+                            1,
+                            1,
+                            "Access denied. Select a project assigned to your signed-in account.",
                         )
 
                     warning = _ensure_project_queue_loaded(slug, session)
@@ -6010,15 +6087,15 @@ def create_app() -> gr.Blocks:
                 def _render_settings_health():
                     backend = (runtime_config.state_backend or "filesystem").strip().lower()
                     supabase_ready = bool(runtime_config.supabase_url and runtime_config.supabase_service_role_key)
-                    if runtime_config.hf_trusted_team_mode_enabled:
-                        state_label = "HF trusted-team"
+                    if runtime_config.hf_admin_storage_mode_enabled:
+                        state_label = "HF admin-owned private storage"
                         state_tone = "ok"
                     else:
                         state_label = "Supabase" if backend in {"supabase", "postgres", "postgresql"} and supabase_ready else "Filesystem"
                         state_tone = "ok" if state_label == "Supabase" else "warn"
                     normalized_bootstrap_dir = str(runtime_config.bootstrap_base_dir).replace("\\", "/").rstrip("/")
                     filesystem_durable = normalized_bootstrap_dir == "/data" or normalized_bootstrap_dir.startswith("/data/")
-                    if state_label == "HF trusted-team":
+                    if state_label == "HF admin-owned private storage":
                         durability_label = "private HF state/Bucket"
                         durability_tone = "ok"
                     elif state_label == "Supabase":
@@ -6035,8 +6112,8 @@ def create_app() -> gr.Blocks:
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
                     hf_project_state_label = "enabled" if hf_state_writes_enabled else "disabled"
                     hf_bucket_validation_label = (
-                        "trusted-team active"
-                        if runtime_config.hf_trusted_team_mode_enabled
+                        "admin-owned storage active"
+                        if runtime_config.hf_admin_storage_mode_enabled
                         else ("legacy experimental" if runtime_config.hf_bucket_validations_enabled else "disabled")
                     )
                     hf_project_state_repos_label = str(len(runtime_config.hf_project_state_repos))
@@ -6045,11 +6122,11 @@ def create_app() -> gr.Blocks:
                         [
                             ("State backend", state_label, state_tone),
                             ("HF project-state writes", hf_project_state_label, "ok" if hf_state_writes_enabled else "info"),
-                            ("HF Bucket validations", hf_bucket_validation_label, "ok" if runtime_config.hf_trusted_team_mode_enabled else ("warn" if runtime_config.hf_bucket_validations_enabled else "info")),
+                            ("HF Bucket validations", hf_bucket_validation_label, "ok" if runtime_config.hf_admin_storage_mode_enabled else ("warn" if runtime_config.hf_bucket_validations_enabled else "info")),
                             (
                                 "HF project-state repos",
                                 hf_project_state_repos_label,
-                                "ok" if runtime_config.hf_project_state_repos else ("warn" if runtime_config.hf_trusted_team_mode_enabled else "info"),
+                                "ok" if runtime_config.hf_project_state_repos else ("warn" if runtime_config.hf_admin_storage_mode_enabled else "info"),
                             ),
                             ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
                             ("Destructive write guard", "enabled", "ok"),
@@ -6066,17 +6143,17 @@ def create_app() -> gr.Blocks:
                     )
                     status_text = (
                         (
-                            "HF trusted-team storage is active. Private dataset access and Bucket writes require each "
-                            "trusted collaborator's own Hugging Face permissions; "
+                            "HF administrator-owned storage is active. Private dataset and Bucket access use only the "
+                            "protected Space storage credential; validator identities are authorized inside this app; "
                             + (
                                 "no project-state repository is configured, so projects will not be restored after a rebuild."
                                 if not runtime_config.hf_project_state_repos
                                 else "configured state repositories will be used for restart recovery."
                             )
-                            if state_label == "HF trusted-team"
+                            if state_label == "HF admin-owned private storage"
                             else "Supabase persistence is active. Project and ACL removals are guarded against accidental broad overwrites."
                         )
-                        if state_label in {"HF trusted-team", "Supabase"}
+                        if state_label in {"HF admin-owned private storage", "Supabase"}
                         else (
                             "Filesystem persistence is active with local JSON backups and destructive-write guards. "
                             "On free Spaces without persistent storage, local files are still not durable across rebuilds."
