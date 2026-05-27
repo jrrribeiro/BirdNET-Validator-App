@@ -109,6 +109,10 @@ def create_login_page(
                         else "Secure login with your Hugging Face account to access your validation workspace."
                     )
                 )
+                gr.LoginButton(
+                    visible=False,
+                    elem_id="bn-hidden-hf-oauth-route",
+                )
                 login_button = gr.Button(
                     "Sign in with Hugging Face",
                     variant="primary",
@@ -126,17 +130,21 @@ def create_login_page(
         with gr.Column(scale=1):
             gr.Markdown("")
 
-    def handle_oauth_login(
-        profile: gr.OAuthProfile | None,
-        oauth_token: gr.OAuthToken | None,
-    ) -> Tuple[str, str]:
-        return perform_oauth_login(auth_service, profile, oauth_token)
-
     if enable_oauth_login and login_button is not None:
         login_button.click(
-            fn=handle_oauth_login,
+            fn=lambda: None,
             inputs=None,
-            outputs=[session_output, error_message],
+            outputs=None,
+            js="""
+            () => {
+                sessionStorage.setItem("birdnet_hf_login_intent", "1");
+                window.parent?.postMessage({ type: "SET_SCROLLING", enabled: true }, "*");
+                setTimeout(() => {
+                    window.location.assign("/login/huggingface" + window.location.search);
+                }, 100);
+                return [];
+            }
+            """,
         )
     elif login_button is not None and username_input is not None:
         login_button.click(

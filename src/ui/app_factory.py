@@ -52,7 +52,7 @@ from src.services.hf_project_resource_deletion import HfProjectResourceDeleter, 
 from src.services.validation_service import ValidationService
 from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
 from src.auth.auth_service import AuthService
-from src.ui.login_page import create_login_page
+from src.ui.login_page import create_login_page, perform_oauth_login
 from src.ui.admin_panel import AdminPanelManager
 from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, section_header_html, selected_segment_html, settings_health_html
 from src.ui.theme import APP_CSS, app_header_html
@@ -3174,6 +3174,7 @@ def create_app() -> gr.Blocks:
         selected_project_state = gr.State(value=None)
         selected_dataset_repo_state = gr.State(value="")
         seed_warning_state = gr.State(value=seed_warning)
+        oauth_login_intent_state = gr.Textbox(value="", visible=False)
 
         def _project_rows() -> list[list[object]]:
             projects = admin_manager.list_projects()
@@ -3460,6 +3461,45 @@ def create_app() -> gr.Blocks:
                     fn=handle_login_success,
                     inputs=[session_output],
                     outputs=[session_state],
+                )
+
+                def hydrate_oauth_session_after_click(
+                    login_intent: str,
+                    profile: gr.OAuthProfile | None,
+                    oauth_token: gr.OAuthToken | None,
+                ):
+                    """Complete app login only after the user clicked the app-controlled OAuth button."""
+                    if (login_intent or "").strip() != "1":
+                        return None, ""
+                    session_id, message = perform_oauth_login(auth_service, profile, oauth_token)
+                    if not session_id:
+                        return None, message
+                    return auth_service.get_session(session_id), message
+
+                oauth_intent_load = wrapper.load(
+                    fn=lambda intent: intent,
+                    inputs=[oauth_login_intent_state],
+                    outputs=[oauth_login_intent_state],
+                    js="""
+                    () => {
+                        return sessionStorage.getItem("birdnet_hf_login_intent") || "";
+                    }
+                    """,
+                )
+                oauth_intent_load.then(
+                    fn=hydrate_oauth_session_after_click,
+                    inputs=[oauth_login_intent_state],
+                    outputs=[session_state, error_message],
+                ).then(
+                    fn=lambda: "",
+                    inputs=None,
+                    outputs=[oauth_login_intent_state],
+                    js="""
+                    () => {
+                        sessionStorage.removeItem("birdnet_hf_login_intent");
+                        return "";
+                    }
+                    """,
                 )
 
             # ===== TAB 2: Admin Panel =====

@@ -1,6 +1,8 @@
+import gradio as gr
+
 from src.auth.auth_service import AuthService
 from src.domain.models import Role
-from src.ui.login_page import perform_login, perform_oauth_login
+from src.ui.login_page import create_login_page, perform_login, perform_oauth_login
 
 
 def test_perform_login_blocks_username_when_disabled() -> None:
@@ -57,3 +59,12 @@ def test_perform_oauth_login_requires_signed_in_profile() -> None:
 
     assert session_id == ""
     assert "Sign in with Hugging Face first" in message
+
+
+def test_oauth_login_page_registers_gradio_oauth_routes_without_exposing_native_button() -> None:
+    auth_service = AuthService()
+
+    with gr.Blocks() as demo:
+        create_login_page(auth_service, enable_oauth_login=True, admin_storage_mode=True)
+
+    assert demo.expects_oauth is True
