@@ -99,7 +99,6 @@ def create_login_page(
                 visible=False,
             )
 
-            oauth_continue_button = None
             username_input = None
             login_button = None
             if enable_oauth_login:
@@ -110,10 +109,11 @@ def create_login_page(
                         else "Secure login with your Hugging Face account to access your validation workspace."
                     )
                 )
-                oauth_continue_button = gr.LoginButton(
+                gr.LoginButton(
                     "Sign in with Hugging Face",
-                    logout_value="Signed in as {}",
-                    variant="primary",
+                    logout_value="Sign out ({})",
+                    icon=None,
+                    elem_classes=["bn-oauth-login-button"],
                 )
             elif allow_username_login:
                 gr.Markdown("Local development login")
@@ -127,18 +127,6 @@ def create_login_page(
         with gr.Column(scale=1):
             gr.Markdown("")
 
-    def handle_oauth_login(
-        profile: gr.OAuthProfile | None,
-        oauth_token: gr.OAuthToken | None,
-    ) -> Tuple[str, str]:
-        return perform_oauth_login(auth_service, profile, oauth_token)
-
-    if oauth_continue_button is not None:
-        oauth_continue_button.click(
-            fn=handle_oauth_login,
-            inputs=None,
-            outputs=[session_output, error_message],
-        )
     if login_button is not None and username_input is not None:
         login_button.click(
             fn=lambda username: perform_login(

@@ -52,7 +52,7 @@ from src.services.hf_project_resource_deletion import HfProjectResourceDeleter, 
 from src.services.validation_service import ValidationService
 from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
 from src.auth.auth_service import AuthService
-from src.ui.login_page import create_login_page
+from src.ui.login_page import create_login_page, perform_oauth_login
 from src.ui.admin_panel import AdminPanelManager
 from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, section_header_html, selected_segment_html, settings_health_html
 from src.ui.theme import APP_CSS, app_header_html
@@ -6258,5 +6258,144 @@ def create_app() -> gr.Blocks:
                     fn=_render_settings_health,
                     outputs=[settings_health, settings_status],
                 )
+
+        def _hydrate_hf_oauth_session(
+            profile: gr.OAuthProfile | None,
+            oauth_token: gr.OAuthToken | None,
+        ):
+            if not _is_running_in_hf_space():
+                return gr.update(), gr.update()
+            if profile is None or oauth_token is None:
+                return None, ""
+
+            session_id, message = perform_oauth_login(auth_service, profile, oauth_token)
+            session = auth_service.get_session(session_id) if session_id else None
+            return session, message
+
+        def _render_admin_section_visibility(session):
+            return (
+                gr.update(visible=bool(session is not None and not runtime_config.hf_admin_storage_mode_enabled)),
+                gr.update(visible=bool(session is not None)),
+                gr.update(visible=bool(session is not None)),
+                gr.update(visible=bool(session is not None)),
+            )
+
+        def _render_admin_project_choices(session):
+            admin_projects = _admin_projects_for_session(session)
+            first_project = admin_projects[0] if admin_projects else None
+            return (
+                gr.update(choices=admin_projects, value=first_project),
+                gr.update(choices=admin_projects, value=first_project),
+                gr.update(choices=admin_projects, value=first_project),
+                gr.update(choices=admin_projects, value=first_project),
+                gr.update(choices=["all", *admin_projects], value="all"),
+                [],
+            )
+
+        def _render_report_login_state(session):
+            return (
+                gr.update(
+                    choices=(session.authorized_projects if session is not None else []),
+                    value=(session.authorized_projects[0] if (session is not None and session.authorized_projects) else None),
+                    interactive=bool(session is not None and session.authorized_projects),
+                ),
+                "",
+                coverage_bars_html([]),
+                paged_activity_html("Validator activity", ["Validator", "Validations"], []),
+                paged_activity_html("Recent activity", ["Timestamp", "Validator", "Status", "Detection"], []),
+                1,
+                1,
+                "Login and choose a project." if session is None else "Choose a project to load project metrics.",
+            )
+
+        if _is_running_in_hf_space():
+            oauth_load_event = wrapper.load(
+                fn=_hydrate_hf_oauth_session,
+                inputs=None,
+                outputs=[session_state, error_message],
+            )
+            oauth_load_event.then(
+                fn=create_admin_display,
+                inputs=[session_state],
+                outputs=[admin_info, admin_controls],
+            ).then(
+                fn=_render_admin_overview,
+                inputs=[session_state],
+                outputs=[admin_overview],
+            ).then(
+                fn=_render_admin_scope_info,
+                inputs=[session_state, admin_project],
+                outputs=[admin_scope_info],
+            ).then(
+                fn=_render_admin_section_visibility,
+                inputs=[session_state],
+                outputs=[admin_token_controls, admin_delete_controls, admin_users_controls, admin_pending_controls],
+            ).then(
+                fn=lambda session: _project_rows() if session is not None else [],
+                inputs=[session_state],
+                outputs=[projects_table],
+            ).then(
+                fn=_render_admin_project_choices,
+                inputs=[session_state],
+                outputs=[
+                    admin_project,
+                    token_project_select,
+                    pending_invite_project,
+                    delete_project_slug,
+                    pending_invites_filter_project,
+                    pending_invites_table,
+                ],
+            ).then(
+                fn=update_project_selector,
+                inputs=[session_state],
+                outputs=[
+                    project_selector,
+                    project_overview,
+                    project_info_display,
+                    project_context_display,
+                    selected_project_state,
+                    selected_dataset_repo_state,
+                ],
+            ).then(
+                fn=_build_invites_ui,
+                inputs=[session_state],
+                outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
+            ).then(
+                fn=lambda session: gr.update(value=(session.username if session is not None else "")),
+                inputs=[session_state],
+                outputs=[validator_name],
+            ).then(
+                fn=lambda repo_id: gr.update(value=repo_id),
+                inputs=[selected_dataset_repo_state],
+                outputs=[dataset_repo],
+            ).then(
+                fn=refresh_for_selected_project,
+                inputs=[selected_project_state, session_state],
+                outputs=[
+                    species_filter,
+                    table,
+                    status,
+                    page_state,
+                    audio_player,
+                    spectrogram_image,
+                    spectrogram_title,
+                    validation_summary_cards,
+                    corrected_species_input,
+                    project_species_state,
+                ],
+            ).then(
+                fn=_render_report_login_state,
+                inputs=[session_state],
+                outputs=[
+                    report_project_selector,
+                    report_kpis,
+                    report_coverage_bars,
+                    report_validator_table,
+                    report_recent_table,
+                    report_validator_page,
+                    report_recent_page,
+                    report_status,
+                ],
+            )
 
     return wrapper

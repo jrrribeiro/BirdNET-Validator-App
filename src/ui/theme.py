@@ -130,6 +130,35 @@ main.app,
   font-weight: 650 !important;
 }
 
+.bn-oauth-login-button button,
+button.bn-oauth-login-button {
+  min-height: 48px !important;
+  border: 1px solid #f97316 !important;
+  border-radius: 8px !important;
+  background: #f97316 !important;
+  color: #ffffff !important;
+  font-weight: 780 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.bn-oauth-login-button button:hover,
+button.bn-oauth-login-button:hover {
+  border-color: #ea580c !important;
+  background: #ea580c !important;
+  color: #ffffff !important;
+}
+
+.bn-oauth-login-button button *,
+button.bn-oauth-login-button * {
+  white-space: nowrap !important;
+}
+
 .bn-panel {
   background: var(--bn-panel);
   border: 1px solid var(--bn-border);
