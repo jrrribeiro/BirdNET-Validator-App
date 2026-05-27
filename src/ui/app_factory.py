@@ -26,6 +26,7 @@ from src.repositories.append_only_validation_repository import AppendOnlyValidat
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
 from src.repositories.hf_bucket_validation_repository import (
     HF_BUCKET_VALIDATION_BACKEND,
+    HfBucketHealthInspector,
     HfBucketPermissionProbe,
     HfBucketValidationError,
     HfBucketValidationInitializer,
@@ -3088,8 +3089,10 @@ def create_app() -> gr.Blocks:
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
     hf_bucket_initializer = HfBucketValidationInitializer()
+    hf_bucket_health_inspector = HfBucketHealthInspector()
     hf_bucket_permission_probe = HfBucketPermissionProbe()
     hf_state_connector = HfProjectStateStoreConnector()
+    hf_state_health_loader = HfProjectStateStoreLoader()
     hf_state_permission_probe = HfProjectStatePermissionProbe()
     hf_state_sync = HfProjectStateStoreSync()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
@@ -4450,6 +4453,11 @@ def create_app() -> gr.Blocks:
                     elem_classes=["bn-panel-soft"],
                 ):
                     gr.Markdown("### Private storage backend health")
+                    trusted_storage_health = gr.HTML(
+                        value=settings_health_html(
+                            [("Project integrity", "not checked", "info")]
+                        )
+                    )
                     trusted_storage_status = gr.Markdown(
                         "Administrators can verify that this Space can read and write the project's private "
                         "validation storage. Validators do not require direct Hub storage access."
@@ -4712,28 +4720,73 @@ def create_app() -> gr.Blocks:
                     )
 
                 def test_trusted_storage_authorization(selected: str, session):
+                    def failure(message: str):
+                        return settings_health_html([("Project integrity", "check failed", "warn")]), message
+
                     if session is None:
-                        return "Login before testing private validation storage."
+                        return failure("Login before testing private validation storage.")
                     project_slug = (selected or "").strip()
                     project = admin_manager.get_project(project_slug) if project_slug else None
                     if project is None or project_slug not in session.authorized_projects:
-                        return "Select a project that is authorized for the signed-in account."
+                        return failure("Select a project that is authorized for the signed-in account.")
                     if not _is_admin_for_project(session, project_slug):
-                        return (
+                        return failure(
                             "Only a project administrator can run this storage health check. "
                             "Validators receive data through the app after assignment."
                         )
                     if (project.validation_backend or "").strip() != HF_BUCKET_VALIDATION_BACKEND:
-                        return "This project does not use private Hugging Face Bucket validation storage."
+                        return failure("This project does not use private Hugging Face Bucket validation storage.")
                     try:
+                        storage_token = _storage_hf_token()
+                        _validate_hf_admin_storage_source_dataset(project=project, token=storage_token)
+                        state_repo_id = (project.state_repo_id or "").strip()
+                        if not state_repo_id:
+                            raise HfProjectStateStoreError("This project does not declare a private `_state` repository.")
+                        loaded_state = hf_state_health_loader.load_project_state(
+                            state_repo_id=state_repo_id,
+                            token=storage_token,
+                        )
+                        if loaded_state is None:
+                            raise HfProjectStateStoreError("The private `_state` manifest is archived.")
+                        recovered_project = loaded_state.project
+                        if (
+                            recovered_project.project_slug != project.project_slug
+                            or recovered_project.dataset_repo_id != project.dataset_repo_id
+                            or recovered_project.validation_bucket_id != project.validation_bucket_id
+                        ):
+                            raise HfProjectStateStoreError(
+                                "The private `_state` manifest does not match the active project's dataset or Bucket."
+                            )
+                        if loaded_state.user_access.get(session.username, {}).get(project_slug) != Role.admin:
+                            raise HfProjectStateStoreError(
+                                "The current administrator is not persisted as ADMIN in the private `_state` ACL."
+                            )
+                        bucket_health = hf_bucket_health_inspector.inspect(
+                            project_slug=project.project_slug,
+                            dataset_repo_id=project.dataset_repo_id,
+                            bucket_id=project.validation_bucket_id or "",
+                            token=storage_token,
+                        )
                         result = hf_bucket_permission_probe.probe(
                             bucket_id=project.validation_bucket_id or "",
                             actor_username=session.username,
-                            token=_storage_hf_token(),
+                            token=storage_token,
                         )
-                    except HfBucketValidationError as exc:
-                        return f"Private storage access test failed: {exc}"
-                    return (
+                    except (HfBucketValidationError, HfProjectStateStoreError) as exc:
+                        return failure(f"Private storage integrity check failed: {exc}")
+                    health_html = settings_health_html(
+                        [
+                            ("Audio dataset", "private and accessible", "ok"),
+                            ("Project state", state_repo_id, "ok"),
+                            ("Validation Bucket", bucket_health.bucket_id, "ok"),
+                            ("Validated snapshot items", str(bucket_health.snapshot_item_count), "ok"),
+                            ("Active audit events", str(bucket_health.active_event_count), "info"),
+                            ("Archived audit batches", str(bucket_health.archive_file_count), "info"),
+                            ("Latest validation event", bucket_health.latest_event_at or "none yet", "info"),
+                            ("Backend write proof", "verified and removed", "ok"),
+                        ]
+                    )
+                    return health_html, (
                         f"Backend storage verified for **{result.actor_username}**. "
                         f"The Space read and wrote `{result.bucket_id}` using its protected storage credential; "
                         "the diagnostic marker was removed."
@@ -4753,7 +4806,7 @@ def create_app() -> gr.Blocks:
                 test_trusted_storage_btn.click(
                     fn=test_trusted_storage_authorization,
                     inputs=[project_selector, session_state],
-                    outputs=[trusted_storage_status],
+                    outputs=[trusted_storage_health, trusted_storage_status],
                 )
 
                 create_project_event.then(

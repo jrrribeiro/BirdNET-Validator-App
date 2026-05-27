@@ -131,6 +131,17 @@ class HfBucketPermissionProbeResult:
     verified_at: str
 
 
+@dataclass(frozen=True)
+class HfBucketHealthResult:
+    bucket_id: str
+    project_slug: str
+    dataset_repo_id: str
+    snapshot_item_count: int
+    active_event_count: int
+    archive_file_count: int
+    latest_event_at: str | None
+
+
 class HfBucketValidationInitializer:
     """Create a private mutable validation store owned by the project admin."""
 
@@ -260,6 +271,101 @@ class HfBucketPermissionProbe:
             actor_username=actor,
             diagnostic_path=diagnostic_path,
             verified_at=verified_at,
+        )
+
+
+class HfBucketHealthInspector:
+    """Read and validate a project's Bucket manifest, snapshot, and audit layout."""
+
+    def __init__(self, api: HfBucketFilesApi | None = None) -> None:
+        self._api = api or HuggingFaceBucketFilesApi()
+
+    def inspect(
+        self,
+        *,
+        project_slug: str,
+        dataset_repo_id: str,
+        bucket_id: str,
+        token: str | None,
+    ) -> HfBucketHealthResult:
+        project = (project_slug or "").strip()
+        dataset = (dataset_repo_id or "").strip()
+        bucket = (bucket_id or "").strip()
+        token_value = (token or "").strip()
+        if not project or not dataset or not bucket or not token_value:
+            raise HfBucketValidationError(
+                "A project, dataset, validation bucket, and protected storage credential are required for health inspection."
+            )
+
+        try:
+            raw_manifest = self._api.read_text(
+                bucket_id=bucket,
+                path_in_bucket="metadata/project.json",
+                token=token_value,
+            )
+            raw_snapshot = self._api.read_text(
+                bucket_id=bucket,
+                path_in_bucket="snapshots/current.json",
+                token=token_value,
+            )
+        except Exception as exc:
+            raise HfBucketValidationError(f"Could not read Bucket health metadata for '{bucket}': {exc}") from exc
+        try:
+            manifest = json.loads(raw_manifest)
+            snapshot_payload = json.loads(raw_snapshot)
+        except json.JSONDecodeError as exc:
+            raise HfBucketValidationError(f"Bucket health metadata is not valid JSON for '{bucket}': {exc}") from exc
+
+        if not isinstance(manifest, dict):
+            raise HfBucketValidationError(f"Bucket manifest for '{bucket}' is not a JSON object.")
+        expected_manifest = {
+            "project_slug": project,
+            "dataset_repo_id": dataset,
+            "validation_backend": HF_BUCKET_VALIDATION_BACKEND,
+            "bucket_id": bucket,
+        }
+        mismatches = [
+            key for key, expected in expected_manifest.items()
+            if str(manifest.get(key) or "").strip() != expected
+        ]
+        if mismatches:
+            raise HfBucketValidationError(
+                f"Bucket manifest for '{bucket}' does not match the selected project fields: {', '.join(mismatches)}."
+            )
+
+        snapshot_items = _extract_items(snapshot_payload, project)
+        if snapshot_items is None:
+            raise HfBucketValidationError(
+                f"Bucket snapshot for '{bucket}' is missing, malformed, or belongs to another project."
+            )
+
+        repository = HfBucketValidationRepository(bucket_id=bucket, token=token_value, api=self._api)
+        active_paths = repository._active_event_paths()
+        archive_paths = repository._archive_paths()
+        current_items = repository.load_current_snapshot(project)
+        latest_events = repository.list_recent_events(project, limit=1)
+        latest_event_at = (
+            str(latest_events[0].get("timestamp") or "").strip() or None
+            if latest_events
+            else None
+        )
+        if latest_events:
+            latest_event = latest_events[0]
+            latest_key = str(latest_event.get("detection_key") or "").strip()
+            latest_version = int(latest_event.get("new_version") or 0)
+            current_version = int(current_items.get(latest_key, {}).get("version") or 0)
+            if latest_key and latest_version > current_version:
+                raise HfBucketValidationError(
+                    f"Bucket snapshot for '{bucket}' does not contain its latest audit event."
+                )
+        return HfBucketHealthResult(
+            bucket_id=bucket,
+            project_slug=project,
+            dataset_repo_id=dataset,
+            snapshot_item_count=len(current_items),
+            active_event_count=len(active_paths),
+            archive_file_count=len(archive_paths),
+            latest_event_at=latest_event_at,
         )
 
 

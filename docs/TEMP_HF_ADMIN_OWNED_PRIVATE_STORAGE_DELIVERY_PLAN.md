@@ -54,6 +54,7 @@ For public distribution to independent administrators, this model is not suffici
 9. This mode takes precedence over configured Supabase persistence so durable project state does not remain dependent on the app operator's Supabase database.
 10. Empty `*_state` repositories left by interrupted setup attempts are ignored during discovery until they contain a `project.json` manifest.
 11. The administrator can run a backend storage health check; validators do not test or receive direct Bucket permissions.
+12. The backend storage health check now verifies the private audio dataset, recovered `_state` manifest and admin ACL, Bucket manifest, current snapshot, latest audit-event coverage, and a removable write proof before reporting the project as healthy.
 
 ## Space Configuration
 

@@ -952,3 +952,27 @@ Still required before production enablement:
 2. Confirm multi-user Bucket authorization in a real Space.
 3. Add assisted migration/import verification for legacy filesystem or Supabase project state.
 
+### 2026-05-27: Administrator project-storage integrity diagnostics
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Expanded the private storage health action into a project-level integrity check.
+   - Confirms the source audio dataset remains private and accessible through the protected backend credential.
+   - Reloads the private `_state` manifest and confirms it still references the active dataset and validation Bucket.
+   - Confirms the acting administrator remains persisted as `ADMIN` in the recovered ACL.
+
+2. Added Bucket structural inspection without scanning the source audio collection.
+   - Checks the Bucket manifest and current snapshot identities.
+   - Reports current validated snapshot items, active audit event count, archived audit-batch count, and latest event timestamp.
+   - Rejects a snapshot that does not represent the newest inspected audit event.
+
+3. Preserved the existing write proof.
+   - The final health status is successful only after a temporary backend write can be read and removed from the private Bucket.
+   - Ordinary validation, export, and authorization flows are unchanged.
+
+Remaining operational validation:
+
+1. Run the new health check for a real private project in the deployed Space.
+2. Restart or rebuild the Space and run the same check again to confirm recovery from `_state`.
+3. Perform simultaneous rapid validations with two authorized identities and confirm final exports and health remain coherent.
+
