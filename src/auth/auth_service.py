@@ -5,8 +5,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 import uuid
 
-from huggingface_hub import HfApi
-
 from src.domain.models import Role, User
 
 
@@ -258,29 +256,6 @@ class AuthService:
 
         self._sessions[session_id] = session
         return session
-
-    def login_with_hf_token(self, token: str) -> tuple[Optional[Session], str]:
-        """Authenticate using Hugging Face personal token and resolve username via whoami."""
-        token_value = (token or "").strip()
-        if not token_value:
-            return None, "Please provide a Hugging Face token"
-
-        try:
-            whoami = HfApi().whoami(token=token_value)
-        except Exception:
-            return None, "Invalid Hugging Face token or network error"
-
-        username = str(whoami.get("name") or "").strip()
-        if not username:
-            return None, "Unable to resolve Hugging Face username from token"
-
-        email_value = str(whoami.get("email") or "").strip() or None
-        return self.login_with_verified_hf_identity(
-            username=username,
-            token=token_value,
-            email=email_value,
-            authentication_method="hf_token",
-        )
 
     def login_with_verified_hf_identity(
         self,

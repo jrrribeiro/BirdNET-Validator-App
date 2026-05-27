@@ -10,25 +10,18 @@ from src.auth.auth_service import AuthService
 def perform_login(
     auth_service: AuthService,
     username: str,
-    hf_token: str,
     *,
     allow_username_login: bool = True,
 ) -> Tuple[str, str]:
-    """Attempt login and return session ID plus a user-facing status."""
-    if hf_token and hf_token.strip():
-        session, message = auth_service.login_with_hf_token(hf_token)
-        if session is None:
-            return "", message
-        return session.session_id, message
-
+    """Attempt a development-only username login and return its session status."""
     if not allow_username_login:
         return (
             "",
-            "Username-only login is disabled for this deployment. Sign in with a Hugging Face token so your identity can be verified.",
+            "Username-only login is disabled for this deployment. Sign in with Hugging Face OAuth.",
         )
 
     if not username or not username.strip():
-        return "", "Please enter a username or provide a Hugging Face token"
+        return "", "Please enter a username"
 
     username = username.strip()
     session = auth_service.login(username)
@@ -85,14 +78,14 @@ def create_login_page(
     enable_oauth_login: bool = False,
     auth_mode_label: str = "",
     admin_storage_mode: bool = False,
-) -> Tuple[gr.Textbox, gr.Textbox, gr.Button, gr.Markdown]:
-    """Create a Gradio login page with username input and session tracking.
+) -> Tuple[gr.Textbox, gr.Markdown]:
+    """Create an OAuth production login with an optional local username fallback.
 
     Args:
         auth_service: AuthService instance for login validation
 
     Returns:
-        Tuple of (username_input, session_output, login_button, error_message)
+        Tuple of (session_output, error_message)
     """
     with gr.Row():
         with gr.Column(scale=1):
@@ -109,81 +102,47 @@ def create_login_page(
             if auth_mode_label:
                 gr.Markdown(auth_mode_label)
 
-            if admin_storage_mode:
-                gr.Markdown(
-                    "### Identity verification\n"
-                    "Use a token from your own account only to prove your identity. "
-                    "You do not need direct Hugging Face access to the project's private dataset or validation storage."
-                )
-            else:
-                gr.Markdown(
-                    "Manual token access is available for development or legacy access, "
-                    "but cannot be used for the private collaborative state authorization test."
-                )
-            username_input = gr.Textbox(
-                label="Username",
-                placeholder="Enter your username" if allow_username_login else "Username login disabled in this deployment",
-                lines=1,
-                interactive=allow_username_login,
-                visible=allow_username_login,
-            )
-            hf_token_input = gr.Textbox(
-                label=(
-                    "Personal Hugging Face Token (identity verification)"
-                    if admin_storage_mode
-                    else "Hugging Face Token (legacy/development only)"
-                ),
-                placeholder="hf_xxx...",
-                type="password",
-                lines=1,
-            )
-
             error_message = gr.Markdown()
-
-            login_button = gr.Button(
-                "Enter with Hugging Face token" if admin_storage_mode else "Login",
-                variant="primary",
-                scale=1,
+            session_output = gr.Textbox(
+                label="Session ID",
+                interactive=False,
+                visible=False,
             )
 
             oauth_continue_button = None
             if enable_oauth_login:
                 gr.Markdown(
                     (
-                        "### Sign in with OAuth\n"
-                        "The hosted Space can verify your Hugging Face identity without requiring a personal token. "
+                        "The hosted Space verifies your Hugging Face identity securely. "
                         "Project access remains controlled by assignments and invitations inside this app."
                         if admin_storage_mode
-                        else (
-                            "**OAuth access required for private collaborative state.** "
-                            "Complete both steps below; signing into Hugging Face alone does not open an app session."
-                        )
+                        else "Sign in securely with your Hugging Face identity to enter the workspace."
                     )
                 )
                 gr.LoginButton("1. Sign in with Hugging Face", logout_value="Sign out ({})")
                 oauth_continue_button = gr.Button(
-                    "2. Enter workspace with OAuth authorization",
+                    "2. Enter workspace",
                     variant="primary",
                 )
-
-            session_output = gr.Textbox(
-                label="Session ID",
-                interactive=False,
-                visible=False,
-            )
+            elif allow_username_login:
+                gr.Markdown("Local development login")
+                username_input = gr.Textbox(
+                    label="Username",
+                    placeholder="Enter your username",
+                    lines=1,
+                )
+                login_button = gr.Button("Login", variant="primary", scale=1)
+                login_button.click(
+                    fn=lambda username: perform_login(
+                        auth_service,
+                        username,
+                        allow_username_login=True,
+                    ),
+                    inputs=[username_input],
+                    outputs=[session_output, error_message],
+                )
         with gr.Column(scale=1):
             gr.Markdown("")
-
-    login_button.click(
-        fn=lambda username, hf_token: perform_login(
-            auth_service,
-            username,
-            hf_token,
-            allow_username_login=allow_username_login,
-        ),
-        inputs=[username_input, hf_token_input],
-        outputs=[session_output, error_message],
-    )
 
     def handle_oauth_login(
         profile: gr.OAuthProfile | None,
@@ -198,4 +157,4 @@ def create_login_page(
             outputs=[session_output, error_message],
         )
 
-    return username_input, session_output, login_button, error_message
+    return session_output, error_message

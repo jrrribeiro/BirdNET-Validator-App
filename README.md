@@ -197,7 +197,7 @@ Optional runtime settings:
 - `BIRDNET_INVITE_TTL_HOURS` (default `72`)
 - `BIRDNET_PAGE_SIZE` (default `25`)
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
-- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (experimental `_state` diagnostics and recovery only while a new collaborative backend is selected)
+- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (legacy migration support for existing `_state` projects)
 - `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED=true` (legacy experimental access for existing Bucket projects)
 - `BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true` (private HF-only delivery mode for a small trusted team)
 - `BIRDNET_HF_PROJECT_STATE_REPOS=jrrribeiro/audio-dataset_state` (optional manual recovery list; administrator-owned mode discovers companion state repos automatically)
@@ -216,7 +216,7 @@ BIRDNET_AUTH_MODE=hf_token
 BIRDNET_HF_STORAGE_TOKEN=<administrator token stored only as a Space secret>
 ```
 
-`HF_TOKEN` remains a compatibility fallback for the storage credential, but `BIRDNET_HF_STORAGE_TOKEN` is preferred because its purpose is explicit. Never enter this administrator token in an ordinary user login form. On restart the app uses the protected credential to find the administrator's companion `*_state` repositories automatically; `BIRDNET_HF_PROJECT_STATE_REPOS` remains available as an explicit fallback or migration list. An administrator may run **Projects > Private storage backend health** to verify the private dataset, recovered `_state` manifest and ACL, Bucket snapshot/audit status, and a temporary backend-write marker that is immediately removed.
+`HF_TOKEN` remains a compatibility fallback for the server-side storage credential, but `BIRDNET_HF_STORAGE_TOKEN` is preferred because its purpose is explicit. Users sign in through Hugging Face OAuth; no personal-token login is exposed in the production interface. On restart the app uses the protected credential to find the administrator's companion `*_state` repositories automatically; `BIRDNET_HF_PROJECT_STATE_REPOS` remains available as an explicit fallback or migration list.
 
 Projects previously created with a private `_state` repository in this mode can be recovered from the **Admin** tab using **Connect Existing State**. Sign in as an administrator recorded in its `acl.json`, then provide the `_state` repo id (for example, `jrrribeiro/audio_dataset_state`). Recovery accepts only a manifest with private Bucket validation storage and a private personal-namespace source dataset accessible to the configured storage account. The app loads the saved manifest, ACL, and pending invites.
 
@@ -227,8 +227,6 @@ Legacy Supabase state backend, available while migrating existing projects:
 - `SUPABASE_SERVICE_ROLE_KEY` (Secret)
 
 When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`. For eventual public distribution, the planned backend is administrator-owned Supabase provisioned through OAuth with an Edge Function validating Hugging Face identity; see `docs/TEMP_BYO_SUPABASE_EDGE_FUNCTION_HF_IDENTITY_PLAN.md`.
-
-The **Private state OAuth diagnostic** action in **Projects** applies only to experimental direct `_state` writes. In administrator-owned storage mode, frequent validation state uses the Bucket rather than dataset repository commits.
 
 Optional invite email settings:
 

@@ -8,8 +8,6 @@ from src.services.hf_project_state_store import (
     HfProjectStateStoreError,
     HfProjectStateStoreConnector,
     HfProjectStateStoreInitializer,
-    HfProjectStatePermissionProbe,
-    HfProjectStateStoreLoadedProject,
     HfProjectStateStoreLoader,
     HfProjectStateStoreSync,
     default_state_repo_id,
@@ -48,12 +46,6 @@ class FakeHfProjectStateReadApi:
         if path not in self.files:
             raise FileNotFoundError(path)
         return self.files[path]
-
-
-class PullRequestOnlyHfProjectStateApi(FakeHfProjectStateApi):
-    def create_commit(self, **kwargs):  # noqa: ANN001
-        _ = kwargs
-        raise RuntimeError("403 Forbidden: pass create_pr=1 as a query parameter to create a Pull Request.")
 
 
 def _project() -> Project:
@@ -262,64 +254,6 @@ def test_sync_project_state_requires_token() -> None:
             pending_invites={},
             token="",
         )
-
-
-def test_permission_probe_writes_isolated_diagnostic_with_acting_token_only() -> None:
-    fake_api = FakeHfProjectStateApi()
-    project = _project()
-    project.state_repo_id = "jrrribeiro/upload_test2_state"
-
-    class FakeLoader:
-        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
-            assert state_repo_id == project.state_repo_id
-            assert token == "hf_validator"
-            return HfProjectStateStoreLoadedProject(
-                state_repo_id=state_repo_id,
-                project=project,
-                user_access={},
-                pending_invites={},
-            )
-
-    probe = HfProjectStatePermissionProbe(loader=FakeLoader(), api=fake_api)  # type: ignore[arg-type]
-    result = probe.probe(project=project, actor_username="validator-a", token="hf_validator")
-
-    assert result.actor_username == "validator-a"
-    assert result.diagnostic_path.startswith("diagnostics/oauth-permission-proof/")
-    commit = fake_api.commits[0]
-    assert commit["token"] == "hf_validator"
-    assert commit["operations"][0].path_in_repo == result.diagnostic_path
-    serialized = commit["operations"][0].path_or_fileobj.decode("utf-8")
-    assert "validator-a" in serialized
-    assert "hf_validator" not in serialized
-
-
-def test_permission_probe_requires_personal_token() -> None:
-    project = _project()
-    project.state_repo_id = "jrrribeiro/upload_test2_state"
-    probe = HfProjectStatePermissionProbe(api=FakeHfProjectStateApi())
-
-    with pytest.raises(HfProjectStateStoreError, match="OAuth"):
-        probe.probe(project=project, actor_username="validator-a", token="")
-
-
-def test_permission_probe_explains_pull_request_only_oauth_access() -> None:
-    project = _project()
-    project.state_repo_id = "jrrribeiro/upload_test2_state"
-
-    class FakeLoader:
-        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
-            _ = token
-            return HfProjectStateStoreLoadedProject(
-                state_repo_id=state_repo_id,
-                project=project,
-                user_access={},
-                pending_invites={},
-            )
-
-    probe = HfProjectStatePermissionProbe(loader=FakeLoader(), api=PullRequestOnlyHfProjectStateApi())  # type: ignore[arg-type]
-
-    with pytest.raises(HfProjectStateStoreError, match="Pull Request contributions"):
-        probe.probe(project=project, actor_username="jrrribeiro", token="oauth_token")
 
 
 def test_load_project_state_recovers_project_acl_and_invites() -> None:

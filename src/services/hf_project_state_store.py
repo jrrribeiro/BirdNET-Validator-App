@@ -105,14 +105,6 @@ class HfProjectStateStoreSyncResult:
 
 
 @dataclass(frozen=True)
-class HfProjectStatePermissionProbeResult:
-    state_repo_id: str
-    actor_username: str
-    diagnostic_path: str
-    verified_at: str
-
-
-@dataclass(frozen=True)
 class HfProjectStateStoreLoadedProject:
     state_repo_id: str
     project: Project
@@ -607,86 +599,6 @@ class HfProjectStateStoreConnector:
         if loaded.project.visibility == "private" and owner and owner != actor:
             raise HfProjectStateStoreError("Only the owner can connect a private project state repository.")
         return loaded
-
-
-class HfProjectStatePermissionProbe:
-    """Prove that the acting OAuth identity can read and write a private state repo."""
-
-    def __init__(
-        self,
-        *,
-        loader: HfProjectStateStoreLoader | None = None,
-        api: HfProjectStateApi | None = None,
-    ) -> None:
-        self._loader = loader or HfProjectStateStoreLoader()
-        self._api = api or HfApi()
-
-    def probe(
-        self,
-        *,
-        project: Project,
-        actor_username: str,
-        token: str | None,
-    ) -> HfProjectStatePermissionProbeResult:
-        actor = (actor_username or "").strip()
-        token_value = (token or "").strip()
-        state_repo_id = (project.state_repo_id or "").strip()
-        if not actor or not token_value:
-            raise HfProjectStateStoreError(
-                "Sign in with your Hugging Face OAuth account before testing private state authorization."
-            )
-        if not state_repo_id:
-            raise HfProjectStateStoreError("This project has no private `_state` repository to test.")
-
-        try:
-            loaded = self._loader.load_project_state(state_repo_id=state_repo_id, token=token_value)
-        except Exception as exc:
-            raise HfProjectStateStoreError(
-                f"State authorization read failed for {state_repo_id} using the signed-in account: {exc}"
-            ) from exc
-        if loaded is None or loaded.project.project_slug != project.project_slug:
-            raise HfProjectStateStoreError("The private state manifest does not match the selected project.")
-
-        verified_at = datetime.now(UTC).isoformat()
-        diagnostic_id = str(uuid4())
-        diagnostic_path = f"diagnostics/oauth-permission-proof/{diagnostic_id}.json"
-        payload = {
-            "schema_version": HF_PROJECT_STATE_SCHEMA_VERSION,
-            "diagnostic_type": "oauth_permission_proof",
-            "project_slug": project.project_slug,
-            "state_repo_id": state_repo_id,
-            "actor_username": actor,
-            "verified_at": verified_at,
-            "diagnostic_id": diagnostic_id,
-        }
-        try:
-            self._api.create_commit(
-                repo_id=state_repo_id,
-                repo_type="dataset",
-                token=token_value,
-                commit_message=f"Verify OAuth state access for {actor}",
-                operations=[
-                    CommitOperationAdd(path_in_repo=diagnostic_path, path_or_fileobj=_json_bytes(payload)),
-                ],
-            )
-        except Exception as exc:
-            message = str(exc).lower()
-            if "create_pr=1" in message or "create a pull request" in message:
-                raise HfProjectStateStoreError(
-                    "OAuth access to this private `_state` repository was confirmed only for Pull Request "
-                    "contributions, not direct durable writes to `main`. This permission model is not sufficient "
-                    "for high-frequency collaborative validation state without an administrator merge step."
-                ) from exc
-            raise HfProjectStateStoreError(
-                f"State authorization write failed for {state_repo_id} using the signed-in account: {exc}"
-            ) from exc
-
-        return HfProjectStatePermissionProbeResult(
-            state_repo_id=state_repo_id,
-            actor_username=actor,
-            diagnostic_path=diagnostic_path,
-            verified_at=verified_at,
-        )
 
 
 class HfProjectStateStoreSync:

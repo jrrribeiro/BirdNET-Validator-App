@@ -970,9 +970,27 @@ Implemented on branch `feature/project-state-security-privacy-review`:
    - The final health status is successful only after a temporary backend write can be read and removed from the private Bucket.
    - Ordinary validation, export, and authorization flows are unchanged.
 
-Remaining operational validation:
+Acceptance performed:
 
-1. Run the new health check for a real private project in the deployed Space.
-2. Restart or rebuild the Space and run the same check again to confirm recovery from `_state`.
-3. Perform simultaneous rapid validations with two authorized identities and confirm final exports and health remain coherent.
+1. Ran the health check for a real private project in the deployed Space.
+2. Restarted the Space and confirmed recovery from `_state` and preserved validations.
+3. Confirmed simultaneous authorized-user operation before removing the diagnostic UI from the product experience.
+
+### 2026-05-27: Post-acceptance removal of diagnostic and token-login UI
+
+Implemented after successful private-storage and restart testing:
+
+1. Removed manual Hugging Face token login from the product interface.
+   - Hosted deployments now present Hugging Face OAuth as the only end-user authentication path.
+   - Local/demo username access remains available only for development.
+   - The protected backend storage secret remains unchanged and is never exposed as a login method.
+
+2. Removed acceptance-only diagnostics from the Projects experience.
+   - Removed the private Bucket backend health button and its temporary marker flow.
+   - Removed the experimental direct `_state` OAuth write diagnostic.
+   - Kept the tested storage architecture, recovery, ACL enforcement, event compaction, and exports unchanged.
+
+3. Reduced dormant code associated with those workflows.
+   - Removed the user-token authentication method.
+   - Removed diagnostic service classes and their narrowly scoped tests after acceptance was completed.
 

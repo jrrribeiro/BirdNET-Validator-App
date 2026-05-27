@@ -198,23 +198,6 @@ class TestAuthService:
 
         assert auth_service.get_session(session.session_id) is None
 
-    def test_login_with_hf_token_stores_user_token_and_email(self, monkeypatch):
-        class FakeApi:
-            def whoami(self, token: str):
-                assert token == "hf_test_token"
-                return {"name": "hf_user", "email": "hf_user@example.org"}
-
-        monkeypatch.setattr("src.auth.auth_service.HfApi", lambda: FakeApi())
-
-        service = AuthService()
-        session, message = service.login_with_hf_token("hf_test_token")
-
-        assert session is not None
-        assert "Welcome" in message
-        assert session.authentication_method == "hf_token"
-        assert service.get_hf_token_for_user("hf_user") == "hf_test_token"
-        assert service.get_known_email_for_user("hf_user") == "hf_user@example.org"
-
     def test_login_with_verified_hf_identity_uses_oauth_identity_without_whoami(self):
         service = AuthService()
 

@@ -53,8 +53,7 @@ For public distribution to independent administrators, this model is not suffici
 8. At startup the app automatically discovers the administrator's private companion `*_state` datasets for rebuild recovery; a manual repo list remains an optional fallback.
 9. This mode takes precedence over configured Supabase persistence so durable project state does not remain dependent on the app operator's Supabase database.
 10. Empty `*_state` repositories left by interrupted setup attempts are ignored during discovery until they contain a `project.json` manifest.
-11. The administrator can run a backend storage health check; validators do not test or receive direct Bucket permissions.
-12. The backend storage health check now verifies the private audio dataset, recovered `_state` manifest and admin ACL, Bucket manifest, current snapshot, latest audit-event coverage, and a removable write proof before reporting the project as healthy.
+11. The storage integrity diagnostic was used during acceptance testing and removed from the end-user interface after successful validation; validators do not receive direct Bucket permissions.
 
 ## Space Configuration
 
@@ -71,7 +70,7 @@ Configure as a Secret:
 BIRDNET_HF_STORAGE_TOKEN=<administrator credential with required private dataset/repo/Bucket read-write access>
 ```
 
-Use a scoped credential limited to the administrator's required resources when Hugging Face token controls permit it. Do not share it with validators or enter it in the app login input.
+Use a scoped credential limited to the administrator's required resources when Hugging Face token controls permit it. Do not share it with validators. End users authenticate through OAuth only.
 
 ## Acceptance Gate Before Real Validation
 

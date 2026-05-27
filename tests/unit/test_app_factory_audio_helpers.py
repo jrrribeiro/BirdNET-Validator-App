@@ -1571,7 +1571,7 @@ def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_p
     assert emergency_session.role.value == "admin"
 
 
-def test_auto_auth_policy_requires_hf_token_in_space_without_demo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_auto_auth_policy_requires_oauth_in_space_without_demo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     monkeypatch.setenv("SPACE_ID", "owner/space")
     runtime_config = RuntimeConfig(
         detection_seed_path=None,
@@ -1591,8 +1591,8 @@ def test_auto_auth_policy_requires_hf_token_in_space_without_demo(monkeypatch: p
     allow_username, label, description = _resolve_username_login_policy(runtime_config)
 
     assert allow_username is False
-    assert "HF token" in label
-    assert "disabled" in description
+    assert "OAuth" in label
+    assert "OAuth" in description
 
 
 def test_auto_auth_policy_allows_username_for_demo(tmp_path: Path) -> None:
