@@ -45,7 +45,7 @@ from src.config.runtime_config import RuntimeConfig
 from src.domain.models import Detection, Project, Role
 from src.repositories.hf_bucket_validation_repository import HfBucketValidationError, HfBucketValidationInitResult
 from src.repositories.state_safety import StateSafetyError
-from src.services.hf_project_state_store import HfProjectStateStoreLoadedProject
+from src.services.hf_project_state_store import HfProjectStateStoreError, HfProjectStateStoreLoadedProject
 from src.ui.admin_panel import AdminPanelManager
 
 
@@ -1481,6 +1481,46 @@ def test_bootstrap_auth_and_projects_reports_hf_project_state_load_errors(tmp_pa
     warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
 
     assert "no HF token" in warning
+
+
+def test_bootstrap_admin_storage_ignores_discovered_state_repo_without_manifest(tmp_path: Path) -> None:
+    class MissingManifestLoader:
+        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
+            _ = (state_repo_id, token)
+            raise HfProjectStateStoreError(
+                "Could not read project.json from jrrribeiro/upload_test1_state: "
+                "404 Client Error. Entry Not Found"
+            )
+
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        hf_admin_storage_mode_enabled=True,
+        hf_project_state_repos=("jrrribeiro/upload_test1_state",),
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    warning = _bootstrap_auth_and_projects(
+        auth_service,
+        admin_manager,
+        runtime_config,
+        hf_project_state_token="hf_storage",
+        hf_project_state_loader=MissingManifestLoader(),  # type: ignore[arg-type]
+    )
+
+    assert "upload_test1_state" not in warning
+    assert "project.json" not in warning
 
 
 def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_path: Path) -> None:

@@ -52,7 +52,8 @@ For public distribution to independent administrators, this model is not suffici
 7. Dataset metadata and audio fetches route through the backend credential only after server-side authorization of the session and project role.
 8. At startup the app automatically discovers the administrator's private companion `*_state` datasets for rebuild recovery; a manual repo list remains an optional fallback.
 9. This mode takes precedence over configured Supabase persistence so durable project state does not remain dependent on the app operator's Supabase database.
-10. The administrator can run a backend storage health check; validators do not test or receive direct Bucket permissions.
+10. Empty `*_state` repositories left by interrupted setup attempts are ignored during discovery until they contain a `project.json` manifest.
+11. The administrator can run a backend storage health check; validators do not test or receive direct Bucket permissions.
 
 ## Space Configuration
 

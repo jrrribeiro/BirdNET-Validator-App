@@ -1367,6 +1367,7 @@ def _load_hf_project_state_repos(
     state_repo_ids: tuple[str, ...],
     token: str | None,
     loader: HfProjectStateStoreLoader | None = None,
+    skip_incomplete_repos: bool = False,
 ) -> tuple[list[HfProjectStateStoreLoadedProject], list[str]]:
     repo_ids = tuple(repo.strip() for repo in (state_repo_ids or ()) if repo and repo.strip())
     if not repo_ids:
@@ -1384,6 +1385,13 @@ def _load_hf_project_state_repos(
             if state is not None:
                 loaded.append(state)
         except Exception as exc:
+            message = str(exc).lower()
+            is_missing_manifest = (
+                "could not read project.json" in message
+                and any(marker in message for marker in ("entry not found", "404", "not found"))
+            )
+            if skip_incomplete_repos and is_missing_manifest:
+                continue
             errors.append(f"{repo_id}: {exc}")
     return loaded, errors
 
@@ -1512,6 +1520,7 @@ def _bootstrap_auth_and_projects(
         state_repo_ids=state_repo_ids,
         token=hf_project_state_token,
         loader=hf_project_state_loader,
+        skip_incomplete_repos=runtime_config.hf_admin_storage_mode_enabled,
     )
     if hf_loaded_state:
         projects, user_access, pending_invites = _overlay_hf_project_state(
