@@ -30,6 +30,7 @@ from src.ui.app_factory import (
     _build_detection_repository,
     _get_project_detection_count,
     _build_queue_badge,
+    _build_validation_summary_cards_for_species,
     _load_projects_from_file,
     _load_user_access_from_file,
     _bootstrap_auth_and_projects,
@@ -243,6 +244,52 @@ class FakeQueueService:
     def get_page(self, **kwargs: object) -> "FakeQueueService._Page":
         self.last_kwargs = kwargs
         return FakeQueueService._Page()
+
+
+def test_build_validation_summary_cards_for_species_uses_species_total_not_page_rows() -> None:
+    class QueueWithListAll(FakeQueueService):
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            self.last_kwargs = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="dkey_01",
+                    audio_id="audio_01",
+                    scientific_name="sp",
+                    confidence=0.9,
+                    start_time=0,
+                    end_time=1,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_02",
+                    audio_id="audio_02",
+                    scientific_name="sp",
+                    confidence=0.8,
+                    start_time=1,
+                    end_time=2,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_03",
+                    audio_id="audio_03",
+                    scientific_name="sp",
+                    confidence=0.7,
+                    start_time=2,
+                    end_time=3,
+                ),
+            ]
+
+    html = _build_validation_summary_cards_for_species(
+        queue_service=QueueWithListAll(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="project-a",
+        scientific_name="sp",
+        min_confidence=0.0,
+        actor_username="validator",
+    )
+
+    assert "Queue total" in html
+    assert "segments in species" in html
+    assert "66.7%" in html
+    assert "1 pending in species" in html
 
 
 def test_initialize_hf_admin_storage_sets_bucket_without_persisting_shared_token() -> None:
@@ -1452,7 +1499,7 @@ def test_bootstrap_auth_and_projects_loads_configured_hf_project_state(tmp_path:
         hf_project_state_loader=FakeStateLoader(),
     )
 
-    assert "Loaded 1 project" in warning
+    assert warning == ""
     assert admin_manager.get_project("project-a") is not None
     assert auth_service.login("owner") is not None
     assert auth_service.get_user_role_for_project("validator", "project-a") == Role.validator

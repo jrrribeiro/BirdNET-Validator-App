@@ -92,17 +92,7 @@ def create_login_page(
             gr.Markdown("")
         with gr.Column(scale=6):
             gr.Markdown("# BirdNET Validation Platform")
-            gr.Markdown(
-                (
-                    "Sign in with your Hugging Face identity. Private project storage is accessed only by the app backend."
-                    if admin_storage_mode
-                    else "Sign in with your Hugging Face account to access project validation workflows."
-                )
-            )
-            if auth_mode_label:
-                gr.Markdown(auth_mode_label)
 
-            error_message = gr.Markdown()
             session_output = gr.Textbox(
                 label="Session ID",
                 interactive=False,
@@ -110,18 +100,19 @@ def create_login_page(
             )
 
             oauth_continue_button = None
+            username_input = None
+            login_button = None
             if enable_oauth_login:
                 gr.Markdown(
                     (
-                        "The hosted Space verifies your Hugging Face identity securely. "
-                        "Project access remains controlled by assignments and invitations inside this app."
+                        "Secure login with your Hugging Face account. The app verifies your identity and only grants access to projects assigned to you."
                         if admin_storage_mode
-                        else "Sign in securely with your Hugging Face identity to enter the workspace."
+                        else "Secure login with your Hugging Face account to access your validation workspace."
                     )
                 )
-                gr.LoginButton("1. Sign in with Hugging Face", logout_value="Sign out ({})")
-                oauth_continue_button = gr.Button(
-                    "2. Enter workspace",
+                oauth_continue_button = gr.LoginButton(
+                    "Sign in with Hugging Face",
+                    logout_value="Signed in as {}",
                     variant="primary",
                 )
             elif allow_username_login:
@@ -132,15 +123,7 @@ def create_login_page(
                     lines=1,
                 )
                 login_button = gr.Button("Login", variant="primary", scale=1)
-                login_button.click(
-                    fn=lambda username: perform_login(
-                        auth_service,
-                        username,
-                        allow_username_login=True,
-                    ),
-                    inputs=[username_input],
-                    outputs=[session_output, error_message],
-                )
+            error_message = gr.Markdown()
         with gr.Column(scale=1):
             gr.Markdown("")
 
@@ -154,6 +137,16 @@ def create_login_page(
         oauth_continue_button.click(
             fn=handle_oauth_login,
             inputs=None,
+            outputs=[session_output, error_message],
+        )
+    if login_button is not None and username_input is not None:
+        login_button.click(
+            fn=lambda username: perform_login(
+                auth_service,
+                username,
+                allow_username_login=True,
+            ),
+            inputs=[username_input],
             outputs=[session_output, error_message],
         )
 

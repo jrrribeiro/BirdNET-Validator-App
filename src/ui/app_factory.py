@@ -48,12 +48,13 @@ from src.services.hf_project_state_store import (
     HfProjectStateStoreLoader,
     HfProjectStateStoreSync,
 )
+from src.services.hf_project_resource_deletion import HfProjectResourceDeleter, HfProjectResourceDeletionError
 from src.services.validation_service import ValidationService
 from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
 from src.auth.auth_service import AuthService
 from src.ui.login_page import create_login_page
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html
+from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, section_header_html, selected_segment_html, settings_health_html
 from src.ui.theme import APP_CSS, app_header_html
 
 
@@ -1579,8 +1580,6 @@ def _bootstrap_auth_and_projects(
         warnings.append(f"⚠️ {discovery_message}")
     if hf_load_errors:
         warnings.append("⚠️ Some HF project-state repos could not be loaded: " + " | ".join(hf_load_errors))
-    if hf_loaded_state:
-        warnings.append(f"Loaded {len(hf_loaded_state)} project(s) from HF project-state repo(s).")
     return "\n\n".join(warnings)
 
 
@@ -2175,6 +2174,77 @@ def _build_validation_summary_cards(rows: object) -> str:
                 ("Reviewed", f"{reviewed_pct}%", f"{pending} pending on page", "warning"),
             ]
         )
+    )
+
+
+def _build_validation_summary_cards_for_species(
+    *,
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    scientific_name: str,
+    min_confidence: float,
+    actor_username: str = "",
+) -> str:
+    slug = (project_slug or "").strip()
+    species_name = (scientific_name or "").strip()
+    if not slug or not species_name:
+        return _build_validation_summary_cards([])
+
+    list_all = getattr(queue_service, "list_all_detections", None)
+    if callable(list_all):
+        detections = list_all(
+            project_slug=slug,
+            scientific_name=species_name,
+            min_confidence=min_confidence,
+            max_confidence=None,
+        )
+    else:
+        page_result = queue_service.get_page(
+            project_slug=slug,
+            page=1,
+            page_size=1,
+            scientific_name=species_name,
+            min_confidence=min_confidence,
+        )
+        total_items = int(getattr(page_result, "total_items", 0))
+        page_result = queue_service.get_page(
+            project_slug=slug,
+            page=1,
+            page_size=max(1, total_items),
+            scientific_name=species_name,
+            min_confidence=min_confidence,
+        )
+        detections = list(getattr(page_result, "items", []))
+
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=slug, actor_username=actor_username)
+    total = len(detections)
+    positive = 0
+    negative = 0
+    uncertain = 0
+    skipped = 0
+    for detection in detections:
+        status_value = str(snapshot.get(detection.detection_key, {}).get("status", "pending")).strip().lower()
+        if status_value == "positive":
+            positive += 1
+        elif status_value == "negative":
+            negative += 1
+        elif status_value == "uncertain":
+            uncertain += 1
+        elif status_value == "skip":
+            skipped += 1
+
+    reviewed = positive + negative + uncertain + skipped
+    pending = max(0, total - reviewed)
+    reviewed_pct = round((reviewed / total) * 100, 1) if total else 0.0
+
+    return compact_metric_grid(
+        [
+            ("Queue total", str(total), "segments in species", "info"),
+            ("Accepted", str(positive), "positive validations", "positive"),
+            ("Rejected", str(negative), "negative validations", "negative"),
+            ("Reviewed", f"{reviewed_pct}%", f"{pending} pending in species", "warning"),
+        ]
     )
 
 
@@ -3086,6 +3156,7 @@ def create_app() -> gr.Blocks:
     validation_service = ValidationService(validation_repository)
     hf_state_initializer = HfProjectStateStoreInitializer()
     hf_bucket_initializer = HfBucketValidationInitializer()
+    hf_resource_deleter = HfProjectResourceDeleter()
     hf_state_connector = HfProjectStateStoreConnector()
     hf_state_sync = HfProjectStateStoreSync()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
@@ -3400,7 +3471,7 @@ def create_app() -> gr.Blocks:
                         "Administrative actions are scoped by project role. Keep dataset tokens restricted to the projects that need them.",
                     )
                 )
-                admin_info = gr.Markdown(value="Login required")
+                admin_info = gr.Markdown(value="", visible=False)
                 admin_scope_info = gr.Markdown(value="")
                 admin_overview = gr.HTML(value=admin_overview_html(username=None, total_projects=0, admin_projects=0, validator_projects=0, pending_invites=0))
 
@@ -3431,16 +3502,11 @@ def create_app() -> gr.Blocks:
                     """Show admin panel or access denied message."""
                     if session is None:
                         return (
-                            "**Not authenticated** - Login first in the **Login** tab.",
+                            "",
                             gr.update(visible=False),
                         )
-                    admin_projects = _admin_projects_for_session(session)
                     return (
-                        (
-                            f"**Admin workspace** - Welcome, {session.username}. "
-                            f"You are admin in {len(admin_projects)} project(s). "
-                            "You can always create a new project and become its admin."
-                        ),
+                        "",
                         gr.update(visible=True),
                     )
 
@@ -3987,30 +4053,56 @@ def create_app() -> gr.Blocks:
                         outputs=[token_update_message, token_new_value, token_clear_checkbox, projects_table, seed_warning_state],
                     )
 
-                def delete_project(session, project_slug: str):
+                def delete_project(session, project_slug: str, confirm_slug: str, confirm_checked: bool):
                     if session is None:
-                        return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                        return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
                     if not _is_admin_for_project(session, project_slug):
-                        return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                        return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
 
-                    project_to_archive = admin_manager.get_project(project_slug)
-                    archived_project = (
-                        project_to_archive.model_copy(update={"active": False, "state_status": "archived"})
-                        if project_to_archive is not None
-                        else None
-                    )
+                    project_to_delete = admin_manager.get_project(project_slug)
+                    if project_to_delete is None:
+                        return "Select a valid project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
+                    if (project_to_delete.owner_username or "").strip().casefold() != session.username.casefold():
+                        return "Only the project creator can permanently delete this project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+
+                    if runtime_config.hf_admin_storage_mode_enabled:
+                        try:
+                            delete_result = hf_resource_deleter.delete_project_resources(
+                                project=project_to_delete,
+                                actor_username=session.username,
+                                storage_token=_storage_hf_token(),
+                                confirmed_slug=confirm_slug,
+                                confirmation_checked=bool(confirm_checked),
+                            )
+                        except HfProjectResourceDeletionError as exc:
+                            return str(exc), gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+                        except Exception as exc:
+                            return f"Could not permanently delete Hugging Face project resources: {exc}", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+                    else:
+                        typed_slug = (confirm_slug or "").strip()
+                        if typed_slug != project_slug or not bool(confirm_checked):
+                            return "Deletion was not confirmed. Type the exact project slug and check the confirmation box.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+                        delete_result = None
+
                     success, msg = admin_manager.delete_project(session.username, project_slug)
                     if not success:
-                        return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
+                        return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
 
                     persisted, persist_error = _persist_admin_state(
                         allowed_removed_project_slugs={project_slug},
                         session=session,
-                        sync_project_slugs={project_slug},
-                        archived_projects=[archived_project] if archived_project is not None else [],
+                        sync_project_slugs=set(),
+                        sync_hf_state=False,
                     )
                     if not persisted:
                         msg = f"{msg} | Persistence failed: {persist_error}"
+                    if delete_result is not None:
+                        msg = (
+                            f"Project '{project_slug}' and its Hugging Face resources were permanently deleted "
+                            f"(dataset: {delete_result.deleted_dataset_repo_id}, "
+                            f"state: {delete_result.deleted_state_repo_id or 'none'}, "
+                            f"bucket: {delete_result.deleted_bucket_id or 'none'})."
+                        )
 
                     _invalidate_project_queue(project_slug)
                     refreshed_warning = ""
@@ -4025,6 +4117,8 @@ def create_app() -> gr.Blocks:
                         refreshed_session,
                         refreshed_warning,
                         gr.update(choices=admin_projects, value=None),
+                        gr.update(value=""),
+                        gr.update(value=False),
                     )
 
                 with gr.Column(visible=False, elem_classes=["bn-admin-section", "bn-admin-delete-section"]) as admin_delete_controls:
@@ -4033,14 +4127,22 @@ def create_app() -> gr.Blocks:
                             section_header_html(
                                 "Project",
                                 "Delete project",
-                                "Remove a project from this validator workspace without deleting its Hugging Face dataset.",
+                                "Permanently delete the project, source dataset, private state repo, and validation Bucket.",
                                 class_name="bn-panel-soft",
                             )
                         )
-                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites.", "danger"))
+                        gr.HTML(inline_hint_html("This cannot be undone. Only the project creator can delete a project.", "danger"))
                         delete_project_slug = gr.Dropdown(
                             choices=_project_slugs(),
                             label="Project to delete",
+                        )
+                        delete_project_confirm_slug = gr.Textbox(
+                            label="Type the project slug to confirm",
+                            placeholder="Exact project slug",
+                        )
+                        delete_project_confirm_checkbox = gr.Checkbox(
+                            label="I understand this permanently deletes the project resources",
+                            value=False,
                         )
                         delete_project_message = gr.Markdown()
                     delete_project_btn = gr.Button(
@@ -4306,7 +4408,12 @@ def create_app() -> gr.Blocks:
 
                     delete_project_btn.click(
                         fn=delete_project,
-                        inputs=[session_state, delete_project_slug],
+                        inputs=[
+                            session_state,
+                            delete_project_slug,
+                            delete_project_confirm_slug,
+                            delete_project_confirm_checkbox,
+                        ],
                         outputs=[
                             delete_project_message,
                             projects_table,
@@ -4315,6 +4422,8 @@ def create_app() -> gr.Blocks:
                             session_state,
                             seed_warning_state,
                             delete_project_slug,
+                            delete_project_confirm_slug,
+                            delete_project_confirm_checkbox,
                         ],
                     )
 
@@ -4416,7 +4525,7 @@ def create_app() -> gr.Blocks:
                         "Project access is filtered by your role. Invitations can be accepted here before validation starts.",
                     )
                 )
-                project_overview = gr.HTML(value=project_overview_html([], []), visible=False)
+                project_overview = gr.HTML(value="", visible=False)
                 project_info_display = gr.Markdown(
                     value="Login first in the **Login** tab"
                 )
@@ -4427,21 +4536,22 @@ def create_app() -> gr.Blocks:
                     interactive=False,
                     allow_custom_value=True,
                 )
-                invitations_info = gr.Markdown(value="")
-                invitations_overview = gr.HTML(value=invite_panel_html(0))
-                invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
-                with gr.Row():
-                    refresh_invites_btn = gr.Button("Refresh invites", elem_classes=["bn-soft-action"])
-                    accept_invite_btn = gr.Button("Accept Invite", elem_classes=["bn-soft-action"])
-                    accept_all_invites_btn = gr.Button("Accept All", elem_classes=["bn-soft-action"])
-                    reject_invite_btn = gr.Button("Reject Invite", elem_classes=["bn-soft-action"])
+                invitations_info = gr.Markdown(value="", visible=False)
+                invitations_overview = gr.HTML(value="", visible=False)
+                with gr.Group(visible=False) as invite_controls:
+                    invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
+                    with gr.Row():
+                        refresh_invites_btn = gr.Button("Refresh invites", elem_classes=["bn-soft-action"])
+                        accept_invite_btn = gr.Button("Accept Invite", elem_classes=["bn-soft-action"])
+                        accept_all_invites_btn = gr.Button("Accept All", elem_classes=["bn-soft-action"])
+                        reject_invite_btn = gr.Button("Reject Invite", elem_classes=["bn-soft-action"])
 
                 def update_project_selector(session):
                     """Update project dropdown when user logs in."""
                     if session is None:
                         return (
                             gr.update(choices=[], value=None, interactive=False),
-                            project_overview_html([], []),
+                            gr.update(value="", visible=False),
                             "Not authenticated. Login first.",
                             project_context_html(None),
                             None,
@@ -4452,7 +4562,7 @@ def create_app() -> gr.Blocks:
                     if not projects:
                         return (
                             gr.update(choices=[], value=None, interactive=False),
-                            project_overview_html(_project_rows(), []),
+                            gr.update(value="", visible=False),
                             (
                                 "**No projects available yet**\n\n"
                                 "To get started:\n"
@@ -4474,7 +4584,7 @@ def create_app() -> gr.Blocks:
                     project_row = next((row for row in _project_rows() if row and str(row[0]) == selected), None)
                     return (
                         gr.update(choices=projects, value=selected, interactive=True),
-                        project_overview_html(_project_rows(), projects, selected),
+                        gr.update(value="", visible=False),
                         "",
                         project_context_html(project_row, role_label),
                         selected,
@@ -4511,16 +4621,17 @@ def create_app() -> gr.Blocks:
 
                 def _build_invites_ui(session):
                     if session is None:
-                        return gr.update(value="", visible=False), invite_panel_html(0), gr.update(choices=[], value=None, interactive=False)
+                        return gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(choices=[], value=None, interactive=False), gr.update(visible=False)
                     invites = auth_service.list_pending_invites(session.username)
                     if not invites:
-                        return gr.update(value="No pending invites", visible=True), invite_panel_html(0), gr.update(choices=[], value=None, interactive=False)
+                        return gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(choices=[], value=None, interactive=False), gr.update(visible=False)
                     encoded = [_format_invite_option(item) for item in invites]
                     labeled_choices = [(_build_invite_label(invite), encoded_value) for invite, encoded_value in zip(invites, encoded)]
                     return (
                         gr.update(value=f"Pending invites: {len(labeled_choices)}", visible=True),
-                        invite_panel_html(len(labeled_choices)),
+                        gr.update(value=invite_panel_html(len(labeled_choices)), visible=True),
                         gr.update(choices=labeled_choices, value=encoded[0], interactive=True),
+                        gr.update(visible=True),
                     )
 
                 def _parse_invite_option(raw_option: str) -> tuple[str, str, str]:
@@ -4594,13 +4705,13 @@ def create_app() -> gr.Blocks:
                 session_state.change(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 refresh_invites_btn.click(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 accept_invite_btn.click(
@@ -4614,7 +4725,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 accept_all_invites_btn.click(
@@ -4628,7 +4739,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 reject_invite_btn.click(
@@ -4638,7 +4749,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 def update_selected_project(selected: str, session):
@@ -4649,8 +4760,8 @@ def create_app() -> gr.Blocks:
                         role = auth_service.get_user_role_for_project(session.username, selected)
                         role_label = role.value.upper() if role else "UNKNOWN"
                         project_row = next((row for row in _project_rows() if row and str(row[0]) == selected), None)
-                        return selected, dataset_repo_id, project_overview_html(_project_rows(), session.authorized_projects, selected), project_context_html(project_row, role_label)
-                    return None, "", project_overview_html([], []), project_context_html(None)
+                        return selected, dataset_repo_id, gr.update(value="", visible=False), project_context_html(project_row, role_label)
+                    return None, "", gr.update(value="", visible=False), project_context_html(None)
 
                 project_selector.change(
                     fn=update_selected_project,
@@ -4665,7 +4776,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 ).then(
                     fn=_render_admin_overview,
                     inputs=[session_state],
@@ -4823,6 +4934,7 @@ def create_app() -> gr.Blocks:
                         selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
 
                     with gr.Column(scale=4, elem_classes=["bn-sidebar-panel"]):
+                        gr.Markdown("### Dataset Selection")
                         dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
                         species_filter = gr.Dropdown(
                             label="Species",
@@ -4836,18 +4948,17 @@ def create_app() -> gr.Blocks:
                             prev_btn = gr.Button("Previous")
                             next_btn = gr.Button("Next")
 
-                        with gr.Group(elem_classes=["bn-filter-panel"]):
-                            gr.Markdown("### Filters")
-                            min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
-                            validation_status_filter = gr.Dropdown(
-                                label="Status",
-                                choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
-                                value="all",
-                            )
-                            validator_filter = gr.Textbox(label="Validator", placeholder="Ex: validator_001")
-                            updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
-                            show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
-                            refresh_btn = gr.Button("Apply filters", variant="primary")
+                        gr.Markdown("### Filters")
+                        min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
+                        validation_status_filter = gr.Dropdown(
+                            label="Status",
+                            choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
+                            value="all",
+                        )
+                        validator_filter = gr.Textbox(label="Validator", placeholder="Ex: validator_001")
+                        updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
+                        show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
+                        refresh_btn = gr.Button("Apply filters", variant="primary")
 
                         gr.Markdown("### Review details")
                         validator_name = gr.Textbox(label="Validator", value="", interactive=False)
@@ -5219,6 +5330,18 @@ def create_app() -> gr.Blocks:
                         hf_token=_project_fetch_token(project_slug, session),
                     )
 
+                def build_species_summary(project_slug: str, species: str, confidence: float, session=None) -> str:
+                    if not project_slug or not species or not _can_access_project(session, project_slug):
+                        return _build_validation_summary_cards([])
+                    return _build_validation_summary_cards_for_species(
+                        queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        scientific_name=species,
+                        min_confidence=float(confidence or 0.0),
+                        actor_username=_validator_name_from_session(session),
+                    )
+
                 refresh_event = refresh_btn.click(
                     fn=refresh,
                     inputs=[
@@ -5300,8 +5423,8 @@ def create_app() -> gr.Blocks:
                     ],
                     outputs=[table, status, page_state],
                 ).then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -5353,8 +5476,8 @@ def create_app() -> gr.Blocks:
                 )
 
                 refresh_event.then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -5377,8 +5500,8 @@ def create_app() -> gr.Blocks:
                     outputs=[favorite_btn],
                 )
                 next_event.then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -5401,8 +5524,8 @@ def create_app() -> gr.Blocks:
                     outputs=[favorite_btn],
                 )
                 prev_event.then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -5602,7 +5725,11 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                )
 
                 reject_event.then(
                     fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
@@ -5624,7 +5751,11 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                )
 
                 uncertain_event.then(
                     fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
@@ -5646,7 +5777,11 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                )
 
                 skip_event.then(
                     fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
@@ -5668,7 +5803,11 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                )
 
                 session_state.change(
                     fn=lambda s: gr.update(value=(s.username if s is not None else "")),
