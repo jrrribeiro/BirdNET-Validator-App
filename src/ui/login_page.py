@@ -109,10 +109,9 @@ def create_login_page(
                         else "Secure login with your Hugging Face account to access your validation workspace."
                     )
                 )
-                login_button = gr.LoginButton(
+                login_button = gr.Button(
                     "Sign in with Hugging Face",
-                    logout_value="Sign out ({})",
-                    icon=None,
+                    variant="primary",
                     elem_classes=["bn-oauth-login-button"],
                 )
             elif allow_username_login:
