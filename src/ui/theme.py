@@ -159,6 +159,22 @@ button.bn-oauth-login-button * {
   white-space: nowrap !important;
 }
 
+.bn-login-workspace-button button,
+button.bn-login-workspace-button {
+  min-height: 48px !important;
+  border: 1px solid #93c5fd !important;
+  border-radius: 8px !important;
+  background: #dbeafe !important;
+  color: #075985 !important;
+  font-weight: 780 !important;
+}
+
+.bn-login-workspace-button button:hover,
+button.bn-login-workspace-button:hover {
+  border-color: #60a5fa !important;
+  background: #bfdbfe !important;
+}
+
 .bn-panel {
   background: var(--bn-panel);
   border: 1px solid var(--bn-border);
@@ -314,6 +330,19 @@ button.bn-oauth-login-button * {
 
 .bn-filter-panel .form {
   gap: 8px !important;
+}
+
+.bn-clean-slider,
+.bn-clean-slider .block,
+.bn-clean-slider .form,
+.bn-clean-slider .styler,
+.bn-clean-slider > div {
+  background: transparent !important;
+}
+
+.bn-clean-slider input,
+.bn-clean-slider [data-testid="number-input"] {
+  background: #ffffff !important;
 }
 
 .bn-danger-zone {
@@ -532,15 +561,18 @@ button.bn-oauth-login-button * {
 
 .bn-activity-table-wrap {
   margin-top: 10px;
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid var(--bn-border);
   border-radius: 8px;
+  background: #ffffff;
 }
 
 .bn-activity-table {
   width: 100%;
   min-width: 520px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 0 !important;
   background: #ffffff;
   color: var(--bn-text);
   font-size: 13px;
@@ -549,7 +581,8 @@ button.bn-oauth-login-button * {
 .bn-activity-table th,
 .bn-activity-table td {
   padding: 9px 11px;
-  border-bottom: 1px solid var(--bn-border);
+  border: 0 !important;
+  border-bottom: 1px solid var(--bn-border) !important;
   text-align: left;
   vertical-align: top;
 }
@@ -560,8 +593,21 @@ button.bn-oauth-login-button * {
   font-weight: 750;
 }
 
+.bn-activity-table th + th,
+.bn-activity-table td + td {
+  border-left: 1px solid var(--bn-border) !important;
+}
+
+.bn-activity-table thead th:first-child {
+  border-top-left-radius: 8px;
+}
+
+.bn-activity-table thead th:last-child {
+  border-top-right-radius: 8px;
+}
+
 .bn-activity-table tbody tr:last-child td {
-  border-bottom: 0;
+  border-bottom: 0 !important;
 }
 
 .bn-activity-empty {

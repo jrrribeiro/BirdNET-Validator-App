@@ -99,6 +99,7 @@ def create_login_page(
                 visible=False,
             )
 
+            oauth_enter_button = None
             username_input = None
             login_button = None
             if enable_oauth_login:
@@ -115,6 +116,11 @@ def create_login_page(
                     icon=None,
                     elem_classes=["bn-oauth-login-button"],
                 )
+                oauth_enter_button = gr.Button(
+                    "Enter workspace",
+                    variant="primary",
+                    elem_classes=["bn-login-workspace-button"],
+                )
             elif allow_username_login:
                 gr.Markdown("Local development login")
                 username_input = gr.Textbox(
@@ -127,6 +133,18 @@ def create_login_page(
         with gr.Column(scale=1):
             gr.Markdown("")
 
+    def handle_oauth_login(
+        profile: gr.OAuthProfile | None,
+        oauth_token: gr.OAuthToken | None,
+    ) -> Tuple[str, str]:
+        return perform_oauth_login(auth_service, profile, oauth_token)
+
+    if oauth_enter_button is not None:
+        oauth_enter_button.click(
+            fn=handle_oauth_login,
+            inputs=None,
+            outputs=[session_output, error_message],
+        )
     if login_button is not None and username_input is not None:
         login_button.click(
             fn=lambda username: perform_login(
