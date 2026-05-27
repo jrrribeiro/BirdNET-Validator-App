@@ -159,22 +159,6 @@ button.bn-oauth-login-button * {
   white-space: nowrap !important;
 }
 
-.bn-login-workspace-button button,
-button.bn-login-workspace-button {
-  min-height: 48px !important;
-  border: 1px solid #93c5fd !important;
-  border-radius: 8px !important;
-  background: #dbeafe !important;
-  color: #075985 !important;
-  font-weight: 780 !important;
-}
-
-.bn-login-workspace-button button:hover,
-button.bn-login-workspace-button:hover {
-  border-color: #60a5fa !important;
-  background: #bfdbfe !important;
-}
-
 .bn-panel {
   background: var(--bn-panel);
   border: 1px solid var(--bn-border);
@@ -337,11 +321,24 @@ button.bn-login-workspace-button:hover {
 .bn-clean-slider .form,
 .bn-clean-slider .styler,
 .bn-clean-slider > div {
-  background: transparent !important;
+  background: #ffffff !important;
 }
 
 .bn-clean-slider input,
 .bn-clean-slider [data-testid="number-input"] {
+  background: #ffffff !important;
+}
+
+.bn-sidebar-panel .block,
+.bn-sidebar-panel .form,
+.bn-sidebar-panel .styler,
+.bn-sidebar-panel .wrap,
+.bn-sidebar-panel .contain,
+.bn-sidebar-panel .gradio-slider,
+.bn-sidebar-panel .gradio-slider > div,
+.bn-sidebar-panel .gradio-slider label,
+.bn-sidebar-panel .gradio-slider input,
+.bn-sidebar-panel .gradio-slider [data-testid="number-input"] {
   background: #ffffff !important;
 }
 
