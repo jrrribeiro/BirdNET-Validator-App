@@ -180,6 +180,10 @@ main.app,
 
 .bn-oauth-login-button button,
 button.bn-oauth-login-button {
+  width: 100% !important;
+  max-width: 680px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
   min-height: 48px !important;
   border: 1px solid #f97316 !important;
   border-radius: 8px !important;
@@ -208,6 +212,11 @@ button.bn-oauth-login-button * {
 }
 
 .bn-panel {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 1490px;
+  margin-left: auto;
+  margin-right: auto;
   background: var(--bn-panel);
   border: 1px solid var(--bn-border);
   border-radius: 8px;
