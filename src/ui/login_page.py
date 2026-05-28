@@ -88,9 +88,7 @@ def create_login_page(
         Tuple of (session_output, error_message, login_button)
     """
     with gr.Row(elem_classes=["bn-login-row"]):
-        with gr.Column(scale=1, elem_classes=["bn-login-spacer"]):
-            gr.Markdown("")
-        with gr.Column(scale=6, elem_classes=["bn-login-panel"]):
+        with gr.Column(scale=0, min_width=680, elem_classes=["bn-login-panel"]):
             gr.Markdown("# BirdNET Validation Platform")
 
             session_output = gr.Textbox(
@@ -127,9 +125,6 @@ def create_login_page(
                 )
                 login_button = gr.Button("Login", variant="primary", scale=1)
             error_message = gr.Markdown()
-        with gr.Column(scale=1, elem_classes=["bn-login-spacer"]):
-            gr.Markdown("")
-
     if enable_oauth_login and login_button is not None:
         login_button.click(
             fn=lambda _button_value: None,

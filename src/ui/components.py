@@ -3,7 +3,7 @@ from html import escape
 
 def section_header_html(kicker: str, title: str, subtitle: str, *, class_name: str = "bn-panel") -> str:
     return (
-        f"<div class='{class_name}' style='margin-bottom:12px;'>"
+        f"<div class='{class_name}' style='box-sizing:border-box;width:100%;max-width:1490px;margin:0 auto 12px auto;'>"
         f"<div class='bn-brand-kicker'>{escape(kicker)}</div>"
         f"<div class='bn-section-title'>{escape(title)}</div>"
         f"<div class='bn-compact-note'>{escape(subtitle)}</div>"

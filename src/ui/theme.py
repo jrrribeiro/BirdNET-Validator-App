@@ -46,6 +46,9 @@ main.app,
 .bn-login-row {
   justify-content: center !important;
   width: 100% !important;
+  max-width: 1490px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 .bn-login-spacer {
@@ -67,12 +70,15 @@ main.app,
 }
 
 .bn-app-header {
+  box-sizing: border-box;
   display: flex;
   justify-content: space-between;
   gap: 20px;
   align-items: center;
+  width: 100% !important;
+  max-width: 1490px !important;
   padding: 18px 22px;
-  margin: 0 0 16px 0;
+  margin: 0 auto 16px auto !important;
   background: linear-gradient(135deg, #ffffff 0%, #eef6f8 100%);
   border: 1px solid var(--bn-border);
   border-radius: 8px;
@@ -152,6 +158,18 @@ main.app,
 .tabs .tab-nav {
   gap: 4px !important;
   border-bottom: 1px solid var(--bn-border) !important;
+}
+
+.bn-tabs {
+  box-sizing: border-box;
+  width: 100% !important;
+  max-width: 1490px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-tabs .tabitem {
+  width: 100% !important;
 }
 
 .bn-tabs button,
@@ -1561,7 +1579,7 @@ def app_header_html(state_backend_message: str = "") -> str:
         backend_text = "Filesystem state"
         backend_class = "bn-pill-warn"
     return f"""
-    <div class="bn-app-header">
+    <div class="bn-app-header" style="box-sizing:border-box;width:100%;max-width:1490px;margin:0 auto 16px auto;">
       <div>
         <div class="bn-brand-kicker">BirdNET validation workspace</div>
         <div class="bn-brand-title">BirdNET Validator</div>
