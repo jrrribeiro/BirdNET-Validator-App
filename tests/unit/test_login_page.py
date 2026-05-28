@@ -2,7 +2,7 @@ import gradio as gr
 
 from src.auth.auth_service import AuthService
 from src.domain.models import Role
-from src.ui.login_page import create_login_page, perform_login, perform_oauth_login
+from src.ui.login_page import create_login_page, oauth_action_button_html, perform_login, perform_oauth_login
 
 
 def test_perform_login_blocks_username_when_disabled() -> None:
@@ -68,3 +68,14 @@ def test_oauth_login_page_registers_gradio_oauth_routes_without_exposing_native_
         create_login_page(auth_service, enable_oauth_login=True, admin_storage_mode=True)
 
     assert demo.expects_oauth is True
+
+
+def test_oauth_action_button_html_has_fixed_width_and_intent_route() -> None:
+    signed_out = oauth_action_button_html(signed_in=False)
+    signed_in = oauth_action_button_html(signed_in=True)
+
+    assert "max-width:680px" in signed_out
+    assert "/login/huggingface?birdnet_login_intent=1" in signed_out
+    assert "birdnet_hf_login_intent" in signed_out
+    assert "Sign out" in signed_in
+    assert "/logout" in signed_in

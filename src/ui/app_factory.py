@@ -52,10 +52,10 @@ from src.services.hf_project_resource_deletion import HfProjectResourceDeleter, 
 from src.services.validation_service import ValidationService
 from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
 from src.auth.auth_service import AuthService
-from src.ui.login_page import create_login_page, perform_oauth_login
+from src.ui.login_page import create_login_page, oauth_action_button_html, perform_oauth_login
 from src.ui.admin_panel import AdminPanelManager
 from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, section_header_html, selected_segment_html, settings_health_html
-from src.ui.theme import APP_CSS, app_header_html
+from src.ui.theme import APP_CSS, CRITICAL_HEAD_HTML, app_header_html
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -3162,7 +3162,13 @@ def create_app() -> gr.Blocks:
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
     report_cache_ttl_seconds = 30.0
 
-    with gr.Blocks(title="BirdNET-Validator-App", css=APP_CSS, elem_classes=["bn-shell"]) as wrapper:
+    with gr.Blocks(
+        title="BirdNET-Validator-App",
+        css=APP_CSS,
+        head=CRITICAL_HEAD_HTML,
+        fill_width=False,
+        elem_classes=["bn-shell"],
+    ) as wrapper:
         gr.HTML(app_header_html(state_backend_message))
         if state_backend_message.startswith("⚠"):
             gr.Markdown(state_backend_message)
@@ -3464,9 +3470,7 @@ def create_app() -> gr.Blocks:
                 )
 
                 def render_oauth_button_label(session):
-                    if session is None:
-                        return gr.update(value="Sign in with Hugging Face")
-                    return gr.update(value="Sign out")
+                    return gr.update(value=oauth_action_button_html(signed_in=session is not None))
 
                 if oauth_login_button is not None and _is_running_in_hf_space():
                     session_state.change(
@@ -3494,7 +3498,15 @@ def create_app() -> gr.Blocks:
                     outputs=[oauth_login_intent_state],
                     js="""
                     () => {
-                        return sessionStorage.getItem("birdnet_hf_login_intent") || "";
+                        const params = new URLSearchParams(window.location.search);
+                        const intentFromUrl = params.get("birdnet_login_intent") === "1";
+                        if (intentFromUrl) {
+                            params.delete("birdnet_login_intent");
+                            const nextQuery = params.toString();
+                            const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : "") + window.location.hash;
+                            window.history.replaceState({}, "", nextUrl);
+                        }
+                        return sessionStorage.getItem("birdnet_hf_login_intent") || (intentFromUrl ? "1" : "");
                     }
                     """,
                 )

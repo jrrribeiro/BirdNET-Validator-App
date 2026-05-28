@@ -7,6 +7,40 @@ import gradio as gr
 from src.auth.auth_service import AuthService
 
 
+def oauth_action_button_html(*, signed_in: bool = False) -> str:
+    """Render the visible HF OAuth action without depending on Gradio button layout."""
+    if signed_in:
+        href = "/logout"
+        label = "Sign out"
+        onclick = (
+            "sessionStorage.removeItem('birdnet_hf_login_intent');"
+        )
+    else:
+        href = "/login/huggingface?birdnet_login_intent=1"
+        label = "Sign in with Hugging Face"
+        onclick = (
+            "const q=new URLSearchParams(window.location.search);"
+            "q.set('birdnet_login_intent','1');"
+            "sessionStorage.setItem('birdnet_hf_login_intent','1');"
+            "window.parent?.postMessage({type:'SET_SCROLLING',enabled:true},'*');"
+            "event.preventDefault();"
+            "window.location.assign('/login/huggingface?'+q.toString());"
+        )
+    return (
+        "<div class='bn-oauth-login-html' "
+        "style='box-sizing:border-box;width:100%;max-width:680px;margin:0 auto;'>"
+        f"<a href='{href}' target='_self' onclick=\"{onclick}\" "
+        "style='box-sizing:border-box;display:flex;align-items:center;justify-content:center;"
+        "width:100%;max-width:680px;min-height:48px;padding:12px 18px;"
+        "border:1px solid #f97316;border-radius:8px;background:#f97316;color:#fff;"
+        "font-weight:780;text-decoration:none;white-space:nowrap;overflow:hidden;"
+        "text-overflow:ellipsis;'>"
+        f"{label}"
+        "</a>"
+        "</div>"
+    )
+
+
 def perform_login(
     auth_service: AuthService,
     username: str,
@@ -78,14 +112,14 @@ def create_login_page(
     enable_oauth_login: bool = False,
     auth_mode_label: str = "",
     admin_storage_mode: bool = False,
-) -> Tuple[gr.Textbox, gr.Markdown, gr.Button | None]:
+) -> Tuple[gr.Textbox, gr.Markdown, gr.HTML | None]:
     """Create an OAuth production login with an optional local username fallback.
 
     Args:
         auth_service: AuthService instance for login validation
 
     Returns:
-        Tuple of (session_output, error_message, login_button)
+        Tuple of (session_output, error_message, login_action)
     """
     with gr.Row(elem_classes=["bn-login-row"]):
         with gr.Column(scale=0, min_width=680, elem_classes=["bn-login-panel"]):
@@ -99,6 +133,7 @@ def create_login_page(
 
             username_input = None
             login_button = None
+            login_action = None
             if enable_oauth_login:
                 gr.Markdown(
                     (
@@ -111,11 +146,7 @@ def create_login_page(
                     visible=False,
                     elem_id="bn-hidden-hf-oauth-route",
                 )
-                login_button = gr.Button(
-                    "Sign in with Hugging Face",
-                    variant="primary",
-                    elem_classes=["bn-oauth-login-button"],
-                )
+                login_action = gr.HTML(oauth_action_button_html(signed_in=False))
             elif allow_username_login:
                 gr.Markdown("Local development login")
                 username_input = gr.Textbox(
@@ -125,29 +156,7 @@ def create_login_page(
                 )
                 login_button = gr.Button("Login", variant="primary", scale=1)
             error_message = gr.Markdown()
-    if enable_oauth_login and login_button is not None:
-        login_button.click(
-            fn=lambda _button_value: None,
-            inputs=[login_button],
-            outputs=None,
-            js="""
-            (buttonValue) => {
-                const label = String(buttonValue || "").toLowerCase();
-                sessionStorage.setItem("birdnet_hf_login_intent", "1");
-                window.parent?.postMessage({ type: "SET_SCROLLING", enabled: true }, "*");
-                setTimeout(() => {
-                    if (label.includes("sign out")) {
-                        sessionStorage.removeItem("birdnet_hf_login_intent");
-                        window.location.assign("/logout" + window.location.search);
-                    } else {
-                        window.location.assign("/login/huggingface" + window.location.search);
-                    }
-                }, 100);
-                return [];
-            }
-            """,
-        )
-    elif login_button is not None and username_input is not None:
+    if login_button is not None and username_input is not None:
         login_button.click(
             fn=lambda username: perform_login(
                 auth_service,
@@ -158,4 +167,4 @@ def create_login_page(
             outputs=[session_output, error_message],
         )
 
-    return session_output, error_message, login_button
+    return session_output, error_message, login_action

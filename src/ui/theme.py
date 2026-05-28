@@ -1,3 +1,70 @@
+CRITICAL_HEAD_HTML = """
+<style>
+:root {
+  --bn-bg: #f5f7fb;
+}
+
+html,
+body,
+gradio-app,
+main.app,
+.wrap,
+.contain,
+.gradio-container {
+  background: var(--bn-bg) !important;
+}
+
+.gradio-container {
+  box-sizing: border-box !important;
+  width: calc(100% - 32px) !important;
+  max-width: 1540px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-shell {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 1540px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-app-header,
+.bn-tabs,
+.bn-panel,
+.bn-login-row {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 1490px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-login-row {
+  justify-content: center !important;
+}
+
+.bn-login-panel {
+  box-sizing: border-box !important;
+  flex: 0 1 680px !important;
+  max-width: 680px !important;
+  min-width: 0 !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-oauth-login-html {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: 680px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+</style>
+"""
+
+
 APP_CSS = """
 :root {
   --bn-bg: #f5f7fb;
