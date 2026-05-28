@@ -78,14 +78,14 @@ def create_login_page(
     enable_oauth_login: bool = False,
     auth_mode_label: str = "",
     admin_storage_mode: bool = False,
-) -> Tuple[gr.Textbox, gr.Markdown]:
+) -> Tuple[gr.Textbox, gr.Markdown, gr.Button | None]:
     """Create an OAuth production login with an optional local username fallback.
 
     Args:
         auth_service: AuthService instance for login validation
 
     Returns:
-        Tuple of (session_output, error_message)
+        Tuple of (session_output, error_message, login_button)
     """
     with gr.Row():
         with gr.Column(scale=1):
@@ -132,15 +132,21 @@ def create_login_page(
 
     if enable_oauth_login and login_button is not None:
         login_button.click(
-            fn=lambda: None,
-            inputs=None,
+            fn=lambda _button_value: None,
+            inputs=[login_button],
             outputs=None,
             js="""
-            () => {
+            (buttonValue) => {
+                const label = String(buttonValue || "").toLowerCase();
                 sessionStorage.setItem("birdnet_hf_login_intent", "1");
                 window.parent?.postMessage({ type: "SET_SCROLLING", enabled: true }, "*");
                 setTimeout(() => {
-                    window.location.assign("/login/huggingface" + window.location.search);
+                    if (label.includes("sign out")) {
+                        sessionStorage.removeItem("birdnet_hf_login_intent");
+                        window.location.assign("/logout" + window.location.search);
+                    } else {
+                        window.location.assign("/login/huggingface" + window.location.search);
+                    }
                 }, 100);
                 return [];
             }
@@ -157,4 +163,4 @@ def create_login_page(
             outputs=[session_output, error_message],
         )
 
-    return session_output, error_message
+    return session_output, error_message, login_button

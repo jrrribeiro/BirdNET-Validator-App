@@ -3437,7 +3437,7 @@ def create_app() -> gr.Blocks:
                         ),
                     )
                 )
-                session_output, error_message = create_login_page(
+                session_output, error_message, oauth_login_button = create_login_page(
                     auth_service,
                     allow_username_login=allow_username_login,
                     enable_oauth_login=_is_running_in_hf_space(),
@@ -3462,6 +3462,18 @@ def create_app() -> gr.Blocks:
                     inputs=[session_output],
                     outputs=[session_state],
                 )
+
+                def render_oauth_button_label(session):
+                    if session is None:
+                        return gr.update(value="Sign in with Hugging Face")
+                    return gr.update(value="Sign out")
+
+                if oauth_login_button is not None and _is_running_in_hf_space():
+                    session_state.change(
+                        fn=render_oauth_button_label,
+                        inputs=[session_state],
+                        outputs=[oauth_login_button],
+                    )
 
                 def hydrate_oauth_session_after_click(
                     login_intent: str,
