@@ -28,10 +28,10 @@ def oauth_action_button_html(*, signed_in: bool = False) -> str:
         )
     return (
         "<div class='bn-oauth-login-html' "
-        "style='box-sizing:border-box;width:100%;max-width:680px;margin:0 auto;'>"
+        "style='box-sizing:border-box;width:100%;max-width:var(--bn-login-width,680px);margin:0 auto;'>"
         f"<a href='{href}' target='_self' onclick=\"{onclick}\" "
         "style='box-sizing:border-box;display:flex;align-items:center;justify-content:center;"
-        "width:100%;max-width:680px;min-height:48px;padding:12px 18px;"
+        "width:100%;max-width:var(--bn-login-width,680px);min-height:48px;padding:12px 18px;"
         "border:1px solid #f97316;border-radius:8px;background:#f97316;color:#fff;"
         "font-weight:780;text-decoration:none;white-space:nowrap;overflow:hidden;"
         "text-overflow:ellipsis;'>"

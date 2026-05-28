@@ -2,6 +2,9 @@ CRITICAL_HEAD_HTML = """
 <style>
 :root {
   --bn-bg: #f5f7fb;
+  --bn-shell-width: min(1540px, calc(100vw - 32px));
+  --bn-content-width: clamp(1200px, 78vw, 1490px);
+  --bn-login-width: min(680px, calc(100vw - 32px));
 }
 
 html,
@@ -17,7 +20,7 @@ main.app,
 .gradio-container {
   box-sizing: border-box !important;
   width: calc(100% - 32px) !important;
-  max-width: 1540px !important;
+  max-width: var(--bn-shell-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
 }
@@ -25,7 +28,7 @@ main.app,
 .bn-shell {
   box-sizing: border-box !important;
   width: 100% !important;
-  max-width: 1540px !important;
+  max-width: var(--bn-shell-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
 }
@@ -36,7 +39,7 @@ main.app,
 .bn-login-row {
   box-sizing: border-box !important;
   width: 100% !important;
-  max-width: 1490px !important;
+  max-width: var(--bn-content-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
 }
@@ -47,8 +50,8 @@ main.app,
 
 .bn-login-panel {
   box-sizing: border-box !important;
-  flex: 0 1 680px !important;
-  max-width: 680px !important;
+  flex: 0 1 var(--bn-login-width) !important;
+  max-width: var(--bn-login-width) !important;
   min-width: 0 !important;
   margin-left: auto !important;
   margin-right: auto !important;
@@ -57,9 +60,15 @@ main.app,
 .bn-oauth-login-html {
   box-sizing: border-box !important;
   width: 100% !important;
-  max-width: 680px !important;
+  max-width: var(--bn-login-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --bn-content-width: calc(100vw - 32px);
+  }
 }
 </style>
 """
@@ -68,6 +77,9 @@ main.app,
 APP_CSS = """
 :root {
   --bn-bg: #f5f7fb;
+  --bn-shell-width: min(1540px, calc(100vw - 32px));
+  --bn-content-width: clamp(1200px, 78vw, 1490px);
+  --bn-login-width: min(680px, calc(100vw - 32px));
   --bn-panel: #ffffff;
   --bn-panel-soft: #f9fafb;
   --bn-border: #d9e0ea;
@@ -97,14 +109,14 @@ main.app,
 
 .gradio-container {
   width: calc(100% - 32px) !important;
-  max-width: 1540px !important;
+  max-width: var(--bn-shell-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
 }
 
 .bn-shell {
   width: 100% !important;
-  max-width: 1540px !important;
+  max-width: var(--bn-shell-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
   padding-top: 8px;
@@ -113,7 +125,7 @@ main.app,
 .bn-login-row {
   justify-content: center !important;
   width: 100% !important;
-  max-width: 1490px !important;
+  max-width: var(--bn-content-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
 }
@@ -123,8 +135,8 @@ main.app,
 }
 
 .bn-login-panel {
-  flex: 0 1 680px !important;
-  max-width: 680px !important;
+  flex: 0 1 var(--bn-login-width) !important;
+  max-width: var(--bn-login-width) !important;
   min-width: 0 !important;
   margin-left: auto !important;
   margin-right: auto !important;
@@ -143,7 +155,7 @@ main.app,
   gap: 20px;
   align-items: center;
   width: 100% !important;
-  max-width: 1490px !important;
+  max-width: var(--bn-content-width) !important;
   padding: 18px 22px;
   margin: 0 auto 16px auto !important;
   background: linear-gradient(135deg, #ffffff 0%, #eef6f8 100%);
@@ -230,7 +242,7 @@ main.app,
 .bn-tabs {
   box-sizing: border-box;
   width: 100% !important;
-  max-width: 1490px !important;
+  max-width: var(--bn-content-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
 }
@@ -248,7 +260,7 @@ main.app,
 .bn-oauth-login-button button,
 button.bn-oauth-login-button {
   width: 100% !important;
-  max-width: 680px !important;
+  max-width: var(--bn-login-width) !important;
   margin-left: auto !important;
   margin-right: auto !important;
   min-height: 48px !important;
@@ -281,7 +293,7 @@ button.bn-oauth-login-button * {
 .bn-panel {
   box-sizing: border-box;
   width: 100%;
-  max-width: 1490px;
+  max-width: var(--bn-content-width);
   margin-left: auto;
   margin-right: auto;
   background: var(--bn-panel);
@@ -1515,6 +1527,12 @@ select {
   border-radius: 7px !important;
 }
 
+@media (max-width: 1280px) {
+  :root {
+    --bn-content-width: calc(100vw - 32px);
+  }
+}
+
 @media (max-width: 900px) {
   .bn-app-header {
     flex-direction: column;
@@ -1655,7 +1673,7 @@ def app_header_html(state_backend_message: str = "") -> str:
         backend_text = "Filesystem state"
         backend_class = "bn-pill-warn"
     return f"""
-    <div class="bn-app-header" style="box-sizing:border-box;width:100%;max-width:1490px;margin:0 auto 16px auto;">
+    <div class="bn-app-header" style="box-sizing:border-box;width:100%;max-width:var(--bn-content-width,1490px);margin:0 auto 16px auto;">
       <div>
         <div class="bn-brand-kicker">BirdNET validation workspace</div>
         <div class="bn-brand-title">BirdNET Validator</div>
