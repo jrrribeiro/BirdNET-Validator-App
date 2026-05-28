@@ -29,11 +29,41 @@ main.app,
 }
 
 .gradio-container {
+  width: calc(100% - 32px) !important;
   max-width: 1540px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 .bn-shell {
+  width: 100% !important;
+  max-width: 1540px !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
   padding-top: 8px;
+}
+
+.bn-login-row {
+  justify-content: center !important;
+  width: 100% !important;
+}
+
+.bn-login-spacer {
+  display: none !important;
+}
+
+.bn-login-panel {
+  flex: 0 1 680px !important;
+  max-width: 680px !important;
+  min-width: 0 !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-login-panel > *,
+.bn-login-panel .block,
+.bn-login-panel .form {
+  width: 100% !important;
 }
 
 .bn-app-header {
