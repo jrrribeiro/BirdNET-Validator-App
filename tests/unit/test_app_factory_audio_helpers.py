@@ -674,6 +674,71 @@ def test_page_to_table_includes_validation_status() -> None:
     assert queue.last_kwargs["project_slug"] == "kenya-2024"
 
 
+def test_page_to_table_prioritizes_pending_then_confidence() -> None:
+    class QueueWithMixedStatus:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="reviewed_high",
+                    audio_id="reviewed_high.wav",
+                    scientific_name="sp",
+                    confidence=0.99,
+                    start_time=0,
+                    end_time=1,
+                ),
+                SimpleNamespace(
+                    detection_key="pending_mid",
+                    audio_id="pending_mid.wav",
+                    scientific_name="sp",
+                    confidence=0.82,
+                    start_time=1,
+                    end_time=2,
+                ),
+                SimpleNamespace(
+                    detection_key="pending_low",
+                    audio_id="pending_low.wav",
+                    scientific_name="sp",
+                    confidence=0.61,
+                    start_time=2,
+                    end_time=3,
+                ),
+                SimpleNamespace(
+                    detection_key="reviewed_low",
+                    audio_id="reviewed_low.wav",
+                    scientific_name="sp",
+                    confidence=0.55,
+                    start_time=3,
+                    end_time=4,
+                ),
+            ]
+
+    class SnapshotWithMixedStatus:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {
+                "reviewed_high": {"status": "positive", "version": 1},
+                "reviewed_low": {"status": "negative", "version": 1},
+            }
+
+    rows, _, _ = _page_to_table(
+        service=QueueWithMixedStatus(),
+        snapshot_reader=SnapshotWithMixedStatus(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        page_size=10,
+    )
+
+    assert [row[0] for row in rows] == [
+        "pending_mid",
+        "pending_low",
+        "reviewed_high",
+        "reviewed_low",
+    ]
+
+
 def test_page_to_table_marks_conflict_row() -> None:
     rows, _, _ = _page_to_table(
         service=FakeQueueService(),
@@ -896,10 +961,83 @@ def test_save_selected_validation_with_refresh_success() -> None:
     assert cache_key == ""
     assert audio_path is None
     assert refreshed_page == 1
-    assert refreshed_index == 0
+    assert refreshed_index == -1
     assert refreshed_rows[0][0] == "dkey_01"
     assert pending_status == ""
     assert conflict_key == ""
+
+
+def test_save_selected_validation_advances_to_highest_confidence_pending_row() -> None:
+    class QueueAfterSave:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="dkey_selected",
+                    audio_id="audio_selected",
+                    scientific_name="sp",
+                    confidence=0.99,
+                    start_time=0,
+                    end_time=1,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_pending_high",
+                    audio_id="audio_pending_high",
+                    scientific_name="sp",
+                    confidence=0.95,
+                    start_time=1,
+                    end_time=2,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_pending_low",
+                    audio_id="audio_pending_low",
+                    scientific_name="sp",
+                    confidence=0.60,
+                    start_time=2,
+                    end_time=3,
+                ),
+            ]
+
+    class SnapshotAfterSave:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {"dkey_selected": {"status": "positive", "version": 1}}
+
+    audio_service = FakeAudioService()
+    status, cache_key, _, refreshed_rows, _, refreshed_index, _, _ = _save_selected_validation_with_refresh(
+        validation_service=FakeValidationService(),
+        audio_service=audio_service,
+        queue_service=QueueAfterSave(),
+        snapshot_reader=SnapshotAfterSave(),
+        project_slug="demo-project",
+        rows=[["dkey_selected", "audio_selected", "sp", 0.99, 0.0, 1.0, "pending", 0]],
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_selected",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+    )
+
+    selected_index, audio_path, updated_cache_key, _, _, _ = _advance_to_next_row_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+    )
+
+    assert "Validation saved" in status
+    assert [row[0] for row in refreshed_rows] == ["dkey_pending_high", "dkey_pending_low", "dkey_selected"]
+    assert selected_index == 0
+    assert audio_path == "/tmp/audio_pending_high.wav"
+    assert updated_cache_key == "key:audio_pending_high"
 
 
 def test_save_selected_validation_with_refresh_conflict() -> None:
@@ -972,7 +1110,7 @@ def test_reapply_last_conflict_validation_with_refresh() -> None:
     assert cache_key == ""
     assert audio_path is None
     assert refreshed_page == 1
-    assert refreshed_index == 0
+    assert refreshed_index == -1
     assert refreshed_rows[0][0] == "dkey_01"
     assert pending_status == ""
     assert conflict_key == ""
@@ -1028,7 +1166,8 @@ def test_validation_shortcuts_are_validate_tab_scoped() -> None:
     assert "ArrowDown" in script
     assert "ArrowLeft" in script
     assert "ArrowRight" in script
-    assert "Backspace" in script
+    assert 'event.code === "Space"' in script
+    assert "Backspace" not in script
     assert "bn-validate-confirm-btn" in script
     assert "bn-validate-reject-btn" in script
     assert "bn-validate-uncertain-btn" in script

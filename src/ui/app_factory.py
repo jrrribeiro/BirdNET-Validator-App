@@ -62,8 +62,8 @@ VALIDATION_CONFIRM_LABEL = "↑ Confirm"
 VALIDATION_REJECT_LABEL = "↓ Reject"
 VALIDATION_UNCERTAIN_LABEL = "← Uncertain"
 VALIDATION_SKIP_LABEL = "→ Skip"
-VALIDATION_FAVORITE_LABEL = "⌫ Favorite"
-VALIDATION_FAVORITED_LABEL = "⌫ Favorited"
+VALIDATION_FAVORITE_LABEL = "␣ Favorite"
+VALIDATION_FAVORITED_LABEL = "␣ Favorited"
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -1666,13 +1666,12 @@ def _validation_shortcuts_script() -> str:
     ArrowDown: "bn-validate-reject-btn",
     ArrowLeft: "bn-validate-uncertain-btn",
     ArrowRight: "bn-validate-skip-btn",
-    Backspace: "bn-validate-favorite-btn",
   };
 
   document.addEventListener("keydown", (event) => {
     if (event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
     if (isTypingTarget(event.target)) return;
-    const buttonId = actionByKey[event.key];
+    const buttonId = event.code === "Space" ? "bn-validate-favorite-btn" : actionByKey[event.key];
     if (!buttonId || !validateTabIsActive()) return;
     event.preventDefault();
     clickButtonById(buttonId);
@@ -1889,7 +1888,7 @@ def _page_to_table(
     if show_conflicts_only:
         rows = [row for row in rows if str(row[8]) == "CONFLICT"]
 
-    rows = _sort_rows_by_confidence_desc(rows)
+    rows = _sort_rows_for_validation_queue(rows)
     filtered_total = len(rows)
     total_pages = max(1, ((filtered_total - 1) // page_size) + 1) if filtered_total else 1
     safe_page = max(1, min(int(page), total_pages))
@@ -2487,8 +2486,31 @@ def _extract_species_options_from_queue(
     return sorted(species_set)
 
 
-def _sort_rows_by_confidence_desc(rows: list[list[object]]) -> list[list[object]]:
-    return sorted(rows, key=lambda row: float(row[3]) if len(row) > 3 else 0.0, reverse=True)
+def _row_confidence(row: list[object]) -> float:
+    try:
+        return float(row[3]) if len(row) > 3 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _row_is_pending(row: list[object]) -> bool:
+    status_value = str(row[6] if len(row) > 6 else "pending").strip().lower()
+    return status_value in {"", "pending"}
+
+
+def _sort_rows_for_validation_queue(rows: list[list[object]]) -> list[list[object]]:
+    """Prioritize unreviewed detections, keeping confidence-desc order within each group."""
+    return [
+        row
+        for _, row in sorted(
+            enumerate(rows),
+            key=lambda item: (
+                0 if _row_is_pending(item[1]) else 1,
+                -_row_confidence(item[1]),
+                item[0],
+            ),
+        )
+    ]
 
 
 def _select_and_fetch_audio_with_title(
@@ -2578,12 +2600,16 @@ def _advance_to_next_row_with_title(
 
 
 def _first_pending_row_index(rows: object) -> int:
+    pending_index = _pending_row_index_or_none(rows)
+    return pending_index if pending_index is not None else 0
+
+
+def _pending_row_index_or_none(rows: object) -> int | None:
     normalized_rows = _normalize_rows(rows)
     for index, row in enumerate(normalized_rows):
-        status_value = str(row[6] if len(row) > 6 else "pending").strip().lower()
-        if status_value in {"", "pending"}:
+        if _row_is_pending(row):
             return index
-    return 0
+    return None
 
 
 def _first_pending_queue_page(
@@ -2622,12 +2648,10 @@ def _first_pending_queue_page(
             return None
         visited_pages.add(actual_page)
 
-        page_rows = _sort_rows_by_confidence_desc(page_rows)
-        pending_index = _first_pending_row_index(page_rows)
-        if page_rows:
-            status_value = str(page_rows[pending_index][6] if len(page_rows[pending_index]) > 6 else "pending").strip().lower()
-            if status_value in {"", "pending"}:
-                return page_rows, actual_page, pending_index
+        page_rows = _sort_rows_for_validation_queue(page_rows)
+        pending_index = _pending_row_index_or_none(page_rows)
+        if pending_index is not None:
+            return page_rows, actual_page, pending_index
 
         requested_page = actual_page + 1
 
@@ -2742,7 +2766,7 @@ def _save_selected_validation_with_refresh(
         show_conflicts_only=show_conflicts_only,
         actor_username=validator,
     )
-    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+    refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
 
     if selected_key:
         refreshed_index = _post_validation_queue_anchor(refreshed_rows, selected_key, selected_index)
@@ -2765,14 +2789,22 @@ def _save_selected_validation_with_refresh(
             show_conflicts_only=show_conflicts_only,
             actor_username=validator,
         )
-        refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+        refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
         refreshed_index = _find_detection_row_index(refreshed_rows, selected_key) if selected_key else 0
         pending_status_value = status_value
         status = f"{save_status} Table reloaded to resolve conflict."
     else:
         conflict_key = ""
         pending_status_value = ""
-        if selected_was_last_row:
+        normalized_status_filter = (status_filter or "all").strip().lower()
+        pending_index = (
+            _pending_row_index_or_none(refreshed_rows)
+            if normalized_status_filter in {"", "all", "pending"} and int(refreshed_page) <= 1
+            else None
+        )
+        if pending_index is not None:
+            refreshed_index = pending_index - 1
+        elif normalized_status_filter in {"", "all", "pending"}:
             first_pending_page = _first_pending_queue_page(
                 queue_service=queue_service,
                 snapshot_reader=snapshot_reader,
@@ -2788,6 +2820,25 @@ def _save_selected_validation_with_refresh(
             if first_pending_page is not None:
                 refreshed_rows, refreshed_page, pending_index = first_pending_page
                 refreshed_index = pending_index - 1
+            else:
+                if refreshed_page != 1:
+                    refreshed_rows, page_status, refreshed_page = _page_to_table(
+                        service=queue_service,
+                        snapshot_reader=snapshot_reader,
+                        project_slug=project_slug,
+                        page=1,
+                        scientific_name=scientific_name,
+                        min_confidence=min_confidence,
+                        validator_filter=validator_filter,
+                        status_filter=status_filter,
+                        updated_after=updated_after,
+                        show_conflicts_only=show_conflicts_only,
+                        actor_username=validator,
+                    )
+                    refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
+                refreshed_index = -1
+        elif selected_was_last_row:
+            refreshed_index = -1
         status = f"{save_status} | {page_status}"
 
     return (
@@ -2837,7 +2888,7 @@ def _reapply_last_conflict_validation_with_refresh(
             show_conflicts_only=show_conflicts_only,
             actor_username=validator,
         )
-        refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+        refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
         return (
             f"No pending validation to reapply | {page_status}",
             cache_key,
@@ -2946,7 +2997,7 @@ def _batch_validate_conflicts(
         show_conflicts_only=False,
         actor_username=validator_name,
     )
-    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+    refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
 
     summary = f"Processed {len(conflict_rows)} conflicts: {success_count} success, {conflict_count} new conflicts, {failure_count} failures"
     status = f"{summary} | {page_status}"
@@ -5158,7 +5209,7 @@ def create_app() -> gr.Blocks:
                         )
                     except HfBucketValidationError as exc:
                         return [], str(exc), 1
-                    rows = _sort_rows_by_confidence_desc(rows)
+                    rows = _sort_rows_for_validation_queue(rows)
                     return rows, status_text, updated_page
 
                 def go_next(
