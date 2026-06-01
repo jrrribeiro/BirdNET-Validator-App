@@ -266,13 +266,19 @@ def inline_hint_html(text: str, tone: str = "info") -> str:
     return f"<div class='bn-inline-hint{tone_class}'>{escape(text)}</div>"
 
 
-def selected_segment_html(row: list[object] | None, selected_index: int | None = None, total_rows: int | None = None) -> str:
+def selected_segment_html(
+    row: list[object] | None,
+    selected_index: int | None = None,
+    total_rows: int | None = None,
+    empty_title: str = "No segment loaded",
+    empty_note: str = "Choose a species and apply filters to load the validation queue.",
+) -> str:
     if not row:
         return (
             "<div class='bn-selected-card'>"
             "<div class='bn-brand-kicker'>Selected segment</div>"
-            "<div class='bn-empty-title'>No segment loaded</div>"
-            "<div class='bn-compact-note'>Choose a species and apply filters to load the validation queue.</div>"
+            f"<div class='bn-empty-title'>{escape(empty_title)}</div>"
+            f"<div class='bn-compact-note'>{escape(empty_note)}</div>"
             "</div>"
         )
 

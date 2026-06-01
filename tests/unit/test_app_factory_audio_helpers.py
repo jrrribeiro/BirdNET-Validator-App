@@ -13,6 +13,7 @@ from src.ui.app_factory import (
     _build_validation_report,
     _cleanup_selected_audio,
     _advance_to_next_row_with_title,
+    _autofetch_first_row,
     _extract_audio_id,
     _extract_detection_key,
     _find_detection_row_index,
@@ -22,6 +23,7 @@ from src.ui.app_factory import (
     _save_selected_validation,
     _save_selected_validation_with_refresh,
     _selected_dataframe_row_index,
+    _selected_segment_card,
     _reapply_last_conflict_validation_with_refresh,
     _batch_validate_conflicts,
     create_app,
@@ -929,6 +931,45 @@ def test_advance_to_next_row_wraps_to_first_pending_row() -> None:
     assert selected_index == 1
     assert audio_path == "/tmp/audio_02.wav"
     assert cache_key == "key:audio_02"
+
+
+def test_autofetch_first_row_stops_when_filtered_species_is_complete() -> None:
+    service = FakeAudioService()
+    rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0, "positive"],
+        ["dkey_02", "audio_02", "sp", 0.8, 1.0, 2.0, "negative"],
+    ]
+
+    selected_index, audio_path, cache_key, status, spectrogram_path = _autofetch_first_row(
+        audio_service=service,
+        dataset_repo="org/dataset",
+        rows=rows,
+        cache_key="cache:old",
+    )
+
+    assert selected_index == -1
+    assert audio_path is None
+    assert cache_key == ""
+    assert spectrogram_path is None
+    assert "All segments for this species have been validated" in status
+
+
+def test_selected_segment_card_shows_complete_species_message_only_when_all_rows_reviewed() -> None:
+    complete_rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0, "positive"],
+        ["dkey_02", "audio_02", "sp", 0.8, 1.0, 2.0, "negative"],
+    ]
+    pending_rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0, "pending"],
+    ]
+
+    complete_html = _selected_segment_card(complete_rows, -1)
+    pending_html = _selected_segment_card(pending_rows, -1)
+
+    assert "All segments for this species have been validated" in complete_html
+    assert "Select a row manually to review or correct it." in complete_html
+    assert "No segment loaded" in pending_html
+    assert "All segments for this species have been validated" not in pending_html
 
 
 def test_save_selected_validation_with_refresh_success() -> None:

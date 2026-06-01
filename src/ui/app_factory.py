@@ -64,9 +64,10 @@ VALIDATION_UNCERTAIN_LABEL = "← Uncertain"
 VALIDATION_SKIP_LABEL = "→ Skip"
 VALIDATION_FAVORITE_LABEL = "␣ Favorite"
 VALIDATION_FAVORITED_LABEL = "␣ Favorited"
+VALIDATION_QUEUE_COMPLETE_CARD_TITLE = "All segments for this species have been validated"
+VALIDATION_QUEUE_COMPLETE_CARD_NOTE = "Select a row manually to review or correct it."
 VALIDATION_QUEUE_COMPLETE_STATUS = (
-    "All segments for this species have been validated. "
-    "Select a row manually to review or correct it."
+    f"{VALIDATION_QUEUE_COMPLETE_CARD_TITLE}. {VALIDATION_QUEUE_COMPLETE_CARD_NOTE}"
 )
 
 
@@ -2332,18 +2333,22 @@ def _autofetch_first_row(
 ) -> tuple[int, str | None, str, str, str | None]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
-        return 0, None, "", "No detections available to auto-load audio", None
+        return -1, None, "", "No detections available to auto-load audio", None
+
+    pending_index = _pending_row_index_or_none(normalized_rows)
+    if pending_index is None:
+        return -1, None, "", VALIDATION_QUEUE_COMPLETE_STATUS, None
 
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
         dataset_repo=dataset_repo,
         rows=normalized_rows,
-        selected_index=0,
+        selected_index=pending_index,
         previous_cache_key=cache_key,
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    return 0, audio_path, updated_cache_key, status, spectrogram_path
+    return pending_index, audio_path, updated_cache_key, status, spectrogram_path
 
 
 def _select_and_fetch_audio(
@@ -2458,7 +2463,15 @@ def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
 
 def _selected_segment_card(rows: object, selected_index: int) -> str:
     normalized_rows = _normalize_rows(rows)
-    if not normalized_rows or int(selected_index) < 0:
+    if not normalized_rows:
+        return selected_segment_html(None)
+    if int(selected_index) < 0:
+        if _pending_row_index_or_none(normalized_rows) is None:
+            return selected_segment_html(
+                None,
+                empty_title=VALIDATION_QUEUE_COMPLETE_CARD_TITLE,
+                empty_note=VALIDATION_QUEUE_COMPLETE_CARD_NOTE,
+            )
         return selected_segment_html(None)
     safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
     return selected_segment_html(normalized_rows[safe_index], safe_index, len(normalized_rows))
