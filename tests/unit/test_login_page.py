@@ -76,6 +76,7 @@ def test_oauth_action_button_html_has_fixed_width_and_intent_route() -> None:
 
     assert "max-width:var(--bn-login-width,680px)" in signed_out
     assert "/login/huggingface?birdnet_login_intent=1" in signed_out
+    assert "bn-hf-oauth-link" in signed_out
     assert "birdnet_hf_login_intent" in signed_out
     assert "Sign out" in signed_in
     assert "/logout" in signed_in

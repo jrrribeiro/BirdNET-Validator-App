@@ -8,16 +8,18 @@ from src.auth.auth_service import AuthService
 
 
 def oauth_action_button_html(*, signed_in: bool = False) -> str:
-    """Render the visible HF OAuth action without depending on Gradio button layout."""
+    """Render the visible HF OAuth action while keeping login intent explicit."""
     if signed_in:
         href = "/logout"
         label = "Sign out"
+        state_class = "bn-hf-oauth-link-signed-in"
         onclick = (
             "sessionStorage.removeItem('birdnet_hf_login_intent');"
         )
     else:
         href = "/login/huggingface?birdnet_login_intent=1"
         label = "Sign in with Hugging Face"
+        state_class = "bn-hf-oauth-link-signed-out"
         onclick = (
             "const q=new URLSearchParams(window.location.search);"
             "q.set('birdnet_login_intent','1');"
@@ -29,13 +31,10 @@ def oauth_action_button_html(*, signed_in: bool = False) -> str:
     return (
         "<div class='bn-oauth-login-html' "
         "style='box-sizing:border-box;width:100%;max-width:var(--bn-login-width,680px);margin:0 auto;'>"
-        f"<a href='{href}' target='_self' onclick=\"{onclick}\" "
-        "style='box-sizing:border-box;display:flex;align-items:center;justify-content:center;"
-        "width:100%;max-width:var(--bn-login-width,680px);min-height:48px;padding:12px 18px;"
-        "border:1px solid #f97316;border-radius:8px;background:#f97316;color:#fff;"
-        "font-weight:780;text-decoration:none;white-space:nowrap;overflow:hidden;"
-        "text-overflow:ellipsis;'>"
-        f"{label}"
+        f"<a class='bn-hf-oauth-link {state_class}' href='{href}' target='_self' onclick=\"{onclick}\" "
+        f"aria-label='{label}'>"
+        "<span class='bn-hf-oauth-mark' aria-hidden='true'>HF</span>"
+        f"<span class='bn-hf-oauth-label'>{label}</span>"
         "</a>"
         "</div>"
     )

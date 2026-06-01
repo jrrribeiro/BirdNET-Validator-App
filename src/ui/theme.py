@@ -65,6 +65,39 @@ main.app,
   margin-right: auto !important;
 }
 
+.bn-hf-oauth-link {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  min-height: 48px !important;
+  padding: 12px 18px !important;
+  border: 1px solid #d0d7de !important;
+  border-radius: 8px !important;
+  background: #ffffff !important;
+  color: #142033 !important;
+  font-weight: 760 !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.05) !important;
+}
+
+.bn-hf-oauth-mark {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 999px !important;
+  background: #ffd166 !important;
+  color: #503500 !important;
+  font-size: 11px !important;
+  font-weight: 850 !important;
+  letter-spacing: 0 !important;
+}
+
 @media (max-width: 1280px) {
   :root {
     --bn-content-width: calc(100vw - 32px);
@@ -288,6 +321,66 @@ button.bn-oauth-login-button:hover {
 .bn-oauth-login-button button *,
 button.bn-oauth-login-button * {
   white-space: nowrap !important;
+}
+
+.bn-hf-oauth-link {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  max-width: var(--bn-login-width) !important;
+  min-height: 48px !important;
+  padding: 12px 18px !important;
+  border: 1px solid #d0d7de !important;
+  border-radius: 8px !important;
+  background: #ffffff !important;
+  color: var(--bn-text) !important;
+  font-weight: 760 !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.05) !important;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease !important;
+}
+
+.bn-hf-oauth-link:hover,
+.bn-hf-oauth-link:focus-visible {
+  border-color: #f59e0b !important;
+  background: #fffaf0 !important;
+  color: var(--bn-text) !important;
+  box-shadow: 0 6px 18px rgba(20, 32, 51, 0.08) !important;
+  text-decoration: none !important;
+}
+
+.bn-hf-oauth-link:active {
+  transform: translateY(1px) !important;
+}
+
+.bn-hf-oauth-mark {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 auto !important;
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 999px !important;
+  background: #ffd166 !important;
+  color: #503500 !important;
+  font-size: 11px !important;
+  font-weight: 850 !important;
+  letter-spacing: 0 !important;
+  line-height: 1 !important;
+}
+
+.bn-hf-oauth-label {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.bn-hf-oauth-link-signed-in .bn-hf-oauth-mark {
+  background: #e0f2fe !important;
+  color: var(--bn-info) !important;
 }
 
 .bn-panel {
