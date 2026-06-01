@@ -58,6 +58,14 @@ from src.ui.components import admin_overview_html, compact_metric_grid, coverage
 from src.ui.theme import APP_CSS, CRITICAL_HEAD_HTML, app_header_html
 
 
+VALIDATION_CONFIRM_LABEL = "↑ Confirm"
+VALIDATION_REJECT_LABEL = "↓ Reject"
+VALIDATION_UNCERTAIN_LABEL = "← Uncertain"
+VALIDATION_SKIP_LABEL = "→ Skip"
+VALIDATION_FAVORITE_LABEL = "⌫ Favorite"
+VALIDATION_FAVORITED_LABEL = "⌫ Favorited"
+
+
 class _AudioFetchResultProtocol(Protocol):
     cache_key: str
     local_path: str
@@ -1609,6 +1617,69 @@ def _build_supabase_state(runtime_config: RuntimeConfig) -> tuple[SupabaseBootst
 
 def _is_running_in_hf_space() -> bool:
     return bool((os.getenv("SPACE_ID") or os.getenv("SPACE_HOST") or "").strip())
+
+
+def _validation_shortcuts_script() -> str:
+    """Bind validation-only keyboard shortcuts to stable button IDs."""
+    return """
+<script>
+(() => {
+  if (window.__birdnetValidationShortcutsBound) return;
+  window.__birdnetValidationShortcutsBound = true;
+
+  function isTypingTarget(target) {
+    if (!target) return false;
+    const tag = String(target.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (target.isContentEditable) return true;
+    if (target.closest && target.closest('[contenteditable="true"], [role="textbox"], .cm-editor')) return true;
+    return false;
+  }
+
+  function isVisible(element) {
+    if (!element) return false;
+    const rects = element.getClientRects();
+    if (!rects || rects.length === 0) return false;
+    let node = element;
+    while (node && node !== document.body) {
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      node = node.parentElement;
+    }
+    return true;
+  }
+
+  function validateTabIsActive() {
+    return isVisible(document.getElementById("bn-validation-queue-table"));
+  }
+
+  function clickButtonById(id) {
+    const root = document.getElementById(id);
+    const button = root && root.matches("button") ? root : root?.querySelector("button");
+    if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+    button.click();
+    return true;
+  }
+
+  const actionByKey = {
+    ArrowUp: "bn-validate-confirm-btn",
+    ArrowDown: "bn-validate-reject-btn",
+    ArrowLeft: "bn-validate-uncertain-btn",
+    ArrowRight: "bn-validate-skip-btn",
+    Backspace: "bn-validate-favorite-btn",
+  };
+
+  document.addEventListener("keydown", (event) => {
+    if (event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (isTypingTarget(event.target)) return;
+    const buttonId = actionByKey[event.key];
+    if (!buttonId || !validateTabIsActive()) return;
+    event.preventDefault();
+    clickButtonById(buttonId);
+  });
+})();
+</script>
+"""
 
 
 def _validate_hf_admin_storage_source_dataset(
@@ -4952,11 +5023,11 @@ def create_app() -> gr.Blocks:
                         auto_play_audio = gr.Checkbox(label="Auto-play when selecting a row", value=True)
 
                         with gr.Row(elem_classes=["bn-action-row"]):
-                            approve_btn = gr.Button("Confirm", variant="primary")
-                            reject_btn = gr.Button("Reject")
-                            uncertain_btn = gr.Button("Uncertain")
-                            skip_btn = gr.Button("Skip")
-                            favorite_btn = gr.Button("Favorite", variant="secondary")
+                            approve_btn = gr.Button(VALIDATION_CONFIRM_LABEL, variant="primary", elem_id="bn-validate-confirm-btn")
+                            reject_btn = gr.Button(VALIDATION_REJECT_LABEL, elem_id="bn-validate-reject-btn")
+                            uncertain_btn = gr.Button(VALIDATION_UNCERTAIN_LABEL, elem_id="bn-validate-uncertain-btn")
+                            skip_btn = gr.Button(VALIDATION_SKIP_LABEL, elem_id="bn-validate-skip-btn")
+                            favorite_btn = gr.Button(VALIDATION_FAVORITE_LABEL, variant="secondary", elem_id="bn-validate-favorite-btn")
 
                         corrected_species_input = gr.Dropdown(
                             label="Corrected species",
@@ -5032,25 +5103,7 @@ def create_app() -> gr.Blocks:
                         gr.Markdown("### Review details")
                         validator_name = gr.Textbox(label="Validator", value="", interactive=False)
                         validation_notes = gr.Textbox(label="Notes", placeholder="Optional", lines=4)
-                        keyboard_shortcuts_info = gr.HTML(
-                            value="<script>"
-                            "document.addEventListener('keydown', function(event) {"
-                            "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
-                            "  const key = event.key;"
-                            "  let buttonText = null;"
-                            "  if (key === 'ArrowUp' || key === '1') buttonText = 'Confirm';"
-                            "  else if (key === 'ArrowDown' || key === '2') buttonText = 'Reject';"
-                            "  else if (key === '3') buttonText = 'Uncertain';"
-                            "  else if (key === '4') buttonText = 'Skip';"
-                            "  if (!buttonText) return;"
-                            "  event.preventDefault();"
-                            "  const buttons = document.querySelectorAll('button');"
-                            "  for (const btn of buttons) {"
-                            "    if ((btn.textContent || '').includes(buttonText)) { btn.click(); break; }"
-                            "  }"
-                            "});"
-                            "</script>"
-                        )
+                        keyboard_shortcuts_info = gr.HTML(value=_validation_shortcuts_script())
 
                 cache_key_state = gr.State(value="")
                 pending_status_state = gr.State(value="")
@@ -5352,7 +5405,7 @@ def create_app() -> gr.Blocks:
                 ):
                     normalized_rows = _normalize_rows(rows)
                     if not project_slug or not normalized_rows:
-                        return "No detection selected to favorite", favorite_map, gr.update(value="Favorite", variant="secondary")
+                        return "No detection selected to favorite", favorite_map, gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
                     detection_key = str(normalized_rows[safe_idx][0]).strip()
@@ -5361,11 +5414,11 @@ def create_app() -> gr.Blocks:
                     if detection_key in project_favs:
                         project_favs.remove(detection_key)
                         action = "removed from favorites"
-                        button_update = gr.update(value="Favorite", variant="secondary")
+                        button_update = gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
                     else:
                         project_favs.add(detection_key)
                         action = "added to favorites"
-                        button_update = gr.update(value="Favorited", variant="primary")
+                        button_update = gr.update(value=VALIDATION_FAVORITED_LABEL, variant="primary")
                     updated_map[project_slug] = sorted(project_favs)
                     return f"Detection {detection_key} {action}", updated_map, button_update
 
@@ -5377,14 +5430,14 @@ def create_app() -> gr.Blocks:
                 ):
                     normalized_rows = _normalize_rows(rows)
                     if not project_slug or not normalized_rows:
-                        return gr.update(value="Favorite", variant="secondary")
+                        return gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
                     detection_key = str(normalized_rows[safe_idx][0]).strip()
                     favs = set((favorite_map or {}).get(project_slug, []))
                     if detection_key in favs:
-                        return gr.update(value="Favorited", variant="primary")
-                    return gr.update(value="Favorite", variant="secondary")
+                        return gr.update(value=VALIDATION_FAVORITED_LABEL, variant="primary")
+                    return gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                 def on_table_select(project_slug: str, repo: str, rows: object, cache_key: str, session, evt: gr.SelectData):
                     if not _can_access_project(session, project_slug):

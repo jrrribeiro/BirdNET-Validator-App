@@ -40,6 +40,7 @@ from src.ui.app_factory import (
     _resolve_project_fetch_token,
     _initialize_hf_admin_storage,
     _write_validation_export,
+    _validation_shortcuts_script,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
@@ -1016,6 +1017,25 @@ def test_create_app_with_keyboard_shortcuts() -> None:
     # Verify the app is a Gradio Blocks instance
     assert hasattr(app, "queue")
     assert hasattr(app, "launch")
+
+
+def test_validation_shortcuts_are_validate_tab_scoped() -> None:
+    script = _validation_shortcuts_script()
+
+    assert "bn-validation-queue-table" in script
+    assert "validateTabIsActive" in script
+    assert "ArrowUp" in script
+    assert "ArrowDown" in script
+    assert "ArrowLeft" in script
+    assert "ArrowRight" in script
+    assert "Backspace" in script
+    assert "bn-validate-confirm-btn" in script
+    assert "bn-validate-reject-btn" in script
+    assert "bn-validate-uncertain-btn" in script
+    assert "bn-validate-skip-btn" in script
+    assert "bn-validate-favorite-btn" in script
+    assert "event.repeat" in script
+    assert "isTypingTarget" in script
 
 
 def test_batch_validate_conflicts_all_success() -> None:
