@@ -64,6 +64,10 @@ VALIDATION_UNCERTAIN_LABEL = "← Uncertain"
 VALIDATION_SKIP_LABEL = "→ Skip"
 VALIDATION_FAVORITE_LABEL = "␣ Favorite"
 VALIDATION_FAVORITED_LABEL = "␣ Favorited"
+VALIDATION_QUEUE_COMPLETE_STATUS = (
+    "All segments for this species have been validated. "
+    "Select a row manually to review or correct it."
+)
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -2403,6 +2407,8 @@ def _spectrogram_title(species_name: str | None, confidence: float | None) -> st
 
 def _selected_row_species_and_confidence(rows: object, selected_index: int) -> tuple[str | None, float | None]:
     normalized_rows = _normalize_rows(rows)
+    if int(selected_index) < 0:
+        return None, None
     if normalized_rows:
         safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
         row = normalized_rows[safe_index]
@@ -2431,6 +2437,8 @@ def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
         return []
+    if int(selected_index) < 0:
+        return normalized_rows
 
     safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
     marked_rows: list[list[object]] = []
@@ -2450,7 +2458,7 @@ def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
 
 def _selected_segment_card(rows: object, selected_index: int) -> str:
     normalized_rows = _normalize_rows(rows)
-    if not normalized_rows:
+    if not normalized_rows or int(selected_index) < 0:
         return selected_segment_html(None)
     safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
     return selected_segment_html(normalized_rows[safe_index], safe_index, len(normalized_rows))
@@ -2580,11 +2588,15 @@ def _advance_to_next_row_with_title(
 ) -> tuple[int, str | None, str, str, str | None, str]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
-        return 0, None, cache_key, "No detections available", None, _spectrogram_title(None, None)
+        return -1, None, cache_key, "No detections available", None, _spectrogram_title(None, None)
+
+    pending_index = _pending_row_index_or_none(normalized_rows)
+    if pending_index is None:
+        return -1, None, cache_key, VALIDATION_QUEUE_COMPLETE_STATUS, None, _spectrogram_title(None, None)
 
     safe_index = int(selected_index) + 1
-    if safe_index >= len(normalized_rows):
-        safe_index = _first_pending_row_index(normalized_rows)
+    if safe_index >= len(normalized_rows) or not _row_is_pending(normalized_rows[safe_index]):
+        safe_index = pending_index
     safe_index = max(0, safe_index)
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
@@ -5455,7 +5467,7 @@ def create_app() -> gr.Blocks:
                     favorite_map: dict[str, list[str]],
                 ):
                     normalized_rows = _normalize_rows(rows)
-                    if not project_slug or not normalized_rows:
+                    if not project_slug or not normalized_rows or int(idx) < 0:
                         return "No detection selected to favorite", favorite_map, gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
@@ -5480,7 +5492,7 @@ def create_app() -> gr.Blocks:
                     favorite_map: dict[str, list[str]],
                 ):
                     normalized_rows = _normalize_rows(rows)
-                    if not project_slug or not normalized_rows:
+                    if not project_slug or not normalized_rows or int(idx) < 0:
                         return gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))

@@ -1040,6 +1040,66 @@ def test_save_selected_validation_advances_to_highest_confidence_pending_row() -
     assert updated_cache_key == "key:audio_pending_high"
 
 
+def test_save_selected_validation_stops_when_species_is_complete() -> None:
+    class QueueAfterFinalSave:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="dkey_final",
+                    audio_id="audio_final",
+                    scientific_name="sp",
+                    confidence=0.99,
+                    start_time=0,
+                    end_time=1,
+                )
+            ]
+
+    class SnapshotAfterFinalSave:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {"dkey_final": {"status": "positive", "version": 1}}
+
+    audio_service = FakeAudioService()
+    status, cache_key, _, refreshed_rows, _, refreshed_index, _, _ = _save_selected_validation_with_refresh(
+        validation_service=FakeValidationService(),
+        audio_service=audio_service,
+        queue_service=QueueAfterFinalSave(),
+        snapshot_reader=SnapshotAfterFinalSave(),
+        project_slug="demo-project",
+        rows=[["dkey_final", "audio_final", "sp", 0.99, 0.0, 1.0, "pending", 0]],
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_final",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+    )
+
+    selected_index, audio_path, updated_cache_key, audio_status, spectrogram_path, title = _advance_to_next_row_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+    )
+
+    assert "Validation saved" in status
+    assert refreshed_index == -1
+    assert selected_index == -1
+    assert audio_path is None
+    assert updated_cache_key == ""
+    assert spectrogram_path is None
+    assert title == "### Segment spectrogram"
+    assert "All segments for this species have been validated" in audio_status
+
+
 def test_save_selected_validation_with_refresh_conflict() -> None:
     audio_service = FakeAudioService()
     validation_service = FakeConflictValidationService()
