@@ -1686,6 +1686,93 @@ def _validation_shortcuts_script() -> str:
 """
 
 
+def _species_status_dropdown_script() -> str:
+    """Apply lightweight per-species progress styling to the Gradio dropdown."""
+    return """
+<script>
+(() => {
+  const DROPDOWN_ID = "bn-species-filter";
+  const PAYLOAD_ID = "bn-species-status-payload";
+  const STATUS_CLASSES = [
+    "bn-species-option-unvalidated",
+    "bn-species-option-partial",
+    "bn-species-option-complete",
+  ];
+  const SELECTED_CLASSES = [
+    "bn-species-selected-unvalidated",
+    "bn-species-selected-partial",
+    "bn-species-selected-complete",
+  ];
+
+  function payloadText() {
+    const root = document.getElementById(PAYLOAD_ID);
+    if (!root) return "{}";
+    const field = root.querySelector("textarea, input");
+    if (field && typeof field.value === "string") return field.value || "{}";
+    return root.textContent || "{}";
+  }
+
+  function statusMap() {
+    try {
+      const parsed = JSON.parse(payloadText());
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function normalizeStatus(value) {
+    const status = String(value || "").trim().toLowerCase();
+    if (status === "complete" || status === "partial" || status === "unvalidated") return status;
+    return "unvalidated";
+  }
+
+  function speciesStatus(map, speciesName) {
+    const entry = map[String(speciesName || "").trim()];
+    if (typeof entry === "string") return normalizeStatus(entry);
+    if (entry && typeof entry === "object") return normalizeStatus(entry.status);
+    return "unvalidated";
+  }
+
+  function cleanOptionText(value) {
+    return String(value || "").replace(/^\\s*✓\\s*/, "").trim();
+  }
+
+  function applySpeciesStatusStyles() {
+    const dropdown = document.getElementById(DROPDOWN_ID);
+    if (!dropdown) return;
+    const map = statusMap();
+
+    dropdown.querySelectorAll('li[data-testid="dropdown-option"]').forEach((option) => {
+      const speciesName = cleanOptionText(option.getAttribute("aria-label") || option.textContent || "");
+      const status = speciesStatus(map, speciesName);
+      option.classList.remove(...STATUS_CLASSES);
+      option.classList.add(`bn-species-option-${status}`);
+      const entry = map[speciesName] || {};
+      const reviewed = typeof entry === "object" ? Number(entry.reviewed || 0) : 0;
+      const total = typeof entry === "object" ? Number(entry.total || 0) : 0;
+      option.title = total ? `${reviewed}/${total} reviewed` : "No reviewed segments yet";
+    });
+
+    dropdown.classList.remove(...SELECTED_CLASSES);
+    const input = dropdown.querySelector('input[role="listbox"]');
+    const selected = cleanOptionText(input ? input.value : "");
+    if (selected) {
+      dropdown.classList.add(`bn-species-selected-${speciesStatus(map, selected)}`);
+    }
+  }
+
+  const observer = new MutationObserver(applySpeciesStatusStyles);
+  observer.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener("focus", applySpeciesStatusStyles);
+  document.addEventListener("click", () => window.setTimeout(applySpeciesStatusStyles, 0), true);
+  window.setInterval(applySpeciesStatusStyles, 700);
+  applySpeciesStatusStyles();
+})();
+</script>
+"""
+
+
 def _validate_hf_admin_storage_source_dataset(
     *,
     project: Project,
@@ -2507,6 +2594,121 @@ def _extract_species_options_from_queue(
     return sorted(species_set)
 
 
+def _species_status_payload(status_map: dict[str, dict[str, object]] | None) -> str:
+    return json.dumps(status_map or {}, ensure_ascii=False, sort_keys=True)
+
+
+def _coerce_species_status_map(raw_map: object) -> dict[str, dict[str, object]]:
+    if isinstance(raw_map, str):
+        try:
+            parsed = json.loads(raw_map)
+        except Exception:
+            parsed = {}
+    else:
+        parsed = raw_map
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    normalized: dict[str, dict[str, object]] = {}
+    for key, value in parsed.items():
+        species = str(key).strip()
+        if not species:
+            continue
+        if isinstance(value, dict):
+            status = str(value.get("status", "unvalidated")).strip().lower()
+            total = int(value.get("total") or 0)
+            reviewed = int(value.get("reviewed") or 0)
+        else:
+            status = str(value or "unvalidated").strip().lower()
+            total = 0
+            reviewed = 0
+        if status not in {"unvalidated", "partial", "complete"}:
+            status = "unvalidated"
+        normalized[species] = {"status": status, "total": total, "reviewed": reviewed}
+    return normalized
+
+
+def _list_detection_items_for_status(
+    queue_service: _QueueServiceProtocol,
+    project_slug: str,
+    page_size: int,
+    scientific_name: str | None = None,
+) -> list[object]:
+    list_all = getattr(queue_service, "list_all_detections", None)
+    if callable(list_all):
+        return list(
+            list_all(
+                project_slug=project_slug,
+                scientific_name=scientific_name,
+                min_confidence=None,
+                max_confidence=None,
+            )
+        )
+
+    items: list[object] = []
+    page = 1
+    while True:
+        page_result = queue_service.get_page(
+            project_slug=project_slug,
+            page=page,
+            page_size=page_size,
+            scientific_name=scientific_name,
+            min_confidence=None,
+            max_confidence=None,
+        )
+        items.extend(list(page_result.items))
+        if not page_result.has_next:
+            break
+        page += 1
+    return items
+
+
+def _build_species_status_map(
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    page_size: int,
+    actor_username: str = "",
+    scientific_name: str | None = None,
+) -> dict[str, dict[str, object]]:
+    if not project_slug:
+        return {}
+
+    items = _list_detection_items_for_status(
+        queue_service=queue_service,
+        project_slug=project_slug,
+        page_size=page_size,
+        scientific_name=(scientific_name or "").strip() or None,
+    )
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug, actor_username=actor_username)
+    counters: dict[str, dict[str, int]] = {}
+
+    for item in items:
+        species = str(getattr(item, "scientific_name", "")).strip()
+        if not species:
+            continue
+        detection_key = str(getattr(item, "detection_key", "")).strip()
+        status_value = str(snapshot.get(detection_key, {}).get("status", "pending")).strip().lower()
+        species_counter = counters.setdefault(species, {"total": 0, "reviewed": 0})
+        species_counter["total"] += 1
+        if status_value and status_value != "pending":
+            species_counter["reviewed"] += 1
+
+    status_map: dict[str, dict[str, object]] = {}
+    for species, counter in sorted(counters.items()):
+        total = int(counter["total"])
+        reviewed = int(counter["reviewed"])
+        if reviewed <= 0:
+            status = "unvalidated"
+        elif reviewed >= total:
+            status = "complete"
+        else:
+            status = "partial"
+        status_map[species] = {"status": status, "total": total, "reviewed": reviewed}
+    return status_map
+
+
 def _row_confidence(row: list[object]) -> float:
     try:
         return float(row[3]) if len(row) > 3 else 0.0
@@ -3312,7 +3514,7 @@ def create_app() -> gr.Blocks:
     with gr.Blocks(
         title="BirdNET-Validator-App",
         css=APP_CSS,
-        head=CRITICAL_HEAD_HTML,
+        head=CRITICAL_HEAD_HTML + _species_status_dropdown_script(),
         fill_width=False,
         elem_classes=["bn-shell"],
     ) as wrapper:
@@ -5079,6 +5281,7 @@ def create_app() -> gr.Blocks:
 
                 page_state = gr.State(value=1)
                 project_species_state = gr.State(value=[])
+                project_species_status_state = gr.State(value={})
                 custom_corrected_species_state = gr.State(value={})
                 favorite_detection_state = gr.State(value={})
 
@@ -5150,6 +5353,13 @@ def create_app() -> gr.Blocks:
                             choices=[],
                             value=None,
                             interactive=False,
+                            elem_id="bn-species-filter",
+                        )
+                        species_status_payload = gr.Textbox(
+                            value="{}",
+                            interactive=False,
+                            label="Species validation status",
+                            elem_id="bn-species-status-payload",
                         )
 
                         gr.Markdown("### Queue navigation")
@@ -5285,18 +5495,47 @@ def create_app() -> gr.Blocks:
 
                 def refresh_for_selected_project(project_slug: str, session):
                     if not project_slug:
-                        return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
+                        return (
+                            gr.update(choices=[], value=None, interactive=False),
+                            [],
+                            "",
+                            1,
+                            None,
+                            None,
+                            _spectrogram_title(None, None),
+                            _build_validation_summary_cards([]),
+                            gr.update(choices=["Noise", "Undetermined"], value=None),
+                            [],
+                            {},
+                            "{}",
+                        )
 
                     if not _can_access_project(session, project_slug):
-                        return gr.update(choices=[], value=None, interactive=False), [], "Access denied. Select an assigned project.", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
+                        return (
+                            gr.update(choices=[], value=None, interactive=False),
+                            [],
+                            "Access denied. Select an assigned project.",
+                            1,
+                            None,
+                            None,
+                            _spectrogram_title(None, None),
+                            _build_validation_summary_cards([]),
+                            gr.update(choices=["Noise", "Undetermined"], value=None),
+                            [],
+                            {},
+                            "{}",
+                        )
 
                     warning = _ensure_project_queue_loaded(project_slug, session)
 
-                    species_options = _extract_species_options_from_queue(
+                    species_status_map = _build_species_status_map(
                         queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
                         project_slug=project_slug,
                         page_size=max(32, runtime_config.page_size),
+                        actor_username=_validator_name_from_session(session),
                     )
+                    species_options = sorted(species_status_map)
                     corrected_choices = species_options + ["Noise", "Undetermined"]
                     return (
                         gr.update(choices=species_options, value=None, interactive=True),
@@ -5309,6 +5548,8 @@ def create_app() -> gr.Blocks:
                         _build_validation_summary_cards([]),
                         gr.update(choices=corrected_choices, value=None),
                         species_options,
+                        species_status_map,
+                        _species_status_payload(species_status_map),
                     )
 
                 def save_for_project(
@@ -5540,6 +5781,27 @@ def create_app() -> gr.Blocks:
                         actor_username=_validator_name_from_session(session),
                     )
 
+                def refresh_species_status_for_current_species(
+                    project_slug: str,
+                    current_status_map: object,
+                    species: str,
+                    session=None,
+                ):
+                    status_map = _coerce_species_status_map(current_status_map)
+                    species_name = (species or "").strip()
+                    if not project_slug or not species_name or not _can_access_project(session, project_slug):
+                        return status_map, _species_status_payload(status_map)
+                    updated_species = _build_species_status_map(
+                        queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        page_size=max(32, runtime_config.page_size),
+                        actor_username=_validator_name_from_session(session),
+                        scientific_name=species_name,
+                    )
+                    status_map.update(updated_species)
+                    return status_map, _species_status_payload(status_map)
+
                 refresh_event = refresh_btn.click(
                     fn=refresh,
                     inputs=[
@@ -5594,7 +5856,20 @@ def create_app() -> gr.Blocks:
                 project_change_event = selected_project_state.change(
                     fn=refresh_for_selected_project,
                     inputs=[selected_project_state, session_state],
-                    outputs=[species_filter, table, status, page_state, audio_player, spectrogram_image, spectrogram_title, validation_summary_cards, corrected_species_input, project_species_state],
+                    outputs=[
+                        species_filter,
+                        table,
+                        status,
+                        page_state,
+                        audio_player,
+                        spectrogram_image,
+                        spectrogram_title,
+                        validation_summary_cards,
+                        corrected_species_input,
+                        project_species_state,
+                        project_species_status_state,
+                        species_status_payload,
+                    ],
                 )
 
                 species_filter.change(
@@ -5927,6 +6202,10 @@ def create_app() -> gr.Blocks:
                     fn=build_species_summary,
                     inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload],
                 )
 
                 reject_event.then(
@@ -5953,6 +6232,10 @@ def create_app() -> gr.Blocks:
                     fn=build_species_summary,
                     inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload],
                 )
 
                 uncertain_event.then(
@@ -5979,6 +6262,10 @@ def create_app() -> gr.Blocks:
                     fn=build_species_summary,
                     inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload],
                 )
 
                 skip_event.then(
@@ -6005,6 +6292,10 @@ def create_app() -> gr.Blocks:
                     fn=build_species_summary,
                     inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload],
                 )
 
                 session_state.change(

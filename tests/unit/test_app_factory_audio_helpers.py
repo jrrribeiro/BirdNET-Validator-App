@@ -11,6 +11,7 @@ import pytest
 from src.ui.app_factory import (
     _build_validation_export_rows,
     _build_validation_report,
+    _build_species_status_map,
     _cleanup_selected_audio,
     _advance_to_next_row_with_title,
     _autofetch_first_row,
@@ -43,6 +44,7 @@ from src.ui.app_factory import (
     _initialize_hf_admin_storage,
     _write_validation_export,
     _validation_shortcuts_script,
+    _species_status_dropdown_script,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
@@ -739,6 +741,47 @@ def test_page_to_table_prioritizes_pending_then_confidence() -> None:
         "reviewed_high",
         "reviewed_low",
     ]
+
+
+def test_build_species_status_map_marks_progress_levels() -> None:
+    class QueueWithSpecies:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(detection_key="sp_a_1", scientific_name="Species A"),
+                SimpleNamespace(detection_key="sp_a_2", scientific_name="Species A"),
+                SimpleNamespace(detection_key="sp_b_1", scientific_name="Species B"),
+                SimpleNamespace(detection_key="sp_c_1", scientific_name="Species C"),
+            ]
+
+    class SnapshotWithSpecies:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {
+                "sp_a_1": {"status": "positive"},
+                "sp_b_1": {"status": "negative"},
+            }
+
+    status_map = _build_species_status_map(
+        queue_service=QueueWithSpecies(),
+        snapshot_reader=SnapshotWithSpecies(),
+        project_slug="demo-project",
+        page_size=10,
+    )
+
+    assert status_map["Species A"] == {"status": "partial", "total": 2, "reviewed": 1}
+    assert status_map["Species B"] == {"status": "complete", "total": 1, "reviewed": 1}
+    assert status_map["Species C"] == {"status": "unvalidated", "total": 1, "reviewed": 0}
+
+
+def test_species_status_dropdown_script_targets_dropdown_without_changing_choices() -> None:
+    script = _species_status_dropdown_script()
+
+    assert "bn-species-filter" in script
+    assert "bn-species-status-payload" in script
+    assert "bn-species-option-complete" in script
+    assert "bn-species-option-partial" in script
+    assert "bn-species-option-unvalidated" in script
 
 
 def test_page_to_table_marks_conflict_row() -> None:

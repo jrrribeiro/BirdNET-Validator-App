@@ -1614,6 +1614,75 @@ button.bn-report-download-action-blue:hover {
   display: none !important;
 }
 
+#bn-species-status-payload {
+  display: none !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"] {
+  box-sizing: border-box !important;
+  margin: 4px 8px !important;
+  padding: 8px 10px !important;
+  border: 1px solid var(--bn-species-status-border, var(--bn-border)) !important;
+  border-left-width: 5px !important;
+  border-radius: 8px !important;
+  background: var(--bn-species-status-bg, #ffffff) !important;
+  color: var(--bn-species-status-text, var(--bn-text)) !important;
+  font-weight: 650 !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"] .inner-item {
+  display: none !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].active,
+#bn-species-filter li[data-testid="dropdown-option"].selected,
+#bn-species-filter li[data-testid="dropdown-option"]:hover {
+  background: var(--bn-species-status-hover, #eff6ff) !important;
+  color: var(--bn-species-status-text, var(--bn-text)) !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-unvalidated {
+  --bn-species-status-border: #cbd5e1;
+  --bn-species-status-bg: #f8fafc;
+  --bn-species-status-hover: #eef2f7;
+  --bn-species-status-text: #243348;
+  border-color: #cbd5e1 !important;
+  border-left-color: #94a3b8 !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-partial {
+  --bn-species-status-border: #f59e0b;
+  --bn-species-status-bg: #fff7ed;
+  --bn-species-status-hover: #ffedd5;
+  --bn-species-status-text: #7c2d12;
+  border-color: #f59e0b !important;
+  border-left-color: #d97706 !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-complete {
+  --bn-species-status-border: #16a34a;
+  --bn-species-status-bg: #ecfdf3;
+  --bn-species-status-hover: #dcfce7;
+  --bn-species-status-text: #14532d;
+  border-color: #16a34a !important;
+  border-left-color: #15803d !important;
+}
+
+#bn-species-filter.bn-species-selected-unvalidated .wrap-inner {
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.3) !important;
+}
+
+#bn-species-filter.bn-species-selected-partial .wrap-inner {
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35) !important;
+}
+
+#bn-species-filter.bn-species-selected-complete .wrap-inner {
+  border-color: #16a34a !important;
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.35) !important;
+}
+
 textarea,
 input,
 select {
