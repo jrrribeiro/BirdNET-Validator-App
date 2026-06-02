@@ -1687,6 +1687,30 @@ button.bn-report-download-action-blue:hover {
   box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.35) !important;
 }
 
+#bn-corrected-species-error-marker {
+  display: none !important;
+}
+
+#bn-corrected-species-input.bn-corrected-species-error,
+#bn-corrected-species-input.bn-corrected-species-error > div,
+#bn-corrected-species-input.bn-corrected-species-error .wrap,
+#bn-corrected-species-input.bn-corrected-species-error .wrap-inner {
+  border-color: #ef4444 !important;
+  background: #fff5f5 !important;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.32) !important;
+}
+
+#bn-corrected-species-input.bn-corrected-species-error label,
+#bn-corrected-species-input.bn-corrected-species-error .label-wrap {
+  color: #b42318 !important;
+}
+
+#bn-corrected-species-input.bn-corrected-species-error input,
+#bn-corrected-species-input.bn-corrected-species-error select,
+#bn-corrected-species-input.bn-corrected-species-error textarea {
+  background: #fff5f5 !important;
+}
+
 textarea,
 input,
 select {

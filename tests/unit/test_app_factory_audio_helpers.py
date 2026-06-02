@@ -48,6 +48,9 @@ from src.ui.app_factory import (
     _species_status_dropdown_script,
     _species_status_payload,
     _species_dropdown_choices,
+    _corrected_species_error_payload,
+    _corrected_species_required_script,
+    _corrected_species_ui_after_validation,
     VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS,
 )
 from src.auth.auth_service import AuthService
@@ -1165,6 +1168,29 @@ def test_reject_validation_saves_corrected_species_when_provided() -> None:
     assert cache_key == ""
     assert validation_service.calls[0]["status"] == "negative"
     assert validation_service.calls[0]["corrected_species"] == "Correct Species"
+
+
+def test_corrected_species_ui_state_marks_error_and_resets_after_save() -> None:
+    blocked_update, blocked_marker = _corrected_species_ui_after_validation(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
+    saved_update, saved_marker = _corrected_species_ui_after_validation("Validation saved: dkey -> negative")
+    conflict_update, conflict_marker = _corrected_species_ui_after_validation("Concurrency conflict: stale")
+
+    assert isinstance(blocked_update, dict)
+    assert 'data-error="true"' in blocked_marker
+    assert saved_update["value"] is None
+    assert 'data-error="false"' in saved_marker
+    assert "value" not in conflict_update
+    assert 'data-error="false"' in conflict_marker
+
+
+def test_corrected_species_error_script_targets_marker_and_input() -> None:
+    script = _corrected_species_required_script()
+    payload = _corrected_species_error_payload(True)
+
+    assert "bn-corrected-species-input" in script
+    assert "bn-corrected-species-error-marker" in script
+    assert "bn-corrected-species-error" in script
+    assert 'data-error="true"' in payload
 
 
 def test_save_selected_validation_advances_to_highest_confidence_pending_row() -> None:
