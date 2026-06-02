@@ -45,6 +45,7 @@ from src.ui.app_factory import (
     _write_validation_export,
     _validation_shortcuts_script,
     _species_status_dropdown_script,
+    _species_status_payload,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
@@ -782,6 +783,15 @@ def test_species_status_dropdown_script_targets_dropdown_without_changing_choice
     assert "bn-species-option-complete" in script
     assert "bn-species-option-partial" in script
     assert "bn-species-option-unvalidated" in script
+
+
+def test_species_status_payload_is_hidden_json_carrier() -> None:
+    payload = _species_status_payload({"Species A": {"status": "complete", "total": 1, "reviewed": 1}})
+
+    assert 'class="bn-species-status-data"' in payload
+    assert "data-json=" in payload
+    assert "&quot;Species A&quot;" in payload
+    assert "&quot;complete&quot;" in payload
 
 
 def test_page_to_table_marks_conflict_row() -> None:

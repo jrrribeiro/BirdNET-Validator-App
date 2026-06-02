@@ -1,6 +1,7 @@
 import gradio as gr
 import csv
 import hashlib
+import html as html_lib
 import json
 import os
 import re
@@ -1707,6 +1708,8 @@ def _species_status_dropdown_script() -> str:
   function payloadText() {
     const root = document.getElementById(PAYLOAD_ID);
     if (!root) return "{}";
+    const dataNode = root.querySelector("[data-json]");
+    if (dataNode && typeof dataNode.dataset.json === "string") return dataNode.dataset.json || "{}";
     const field = root.querySelector("textarea, input");
     if (field && typeof field.value === "string") return field.value || "{}";
     return root.textContent || "{}";
@@ -1727,8 +1730,22 @@ def _species_status_dropdown_script() -> str:
     return "unvalidated";
   }
 
+  function normalizedSpeciesName(value) {
+    return cleanOptionText(value).normalize("NFKC").replace(/\\s+/g, " ").trim().toLowerCase();
+  }
+
+  function speciesEntry(map, speciesName) {
+    const directName = cleanOptionText(speciesName);
+    if (Object.prototype.hasOwnProperty.call(map, directName)) return map[directName];
+    const normalizedName = normalizedSpeciesName(directName);
+    for (const [key, value] of Object.entries(map)) {
+      if (normalizedSpeciesName(key) === normalizedName) return value;
+    }
+    return undefined;
+  }
+
   function speciesStatus(map, speciesName) {
-    const entry = map[String(speciesName || "").trim()];
+    const entry = speciesEntry(map, speciesName);
     if (typeof entry === "string") return normalizeStatus(entry);
     if (entry && typeof entry === "object") return normalizeStatus(entry.status);
     return "unvalidated";
@@ -1737,6 +1754,30 @@ def _species_status_dropdown_script() -> str:
   function cleanOptionText(value) {
     return String(value || "").replace(/^\\s*✓\\s*/, "").trim();
   }
+
+  const STATUS_STYLES = {
+    unvalidated: {
+      "--bn-species-status-border": "#cbd5e1",
+      "--bn-species-status-accent": "#94a3b8",
+      "--bn-species-status-bg": "#f8fafc",
+      "--bn-species-status-hover": "#eef2f7",
+      "--bn-species-status-text": "#243348",
+    },
+    partial: {
+      "--bn-species-status-border": "#f59e0b",
+      "--bn-species-status-accent": "#f59e0b",
+      "--bn-species-status-bg": "#fff7ed",
+      "--bn-species-status-hover": "#ffedd5",
+      "--bn-species-status-text": "#7c2d12",
+    },
+    complete: {
+      "--bn-species-status-border": "#16a34a",
+      "--bn-species-status-accent": "#16a34a",
+      "--bn-species-status-bg": "#ecfdf3",
+      "--bn-species-status-hover": "#dcfce7",
+      "--bn-species-status-text": "#14532d",
+    },
+  };
 
   function applySpeciesStatusStyles() {
     const dropdown = document.getElementById(DROPDOWN_ID);
@@ -1748,7 +1789,11 @@ def _species_status_dropdown_script() -> str:
       const status = speciesStatus(map, speciesName);
       option.classList.remove(...STATUS_CLASSES);
       option.classList.add(`bn-species-option-${status}`);
-      const entry = map[speciesName] || {};
+      option.dataset.speciesStatus = status;
+      Object.entries(STATUS_STYLES[status] || STATUS_STYLES.unvalidated).forEach(([property, value]) => {
+        option.style.setProperty(property, value);
+      });
+      const entry = speciesEntry(map, speciesName) || {};
       const reviewed = typeof entry === "object" ? Number(entry.reviewed || 0) : 0;
       const total = typeof entry === "object" ? Number(entry.total || 0) : 0;
       option.title = total ? `${reviewed}/${total} reviewed` : "No reviewed segments yet";
@@ -2595,7 +2640,9 @@ def _extract_species_options_from_queue(
 
 
 def _species_status_payload(status_map: dict[str, dict[str, object]] | None) -> str:
-    return json.dumps(status_map or {}, ensure_ascii=False, sort_keys=True)
+    payload = json.dumps(status_map or {}, ensure_ascii=False, sort_keys=True)
+    escaped_payload = html_lib.escape(payload, quote=True)
+    return f'<span class="bn-species-status-data" data-json="{escaped_payload}"></span>'
 
 
 def _coerce_species_status_map(raw_map: object) -> dict[str, dict[str, object]]:
@@ -5355,10 +5402,8 @@ def create_app() -> gr.Blocks:
                             interactive=False,
                             elem_id="bn-species-filter",
                         )
-                        species_status_payload = gr.Textbox(
-                            value="{}",
-                            interactive=False,
-                            label="Species validation status",
+                        species_status_payload = gr.HTML(
+                            value=_species_status_payload({}),
                             elem_id="bn-species-status-payload",
                         )
 
@@ -5507,7 +5552,7 @@ def create_app() -> gr.Blocks:
                             gr.update(choices=["Noise", "Undetermined"], value=None),
                             [],
                             {},
-                            "{}",
+                            _species_status_payload({}),
                         )
 
                     if not _can_access_project(session, project_slug):
@@ -5523,7 +5568,7 @@ def create_app() -> gr.Blocks:
                             gr.update(choices=["Noise", "Undetermined"], value=None),
                             [],
                             {},
-                            "{}",
+                            _species_status_payload({}),
                         )
 
                     warning = _ensure_project_queue_loaded(project_slug, session)

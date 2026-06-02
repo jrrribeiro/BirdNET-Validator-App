@@ -1642,7 +1642,8 @@ button.bn-report-download-action-blue:hover {
   color: var(--bn-species-status-text, var(--bn-text)) !important;
 }
 
-#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-unvalidated {
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-unvalidated,
+#bn-species-filter li[data-testid="dropdown-option"][data-species-status="unvalidated"] {
   --bn-species-status-border: #cbd5e1;
   --bn-species-status-accent: #94a3b8;
   --bn-species-status-bg: #f8fafc;
@@ -1651,7 +1652,8 @@ button.bn-report-download-action-blue:hover {
   border-color: #cbd5e1 !important;
 }
 
-#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-partial {
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-partial,
+#bn-species-filter li[data-testid="dropdown-option"][data-species-status="partial"] {
   --bn-species-status-border: #f59e0b;
   --bn-species-status-accent: #f59e0b;
   --bn-species-status-bg: #fff7ed;
@@ -1660,7 +1662,8 @@ button.bn-report-download-action-blue:hover {
   border-color: #f59e0b !important;
 }
 
-#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-complete {
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-complete,
+#bn-species-filter li[data-testid="dropdown-option"][data-species-status="complete"] {
   --bn-species-status-border: #16a34a;
   --bn-species-status-accent: #16a34a;
   --bn-species-status-bg: #ecfdf3;
