@@ -48,9 +48,9 @@ from src.ui.app_factory import (
     _species_status_dropdown_script,
     _species_status_payload,
     _species_dropdown_choices,
-    _corrected_species_error_payload,
-    _corrected_species_required_script,
+    _corrected_species_error_update,
     _corrected_species_ui_after_validation,
+    CORRECTED_SPECIES_REQUIRED_ALERT_HTML,
     VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS,
 )
 from src.auth.auth_service import AuthService
@@ -1171,26 +1171,26 @@ def test_reject_validation_saves_corrected_species_when_provided() -> None:
 
 
 def test_corrected_species_ui_state_marks_error_and_resets_after_save() -> None:
-    blocked_update, blocked_marker = _corrected_species_ui_after_validation(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
-    saved_update, saved_marker = _corrected_species_ui_after_validation("Validation saved: dkey -> negative")
-    conflict_update, conflict_marker = _corrected_species_ui_after_validation("Concurrency conflict: stale")
+    blocked_update, blocked_panel_update = _corrected_species_ui_after_validation(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
+    saved_update, saved_panel_update = _corrected_species_ui_after_validation("Validation saved: dkey -> negative")
+    conflict_update, conflict_panel_update = _corrected_species_ui_after_validation("Concurrency conflict: stale")
 
     assert isinstance(blocked_update, dict)
-    assert 'data-error="true"' in blocked_marker
+    assert blocked_panel_update["visible"] is True
     assert saved_update["value"] is None
-    assert 'data-error="false"' in saved_marker
+    assert saved_panel_update["visible"] is False
     assert "value" not in conflict_update
-    assert 'data-error="false"' in conflict_marker
+    assert conflict_panel_update["visible"] is False
 
 
-def test_corrected_species_error_script_targets_marker_and_input() -> None:
-    script = _corrected_species_required_script()
-    payload = _corrected_species_error_payload(True)
+def test_corrected_species_error_panel_uses_native_visibility_update() -> None:
+    active_update = _corrected_species_error_update(True)
+    inactive_update = _corrected_species_error_update(False)
 
-    assert "bn-corrected-species-input" in script
-    assert "bn-corrected-species-error-marker" in script
-    assert "bn-corrected-species-error" in script
-    assert 'data-error="true"' in payload
+    assert active_update["visible"] is True
+    assert inactive_update["visible"] is False
+    assert "bn-corrected-species-alert" in CORRECTED_SPECIES_REQUIRED_ALERT_HTML
+    assert "Corrected species required" in CORRECTED_SPECIES_REQUIRED_ALERT_HTML
 
 
 def test_save_selected_validation_advances_to_highest_confidence_pending_row() -> None:

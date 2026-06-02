@@ -1687,28 +1687,31 @@ button.bn-report-download-action-blue:hover {
   box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.35) !important;
 }
 
-#bn-corrected-species-error-marker {
-  display: none !important;
+#bn-corrected-species-error-panel {
+  margin-top: -6px !important;
+  margin-bottom: 8px !important;
 }
 
-#bn-corrected-species-input.bn-corrected-species-error,
-#bn-corrected-species-input.bn-corrected-species-error > div,
-#bn-corrected-species-input.bn-corrected-species-error .wrap,
-#bn-corrected-species-input.bn-corrected-species-error .wrap-inner {
-  border-color: #ef4444 !important;
-  background: #fff5f5 !important;
-  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.32) !important;
+.bn-corrected-species-alert {
+  border: 1px solid #ef4444;
+  border-left: 6px solid #dc2626;
+  border-radius: 8px;
+  background: #fff5f5;
+  color: #7f1d1d;
+  padding: 12px 14px;
+  box-shadow: 0 10px 24px rgba(127, 29, 29, 0.08);
 }
 
-#bn-corrected-species-input.bn-corrected-species-error label,
-#bn-corrected-species-input.bn-corrected-species-error .label-wrap {
-  color: #b42318 !important;
+.bn-corrected-species-alert strong {
+  display: block;
+  color: #991b1b;
+  font-weight: 800;
+  margin-bottom: 3px;
 }
 
-#bn-corrected-species-input.bn-corrected-species-error input,
-#bn-corrected-species-input.bn-corrected-species-error select,
-#bn-corrected-species-input.bn-corrected-species-error textarea {
-  background: #fff5f5 !important;
+.bn-corrected-species-alert span {
+  color: #7f1d1d;
+  font-size: 0.94rem;
 }
 
 textarea,

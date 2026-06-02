@@ -1822,36 +1822,6 @@ def _species_status_dropdown_script() -> str:
 """
 
 
-def _corrected_species_required_script() -> str:
-    """Toggle the corrected-species error style from a lightweight HTML marker."""
-    return """
-<script>
-(() => {
-  const INPUT_ID = "bn-corrected-species-input";
-  const MARKER_ID = "bn-corrected-species-error-marker";
-
-  function markerIsActive() {
-    const marker = document.getElementById(MARKER_ID);
-    const state = marker ? marker.querySelector("[data-error]") : null;
-    return !!state && state.dataset.error === "true";
-  }
-
-  function applyCorrectedSpeciesErrorState() {
-    const root = document.getElementById(INPUT_ID);
-    if (!root) return;
-    root.classList.toggle("bn-corrected-species-error", markerIsActive());
-  }
-
-  const observer = new MutationObserver(applyCorrectedSpeciesErrorState);
-  observer.observe(document.body, { childList: true, subtree: true, characterData: true });
-  window.addEventListener("focus", applyCorrectedSpeciesErrorState);
-  document.addEventListener("click", () => window.setTimeout(applyCorrectedSpeciesErrorState, 0), true);
-  applyCorrectedSpeciesErrorState();
-})();
-</script>
-"""
-
-
 def _validate_hf_admin_storage_source_dataset(
     *,
     project: Project,
@@ -3005,17 +2975,24 @@ def _is_reject_correction_required_status(status_value: object) -> bool:
     return str(status_value or "").strip().startswith(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
 
 
-def _corrected_species_error_payload(active: bool) -> str:
-    value = "true" if active else "false"
-    return f'<span class="bn-corrected-species-error-state" data-error="{value}"></span>'
+CORRECTED_SPECIES_REQUIRED_ALERT_HTML = """
+<div class="bn-corrected-species-alert">
+  <strong>Corrected species required</strong>
+  <span>Choose the corrected species, Noise, or Undetermined before rejecting this segment.</span>
+</div>
+"""
 
 
-def _corrected_species_ui_after_validation(save_status: object) -> tuple[object, str]:
+def _corrected_species_error_update(active: bool) -> object:
+    return gr.update(visible=bool(active))
+
+
+def _corrected_species_ui_after_validation(save_status: object) -> tuple[object, object]:
     if _is_reject_correction_required_status(save_status):
-        return gr.update(), _corrected_species_error_payload(True)
+        return gr.update(), _corrected_species_error_update(True)
     if str(save_status or "").startswith("Validation saved"):
-        return gr.update(value=None), _corrected_species_error_payload(False)
-    return gr.update(), _corrected_species_error_payload(False)
+        return gr.update(value=None), _corrected_species_error_update(False)
+    return gr.update(), _corrected_species_error_update(False)
 
 
 def _save_selected_validation(
@@ -3675,7 +3652,7 @@ def create_app() -> gr.Blocks:
     with gr.Blocks(
         title="BirdNET-Validator-App",
         css=APP_CSS,
-        head=CRITICAL_HEAD_HTML + _species_status_dropdown_script() + _corrected_species_required_script(),
+        head=CRITICAL_HEAD_HTML + _species_status_dropdown_script(),
         fill_width=False,
         elem_classes=["bn-shell"],
     ) as wrapper:
@@ -5477,9 +5454,10 @@ def create_app() -> gr.Blocks:
                             value=None,
                             elem_id="bn-corrected-species-input",
                         )
-                        corrected_species_error_marker = gr.HTML(
-                            value=_corrected_species_error_payload(False),
-                            elem_id="bn-corrected-species-error-marker",
+                        corrected_species_error_panel = gr.HTML(
+                            value=CORRECTED_SPECIES_REQUIRED_ALERT_HTML,
+                            visible=False,
+                            elem_id="bn-corrected-species-error-panel",
                         )
 
                         status = gr.Markdown(value="", elem_classes=["bn-status-strip"])
@@ -5735,12 +5713,12 @@ def create_app() -> gr.Blocks:
                     only_conflicts: bool,
                 ):
                     if not project_slug:
-                        return "Select a project before validating", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_payload(False)
+                        return "Select a project before validating", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_update(False)
                     validator_name_value = _validator_name_from_session(session)
                     if not validator_name_value:
-                        return "Login before validating", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_payload(False)
+                        return "Login before validating", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_update(False)
                     if not _can_access_project(session, project_slug):
-                        return "Access denied for this project", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_payload(False)
+                        return "Access denied for this project", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_update(False)
                     result = _save_selected_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -5870,7 +5848,7 @@ def create_app() -> gr.Blocks:
                     value = (corrected_value or "").strip()
 
                     if not project_slug:
-                        return gr.update(choices=base_choices, value=value or None), custom_by_project, _corrected_species_error_payload(False)
+                        return gr.update(choices=base_choices, value=value or None), custom_by_project, _corrected_species_error_update(False)
 
                     updated = {k: list(v) for k, v in (custom_by_project or {}).items()}
                     custom_values = updated.get(project_slug, [])
@@ -5879,7 +5857,7 @@ def create_app() -> gr.Blocks:
                         updated[project_slug] = custom_values
 
                     final_choices = list(dict.fromkeys([*base_choices, *updated.get(project_slug, [])]))
-                    return gr.update(choices=final_choices, value=value or None), updated, _corrected_species_error_payload(False)
+                    return gr.update(choices=final_choices, value=value or None), updated, _corrected_species_error_update(False)
 
                 def toggle_favorite_detection(
                     project_slug: str,
@@ -6197,7 +6175,7 @@ def create_app() -> gr.Blocks:
                 corrected_species_input.change(
                     fn=save_corrected_species_option,
                     inputs=[selected_project_state, corrected_species_input, project_species_state, custom_corrected_species_state],
-                    outputs=[corrected_species_input, custom_corrected_species_state, corrected_species_error_marker],
+                    outputs=[corrected_species_input, custom_corrected_species_state, corrected_species_error_panel],
                 )
 
                 approve_event = approve_btn.click(
@@ -6244,7 +6222,7 @@ def create_app() -> gr.Blocks:
                         pending_status_state,
                         conflict_detection_key_state,
                         corrected_species_input,
-                        corrected_species_error_marker,
+                        corrected_species_error_panel,
                     ],
                 )
                 reject_event = reject_btn.click(
@@ -6291,7 +6269,7 @@ def create_app() -> gr.Blocks:
                         pending_status_state,
                         conflict_detection_key_state,
                         corrected_species_input,
-                        corrected_species_error_marker,
+                        corrected_species_error_panel,
                     ],
                 )
                 uncertain_event = uncertain_btn.click(
@@ -6338,7 +6316,7 @@ def create_app() -> gr.Blocks:
                         pending_status_state,
                         conflict_detection_key_state,
                         corrected_species_input,
-                        corrected_species_error_marker,
+                        corrected_species_error_panel,
                     ],
                 )
                 skip_event = skip_btn.click(
@@ -6385,7 +6363,7 @@ def create_app() -> gr.Blocks:
                         pending_status_state,
                         conflict_detection_key_state,
                         corrected_species_input,
-                        corrected_species_error_marker,
+                        corrected_species_error_panel,
                     ],
                 )
 
