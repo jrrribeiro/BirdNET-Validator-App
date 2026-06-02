@@ -23,6 +23,7 @@ from src.ui.app_factory import (
     _post_validation_queue_anchor,
     _save_selected_validation,
     _save_selected_validation_with_refresh,
+    _advance_after_validation_with_title,
     _selected_dataframe_row_index,
     _selected_segment_card,
     _reapply_last_conflict_validation_with_refresh,
@@ -47,6 +48,7 @@ from src.ui.app_factory import (
     _species_status_dropdown_script,
     _species_status_payload,
     _species_dropdown_choices,
+    VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
@@ -140,13 +142,13 @@ class FakeValidationService:
         corrected_species: str | None = None,
         expected_version: int | None = None,
     ) -> dict[str, str]:
-        _ = corrected_species
         payload = {
             "project_slug": project_slug,
             "detection_key": detection_key,
             "status": status,
             "validator": validator,
             "notes": notes,
+            "corrected_species": corrected_species or "",
             "expected_version": str(expected_version),
         }
         self.calls.append(payload)
@@ -559,7 +561,7 @@ def test_build_validation_export_rows_keep_detections_metadata_and_current_valid
         ],
         {
             "0000000000000001": {
-                "status": "positive",
+                "status": "negative",
                 "corrected_species": "Corrected species",
                 "notes": "Checked twice",
                 "validator": "scientist",
@@ -585,7 +587,8 @@ def test_build_validation_export_rows_keep_detections_metadata_and_current_valid
     ]
     assert columns[8:10] == ["source_Common Name", "source_Latitude"]
     assert rows[0]["detection_key"] == "0000000000000001"
-    assert rows[0]["validation_status"] == "positive"
+    assert rows[0]["validation_status"] == "negative"
+    assert rows[0]["validation_corrected_species"] == "Corrected species"
     assert rows[0]["validation_effective_species"] == "Corrected species"
     assert rows[0]["validation_version"] == 2
     assert rows[0]["validation_conflict"] is True
@@ -1076,6 +1079,92 @@ def test_save_selected_validation_with_refresh_success() -> None:
     assert refreshed_rows[0][0] == "dkey_01"
     assert pending_status == ""
     assert conflict_key == ""
+
+
+def test_reject_validation_requires_corrected_species_before_saving_or_advancing() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, audio_output, refreshed_rows, refreshed_page, refreshed_index, pending_status, conflict_key = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="negative",
+        validator="validator-demo",
+        notes="wrong species",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+        corrected_species="",
+    )
+    advanced_index, advanced_audio, advanced_cache_key, advanced_status, spectrogram, title = _advance_after_validation_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+        save_status=status,
+    )
+
+    assert status == VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS
+    assert validation_service.calls == []
+    assert audio_service.cleaned == []
+    assert cache_key == "cache:audio_11"
+    assert refreshed_rows == rows
+    assert refreshed_page == 1
+    assert refreshed_index == 0
+    assert pending_status == ""
+    assert conflict_key == ""
+    assert isinstance(audio_output, dict)
+    assert advanced_index == 0
+    assert isinstance(advanced_audio, dict)
+    assert advanced_cache_key == "cache:audio_11"
+    assert advanced_status == VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS
+    assert isinstance(spectrogram, dict)
+    assert isinstance(title, dict)
+
+
+def test_reject_validation_saves_corrected_species_when_provided() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, _, _, _, _, _, _ = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="negative",
+        validator="validator-demo",
+        notes="wrong species",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+        corrected_species="Correct Species",
+    )
+
+    assert "Validation saved" in status
+    assert cache_key == ""
+    assert validation_service.calls[0]["status"] == "negative"
+    assert validation_service.calls[0]["corrected_species"] == "Correct Species"
 
 
 def test_save_selected_validation_advances_to_highest_confidence_pending_row() -> None:

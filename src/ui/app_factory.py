@@ -70,6 +70,10 @@ VALIDATION_QUEUE_COMPLETE_CARD_NOTE = "Select a row manually to review or correc
 VALIDATION_QUEUE_COMPLETE_STATUS = (
     f"{VALIDATION_QUEUE_COMPLETE_CARD_TITLE}. {VALIDATION_QUEUE_COMPLETE_CARD_NOTE}"
 )
+VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS = (
+    "Corrected species is required before rejecting this segment. "
+    "Choose the corrected species, Noise, or Undetermined, then reject again."
+)
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -2963,6 +2967,14 @@ def _validator_name_from_session(session: object) -> str:
     return str(getattr(session, "username", "") or "").strip()
 
 
+def _reject_requires_corrected_species(status_value: str, corrected_species: str | None) -> bool:
+    return (status_value or "").strip().lower() == "negative" and not (corrected_species or "").strip()
+
+
+def _is_reject_correction_required_status(status_value: object) -> bool:
+    return str(status_value or "").strip().startswith(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
+
+
 def _save_selected_validation(
     validation_service: _ValidationServiceProtocol,
     audio_service: _AudioServiceProtocol,
@@ -2974,10 +2986,13 @@ def _save_selected_validation(
     notes: str,
     cache_key: str,
     corrected_species: str | None = None,
-) -> tuple[str, str, str | None]:
+) -> tuple[str, str, object]:
     validator_name = validator.strip()
     if not validator_name:
         return "Provide validator name before saving", cache_key, None
+
+    if _reject_requires_corrected_species(status_value, corrected_species):
+        return VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS, cache_key, gr.update()
 
     try:
         detection_key = _extract_detection_key(rows=rows, selected_index=selected_index)
@@ -3006,6 +3021,29 @@ def _save_selected_validation(
         return f"Failed to save validation: {exc}", cache_key, None
 
 
+def _advance_after_validation_with_title(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    selected_index: int,
+    cache_key: str,
+    save_status: object,
+    allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
+) -> tuple[int, object, str, object, object, object]:
+    if _is_reject_correction_required_status(save_status):
+        return int(selected_index), gr.update(), cache_key, save_status, gr.update(), gr.update()
+    return _advance_to_next_row_with_title(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=rows,
+        selected_index=selected_index,
+        cache_key=cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
+    )
+
+
 def _save_selected_validation_with_refresh(
     validation_service: _ValidationServiceProtocol,
     audio_service: _AudioServiceProtocol,
@@ -3026,8 +3064,20 @@ def _save_selected_validation_with_refresh(
     updated_after: object,
     show_conflicts_only: bool,
     corrected_species: str | None = None,
-) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
+) -> tuple[str, str, object, list[list[object]], int, int, str, str]:
     prior_rows = _normalize_rows(rows)
+    if _reject_requires_corrected_species(status_value, corrected_species):
+        return (
+            VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS,
+            cache_key,
+            gr.update(),
+            prior_rows,
+            int(page),
+            int(selected_index),
+            "",
+            "",
+        )
+
     selected_was_last_row = bool(prior_rows) and int(selected_index) >= len(prior_rows) - 1
     selected_key = ""
     try:
@@ -6246,16 +6296,17 @@ def create_app() -> gr.Blocks:
                 )
 
                 approve_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
@@ -6276,16 +6327,17 @@ def create_app() -> gr.Blocks:
                 )
 
                 reject_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
@@ -6306,16 +6358,17 @@ def create_app() -> gr.Blocks:
                 )
 
                 uncertain_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
@@ -6336,16 +6389,17 @@ def create_app() -> gr.Blocks:
                 )
 
                 skip_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),

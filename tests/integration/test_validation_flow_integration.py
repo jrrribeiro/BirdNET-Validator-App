@@ -152,6 +152,7 @@ def test_stale_version_returns_conflict_and_marks_conflict_row(tmp_path: Path) -
         status_filter="all",
         updated_after=None,
         show_conflicts_only=False,
+        corrected_species="Noise",
     )
 
     assert "Concurrency conflict" in status
