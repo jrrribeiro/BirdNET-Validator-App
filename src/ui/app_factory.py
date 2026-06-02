@@ -2676,6 +2676,27 @@ def _coerce_species_status_map(raw_map: object) -> dict[str, dict[str, object]]:
     return normalized
 
 
+def _species_status_label(species: str, status_entry: object) -> str:
+    if isinstance(status_entry, dict):
+        status = str(status_entry.get("status", "unvalidated")).strip().lower()
+    else:
+        status = str(status_entry or "unvalidated").strip().lower()
+    marker = {
+        "complete": "🟢",
+        "partial": "🟡",
+        "unvalidated": "⚪",
+    }.get(status, "⚪")
+    return f"{marker} {species}"
+
+
+def _species_dropdown_choices(status_map: object) -> list[tuple[str, str]]:
+    normalized = _coerce_species_status_map(status_map)
+    return [
+        (_species_status_label(species, normalized.get(species, {})), species)
+        for species in sorted(normalized)
+    ]
+
+
 def _list_detection_items_for_status(
     queue_service: _QueueServiceProtocol,
     project_slug: str,
@@ -5581,9 +5602,10 @@ def create_app() -> gr.Blocks:
                         actor_username=_validator_name_from_session(session),
                     )
                     species_options = sorted(species_status_map)
+                    species_choices = _species_dropdown_choices(species_status_map)
                     corrected_choices = species_options + ["Noise", "Undetermined"]
                     return (
-                        gr.update(choices=species_options, value=None, interactive=True),
+                        gr.update(choices=species_choices, value=None, interactive=True),
                         [],
                         warning or "Select a species to start validation",
                         1,
@@ -5835,7 +5857,7 @@ def create_app() -> gr.Blocks:
                     status_map = _coerce_species_status_map(current_status_map)
                     species_name = (species or "").strip()
                     if not project_slug or not species_name or not _can_access_project(session, project_slug):
-                        return status_map, _species_status_payload(status_map)
+                        return status_map, _species_status_payload(status_map), gr.update(choices=_species_dropdown_choices(status_map), value=species_name or None)
                     updated_species = _build_species_status_map(
                         queue_service=service_ref["queue"],
                         snapshot_reader=validation_repository,
@@ -5845,7 +5867,7 @@ def create_app() -> gr.Blocks:
                         scientific_name=species_name,
                     )
                     status_map.update(updated_species)
-                    return status_map, _species_status_payload(status_map)
+                    return status_map, _species_status_payload(status_map), gr.update(choices=_species_dropdown_choices(status_map), value=species_name)
 
                 refresh_event = refresh_btn.click(
                     fn=refresh,
@@ -6250,7 +6272,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=refresh_species_status_for_current_species,
                     inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
-                    outputs=[project_species_status_state, species_status_payload],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
                 )
 
                 reject_event.then(
@@ -6280,7 +6302,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=refresh_species_status_for_current_species,
                     inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
-                    outputs=[project_species_status_state, species_status_payload],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
                 )
 
                 uncertain_event.then(
@@ -6310,7 +6332,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=refresh_species_status_for_current_species,
                     inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
-                    outputs=[project_species_status_state, species_status_payload],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
                 )
 
                 skip_event.then(
@@ -6340,7 +6362,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=refresh_species_status_for_current_species,
                     inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
-                    outputs=[project_species_status_state, species_status_payload],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
                 )
 
                 session_state.change(
