@@ -60,3 +60,49 @@ def test_repository_returns_empty_for_missing_project(tmp_path: Path) -> None:
 
     assert repo.list_events("missing-project") == []
     assert repo.load_current_snapshot("missing-project") == {}
+
+
+def test_current_snapshot_has_backup_after_updates(tmp_path: Path) -> None:
+    repo = AppendOnlyValidationRepository(base_dir=str(tmp_path))
+    item = Validation(
+        detection_key="0000000000002003",
+        status="positive",
+        corrected_species=None,
+        notes="first",
+        validator="validator-a",
+    )
+
+    repo.save_validation(project_slug="demo-project", item=item, expected_version=0)
+    repo.save_validation(
+        project_slug="demo-project",
+        item=Validation(
+            detection_key="0000000000002003",
+            status="negative",
+            corrected_species=None,
+            notes="second",
+            validator="validator-a",
+        ),
+        expected_version=1,
+    )
+
+    backup_dir = tmp_path / "demo-project" / "validations" / ".backups"
+    assert list(backup_dir.glob("current.json.*.bak"))
+
+
+def test_current_snapshot_recovers_from_append_only_events_when_corrupt(tmp_path: Path) -> None:
+    repo = AppendOnlyValidationRepository(base_dir=str(tmp_path))
+    item = Validation(
+        detection_key="0000000000002004",
+        status="positive",
+        corrected_species=None,
+        notes="first",
+        validator="validator-a",
+    )
+    repo.save_validation(project_slug="demo-project", item=item, expected_version=0)
+    current_file = tmp_path / "demo-project" / "validations" / "current.json"
+    current_file.write_text("{bad json", encoding="utf-8")
+
+    snapshot = repo.load_current_snapshot("demo-project")
+
+    assert snapshot["0000000000002004"]["status"] == "positive"
+    assert snapshot["0000000000002004"]["version"] == 1

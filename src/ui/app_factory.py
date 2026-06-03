@@ -1,6 +1,7 @@
 import gradio as gr
 import csv
 import hashlib
+import html as html_lib
 import json
 import os
 import re
@@ -24,16 +25,55 @@ from src.cache.ephemeral_cache_manager import EphemeralCacheManager
 from src.domain.models import Detection, Project, Role
 from src.repositories.append_only_validation_repository import AppendOnlyValidationRepository, OptimisticLockError
 from src.repositories.in_memory_detection_repository import InMemoryDetectionRepository
+from src.repositories.hf_bucket_validation_repository import (
+    HF_BUCKET_VALIDATION_BACKEND,
+    HfBucketValidationError,
+    HfBucketValidationInitializer,
+)
+from src.repositories.project_aware_validation_repository import ProjectAwareValidationRepository
+from src.repositories.state_safety import (
+    assert_bootstrap_persist_is_safe,
+    atomic_write_json_with_backup,
+    load_json_object,
+)
 from src.repositories.supabase_state import SupabaseBootstrapStore, SupabaseRestClient, SupabaseStateError, SupabaseValidationRepository
 from src.services.audio_fetch_service import AudioFetchService
 from src.services.detection_queue_service import DetectionQueueService
+from src.services.hf_project_state_store import (
+    HF_PROJECT_STATE_BACKEND,
+    HF_PROJECT_STATE_SCHEMA_VERSION,
+    HfProjectStateStoreError,
+    HfProjectStateStoreConnector,
+    HfProjectStateStoreInitializer,
+    HfProjectStateStoreLoadedProject,
+    HfProjectStateStoreLoader,
+    HfProjectStateStoreSync,
+)
+from src.services.hf_project_resource_deletion import HfProjectResourceDeleter, HfProjectResourceDeletionError
 from src.services.validation_service import ValidationService
 from src.services.invite_email_notifier import EmailJSInviteEmailNotifier, InviteEmailNotifier
 from src.auth.auth_service import AuthService
-from src.ui.login_page import create_login_page
+from src.ui.login_page import create_login_page, oauth_action_button_html, perform_oauth_login
 from src.ui.admin_panel import AdminPanelManager
-from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, project_overview_html, section_header_html, selected_segment_html, settings_health_html
-from src.ui.theme import APP_CSS, app_header_html
+from src.ui.components import admin_overview_html, compact_metric_grid, coverage_bars_html, inline_hint_html, invite_panel_html, paged_activity_html, project_context_html, section_header_html, selected_segment_html, settings_health_html
+from src.ui.theme import APP_CSS, CRITICAL_HEAD_HTML, app_header_html
+
+
+VALIDATION_CONFIRM_LABEL = "↑ Confirm"
+VALIDATION_REJECT_LABEL = "↓ Reject"
+VALIDATION_UNCERTAIN_LABEL = "← Uncertain"
+VALIDATION_SKIP_LABEL = "→ Skip"
+VALIDATION_FAVORITE_LABEL = "␣ Favorite"
+VALIDATION_FAVORITED_LABEL = "␣ Favorited"
+VALIDATION_QUEUE_COMPLETE_CARD_TITLE = "All segments for this species have been validated"
+VALIDATION_QUEUE_COMPLETE_CARD_NOTE = "Select a row manually to review or correct it."
+VALIDATION_QUEUE_COMPLETE_STATUS = (
+    f"{VALIDATION_QUEUE_COMPLETE_CARD_TITLE}. {VALIDATION_QUEUE_COMPLETE_CARD_NOTE}"
+)
+VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS = (
+    "Corrected species is required before rejecting this segment. "
+    "Choose the corrected species, Noise, or Undetermined, then reject again."
+)
 
 
 class _AudioFetchResultProtocol(Protocol):
@@ -68,9 +108,9 @@ class _ValidationServiceProtocol(Protocol):
 
 
 class _ValidationReadRepositoryProtocol(Protocol):
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]: ...
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]: ...
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]: ...
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]: ...
 
 
 class _QueueServiceProtocol(Protocol):
@@ -427,6 +467,12 @@ def _env_hf_token() -> str | None:
         or ""
     ).strip()
     return token or None
+
+
+def _storage_hf_token() -> str | None:
+    """Return the server-side credential used only for admin-owned private project storage."""
+    token = (os.getenv("BIRDNET_HF_STORAGE_TOKEN") or "").strip()
+    return token or _env_hf_token()
 
 
 def _project_dataset_token(project: Project, fallback_token: str | None = None) -> str | None:
@@ -1213,6 +1259,12 @@ def _load_projects_from_file(projects_file_path: str | None) -> list[Project]:
                     visibility=str(row.get("visibility", "collaborative")).strip() or "collaborative",
                     owner_username=(str(row.get("owner_username", "")).strip() or None),
                     dataset_token=(str(row.get("dataset_token", "")).strip() or None),
+                    state_backend=str(row.get("state_backend", "app_backend")).strip() or "app_backend",
+                    state_repo_id=(str(row.get("state_repo_id", "")).strip() or None),
+                    state_schema_version=int(row.get("state_schema_version") or 1),
+                    state_status=str(row.get("state_status", "not_configured")).strip() or "not_configured",
+                    validation_backend=str(row.get("validation_backend", "app_backend")).strip() or "app_backend",
+                    validation_bucket_id=(str(row.get("validation_bucket_id", "")).strip() or None),
                     active=bool(row.get("active", True)),
                 )
             )
@@ -1267,19 +1319,132 @@ def _load_pending_invites_from_file(invites_file_path: str | None) -> dict[str, 
     return payload if isinstance(payload, dict) else {}
 
 
+def _merge_project_access_from_hf_state(
+    base: dict[str, dict[str, Role]],
+    incoming: dict[str, dict[str, Role]],
+    project_slug: str,
+) -> dict[str, dict[str, Role]]:
+    merged: dict[str, dict[str, Role]] = {
+        username: {
+            slug: role
+            for slug, role in roles.items()
+            if slug != project_slug
+        }
+        for username, roles in base.items()
+        if isinstance(roles, dict)
+    }
+    for username, roles in incoming.items():
+        role = roles.get(project_slug) if isinstance(roles, dict) else None
+        if role is not None:
+            merged.setdefault(username, {})[project_slug] = role
+    return {username: roles for username, roles in merged.items() if roles}
+
+
+def _merge_project_invites_from_hf_state(
+    base: dict[str, dict[str, dict[str, str]]],
+    incoming: dict[str, dict[str, dict[str, str]]],
+    project_slug: str,
+) -> dict[str, dict[str, dict[str, str]]]:
+    merged: dict[str, dict[str, dict[str, str]]] = {
+        invite_key: {
+            slug: invite
+            for slug, invite in invites.items()
+            if slug != project_slug
+        }
+        for invite_key, invites in base.items()
+        if isinstance(invites, dict)
+    }
+    for invite_key, invites in incoming.items():
+        invite = invites.get(project_slug) if isinstance(invites, dict) else None
+        if invite is not None:
+            merged.setdefault(invite_key, {})[project_slug] = invite
+    return {invite_key: invites for invite_key, invites in merged.items() if invites}
+
+
+def _overlay_hf_project_state(
+    *,
+    projects: list[Project],
+    user_access: dict[str, dict[str, Role]],
+    pending_invites: dict[str, dict[str, dict[str, str]]],
+    loaded_state: list[HfProjectStateStoreLoadedProject],
+) -> tuple[list[Project], dict[str, dict[str, Role]], dict[str, dict[str, dict[str, str]]]]:
+    by_slug = {project.project_slug: project for project in projects}
+    merged_access = dict(user_access)
+    merged_invites = dict(pending_invites)
+    for loaded in loaded_state:
+        project = loaded.project
+        by_slug[project.project_slug] = project
+        merged_access = _merge_project_access_from_hf_state(merged_access, loaded.user_access, project.project_slug)
+        merged_invites = _merge_project_invites_from_hf_state(merged_invites, loaded.pending_invites, project.project_slug)
+    return list(by_slug.values()), merged_access, merged_invites
+
+
+def _load_hf_project_state_repos(
+    *,
+    state_repo_ids: tuple[str, ...],
+    token: str | None,
+    loader: HfProjectStateStoreLoader | None = None,
+    skip_incomplete_repos: bool = False,
+) -> tuple[list[HfProjectStateStoreLoadedProject], list[str]]:
+    repo_ids = tuple(repo.strip() for repo in (state_repo_ids or ()) if repo and repo.strip())
+    if not repo_ids:
+        return [], []
+    token_value = (token or "").strip()
+    if not token_value:
+        return [], ["HF project-state repos are configured, but no HF token is available to read them."]
+
+    state_loader = loader or HfProjectStateStoreLoader()
+    loaded: list[HfProjectStateStoreLoadedProject] = []
+    errors: list[str] = []
+    for repo_id in repo_ids:
+        try:
+            state = state_loader.load_project_state(state_repo_id=repo_id, token=token_value)
+            if state is not None:
+                loaded.append(state)
+        except Exception as exc:
+            message = str(exc).lower()
+            is_missing_manifest = (
+                "could not read project.json" in message
+                and any(marker in message for marker in ("entry not found", "404", "not found"))
+            )
+            if skip_incomplete_repos and is_missing_manifest:
+                continue
+            errors.append(f"{repo_id}: {exc}")
+    return loaded, errors
+
+
+def _discover_hf_admin_state_repos(
+    *,
+    token: str | None,
+    api: HfApi | None = None,
+) -> tuple[tuple[str, ...], str]:
+    """Find companion state datasets owned by the configured administrator account."""
+    token_value = (token or "").strip()
+    if not token_value:
+        return (), "Administrator storage mode is enabled, but no HF storage secret is configured for state recovery."
+    client = api or HfApi()
+    try:
+        identity = client.whoami(token=token_value)
+        owner = str(identity.get("name") if isinstance(identity, dict) else "").strip()
+        if not owner:
+            return (), "Could not determine the administrator storage account for automatic state recovery."
+        datasets = client.list_datasets(author=owner, token=token_value)
+        repo_ids = []
+        for dataset in datasets:
+            repo_id = str(getattr(dataset, "id", None) or getattr(dataset, "repo_id", None) or "").strip()
+            if repo_id.casefold().startswith(f"{owner}/".casefold()) and repo_id.casefold().endswith("_state"):
+                repo_ids.append(repo_id)
+        return tuple(sorted(set(repo_ids))), ""
+    except Exception as exc:
+        return (), f"Could not discover private companion state repos automatically: {exc}"
+
+
 def _resolve_bootstrap_file_paths(runtime_config: RuntimeConfig) -> tuple[Path, Path, Path]:
     bootstrap_dir = Path(runtime_config.bootstrap_base_dir)
     projects_path = Path(runtime_config.projects_file_path) if runtime_config.projects_file_path else (bootstrap_dir / "projects.json")
     user_access_path = Path(runtime_config.user_access_file_path) if runtime_config.user_access_file_path else (bootstrap_dir / "user_access.json")
     invites_path = Path(runtime_config.invites_file_path) if runtime_config.invites_file_path else (bootstrap_dir / "invites.json")
     return projects_path, user_access_path, invites_path
-
-
-def _atomic_write_json(path: Path, payload: object) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.parent / f".{path.name}.tmp.{os.getpid()}"
-    tmp_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    os.replace(tmp_path, path)
 
 
 def _persist_bootstrap_state(
@@ -1289,6 +1454,7 @@ def _persist_bootstrap_state(
     admin_manager: AdminPanelManager,
     auth_service: AuthService,
     state_store: SupabaseBootstrapStore | None = None,
+    allowed_removed_project_slugs: set[str] | None = None,
 ) -> None:
     project_rows = admin_manager.list_projects()
     projects_payload = [
@@ -1300,6 +1466,12 @@ def _persist_bootstrap_state(
             "visibility": str(project.get("visibility", "collaborative")).strip() or "collaborative",
             "owner_username": str(project.get("owner_username", "")).strip() or None,
             "dataset_token": str(project.get("dataset_token", "")).strip() or None,
+            "state_backend": str(project.get("state_backend", "app_backend")).strip() or "app_backend",
+            "state_repo_id": str(project.get("state_repo_id", "")).strip() or None,
+            "state_schema_version": int(project.get("state_schema_version") or 1),
+            "state_status": str(project.get("state_status", "not_configured")).strip() or "not_configured",
+            "validation_backend": str(project.get("validation_backend", "app_backend")).strip() or "app_backend",
+            "validation_bucket_id": str(project.get("validation_bucket_id", "")).strip() or None,
             "active": bool(project.get("active", True)),
         }
         for project in project_rows
@@ -1308,12 +1480,27 @@ def _persist_bootstrap_state(
     invites_payload = auth_service.export_pending_invites_map()
 
     if state_store is not None:
-        state_store.persist(projects_payload, access_payload, invites_payload)
+        state_store.persist(
+            projects_payload,
+            access_payload,
+            invites_payload,
+            allowed_removed_project_slugs=allowed_removed_project_slugs,
+        )
         return
 
-    _atomic_write_json(projects_path, projects_payload)
-    _atomic_write_json(user_access_path, access_payload)
-    _atomic_write_json(invites_path, invites_payload)
+    existing_projects_payload = load_json_object(projects_path, [])
+    existing_access_payload = load_json_object(user_access_path, {})
+    assert_bootstrap_persist_is_safe(
+        existing_projects=existing_projects_payload if isinstance(existing_projects_payload, list) else [],
+        new_projects=projects_payload,
+        existing_user_access=existing_access_payload if isinstance(existing_access_payload, dict) else {},
+        new_user_access=access_payload,
+        allowed_removed_project_slugs=allowed_removed_project_slugs,
+    )
+
+    atomic_write_json_with_backup(projects_path, projects_payload)
+    atomic_write_json_with_backup(user_access_path, access_payload)
+    atomic_write_json_with_backup(invites_path, invites_payload)
 
 
 def _bootstrap_auth_and_projects(
@@ -1324,6 +1511,9 @@ def _bootstrap_auth_and_projects(
     user_access_file_path: str | None = None,
     invites_file_path: str | None = None,
     state_store: SupabaseBootstrapStore | None = None,
+    hf_project_state_token: str | None = None,
+    hf_project_state_loader: HfProjectStateStoreLoader | None = None,
+    hf_project_state_discovery_api: HfApi | None = None,
 ) -> str:
     if state_store is not None:
         projects = state_store.load_projects()
@@ -1333,6 +1523,29 @@ def _bootstrap_auth_and_projects(
         projects = _load_projects_from_file(projects_file_path or runtime_config.projects_file_path)
         user_access = _load_user_access_from_file(user_access_file_path or runtime_config.user_access_file_path)
         pending_invites = _load_pending_invites_from_file(invites_file_path or runtime_config.invites_file_path)
+
+    configured_state_repos = tuple(runtime_config.hf_project_state_repos)
+    discovery_message = ""
+    discovered_state_repos: tuple[str, ...] = ()
+    if runtime_config.hf_admin_storage_mode_enabled:
+        discovered_state_repos, discovery_message = _discover_hf_admin_state_repos(
+            token=hf_project_state_token,
+            api=hf_project_state_discovery_api,
+        )
+    state_repo_ids = tuple(dict.fromkeys([*configured_state_repos, *discovered_state_repos]))
+    hf_loaded_state, hf_load_errors = _load_hf_project_state_repos(
+        state_repo_ids=state_repo_ids,
+        token=hf_project_state_token,
+        loader=hf_project_state_loader,
+        skip_incomplete_repos=runtime_config.hf_admin_storage_mode_enabled,
+    )
+    if hf_loaded_state:
+        projects, user_access, pending_invites = _overlay_hf_project_state(
+            projects=projects,
+            user_access=user_access,
+            pending_invites=pending_invites,
+            loaded_state=hf_loaded_state,
+        )
 
     if runtime_config.enable_demo_bootstrap and not projects and not user_access:
         projects = _default_projects()
@@ -1380,10 +1593,12 @@ def _bootstrap_auth_and_projects(
             "Emergency admin access was granted to username 'admin_user'."
         )
 
-    if not projects:
-        return ""
-
-    return emergency_admin_message
+    warnings = [emergency_admin_message] if emergency_admin_message else []
+    if discovery_message:
+        warnings.append(f"⚠️ {discovery_message}")
+    if hf_load_errors:
+        warnings.append("⚠️ Some HF project-state repos could not be loaded: " + " | ".join(hf_load_errors))
+    return "\n\n".join(warnings)
 
 
 def _build_supabase_state(runtime_config: RuntimeConfig) -> tuple[SupabaseBootstrapStore | None, SupabaseValidationRepository | None, str]:
@@ -1410,6 +1625,285 @@ def _build_supabase_state(runtime_config: RuntimeConfig) -> tuple[SupabaseBootst
         return None, None, f"⚠️ Could not initialize Supabase state backend: {exc}. Falling back to local files."
 
 
+def _is_running_in_hf_space() -> bool:
+    return bool((os.getenv("SPACE_ID") or os.getenv("SPACE_HOST") or "").strip())
+
+
+def _validation_shortcuts_script() -> str:
+    """Bind validation-only keyboard shortcuts to stable button IDs."""
+    return """
+<script>
+(() => {
+  if (window.__birdnetValidationShortcutsBound) return;
+  window.__birdnetValidationShortcutsBound = true;
+
+  function isTypingTarget(target) {
+    if (!target) return false;
+    const tag = String(target.tagName || "").toUpperCase();
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    if (target.isContentEditable) return true;
+    if (target.closest && target.closest('[contenteditable="true"], [role="textbox"], .cm-editor')) return true;
+    return false;
+  }
+
+  function isVisible(element) {
+    if (!element) return false;
+    const rects = element.getClientRects();
+    if (!rects || rects.length === 0) return false;
+    let node = element;
+    while (node && node !== document.body) {
+      const style = window.getComputedStyle(node);
+      if (style.display === "none" || style.visibility === "hidden") return false;
+      node = node.parentElement;
+    }
+    return true;
+  }
+
+  function validateTabIsActive() {
+    return isVisible(document.getElementById("bn-validation-queue-table"));
+  }
+
+  function clickButtonById(id) {
+    const root = document.getElementById(id);
+    const button = root && root.matches("button") ? root : root?.querySelector("button");
+    if (!button || button.disabled || button.getAttribute("aria-disabled") === "true") return false;
+    button.click();
+    return true;
+  }
+
+  const actionByKey = {
+    ArrowUp: "bn-validate-confirm-btn",
+    ArrowDown: "bn-validate-reject-btn",
+    ArrowLeft: "bn-validate-uncertain-btn",
+    ArrowRight: "bn-validate-skip-btn",
+  };
+
+  document.addEventListener("keydown", (event) => {
+    if (event.repeat || event.altKey || event.ctrlKey || event.metaKey) return;
+    if (isTypingTarget(event.target)) return;
+    const buttonId = event.code === "Space" ? "bn-validate-favorite-btn" : actionByKey[event.key];
+    if (!buttonId || !validateTabIsActive()) return;
+    event.preventDefault();
+    clickButtonById(buttonId);
+  });
+})();
+</script>
+"""
+
+
+def _species_status_dropdown_script() -> str:
+    """Apply lightweight per-species progress styling to the Gradio dropdown."""
+    return """
+<script>
+(() => {
+  const DROPDOWN_ID = "bn-species-filter";
+  const PAYLOAD_ID = "bn-species-status-payload";
+  const STATUS_CLASSES = [
+    "bn-species-option-unvalidated",
+    "bn-species-option-partial",
+    "bn-species-option-complete",
+  ];
+  const SELECTED_CLASSES = [
+    "bn-species-selected-unvalidated",
+    "bn-species-selected-partial",
+    "bn-species-selected-complete",
+  ];
+
+  function payloadText() {
+    const root = document.getElementById(PAYLOAD_ID);
+    if (!root) return "{}";
+    const dataNode = root.querySelector("[data-json]");
+    if (dataNode && typeof dataNode.dataset.json === "string") return dataNode.dataset.json || "{}";
+    const field = root.querySelector("textarea, input");
+    if (field && typeof field.value === "string") return field.value || "{}";
+    return root.textContent || "{}";
+  }
+
+  function statusMap() {
+    try {
+      const parsed = JSON.parse(payloadText());
+      return parsed && typeof parsed === "object" ? parsed : {};
+    } catch (_) {
+      return {};
+    }
+  }
+
+  function normalizeStatus(value) {
+    const status = String(value || "").trim().toLowerCase();
+    if (status === "complete" || status === "partial" || status === "unvalidated") return status;
+    return "unvalidated";
+  }
+
+  function normalizedSpeciesName(value) {
+    return cleanOptionText(value).normalize("NFKC").replace(/\\s+/g, " ").trim().toLowerCase();
+  }
+
+  function speciesEntry(map, speciesName) {
+    const directName = cleanOptionText(speciesName);
+    if (Object.prototype.hasOwnProperty.call(map, directName)) return map[directName];
+    const normalizedName = normalizedSpeciesName(directName);
+    for (const [key, value] of Object.entries(map)) {
+      if (normalizedSpeciesName(key) === normalizedName) return value;
+    }
+    return undefined;
+  }
+
+  function speciesStatus(map, speciesName) {
+    const entry = speciesEntry(map, speciesName);
+    if (typeof entry === "string") return normalizeStatus(entry);
+    if (entry && typeof entry === "object") return normalizeStatus(entry.status);
+    return "unvalidated";
+  }
+
+  function cleanOptionText(value) {
+    return String(value || "").replace(/^\\s*✓\\s*/, "").trim();
+  }
+
+  const STATUS_STYLES = {
+    unvalidated: {
+      "--bn-species-status-border": "#cbd5e1",
+      "--bn-species-status-accent": "#94a3b8",
+      "--bn-species-status-bg": "#f8fafc",
+      "--bn-species-status-hover": "#eef2f7",
+      "--bn-species-status-text": "#243348",
+    },
+    partial: {
+      "--bn-species-status-border": "#f59e0b",
+      "--bn-species-status-accent": "#f59e0b",
+      "--bn-species-status-bg": "#fff7ed",
+      "--bn-species-status-hover": "#ffedd5",
+      "--bn-species-status-text": "#7c2d12",
+    },
+    complete: {
+      "--bn-species-status-border": "#16a34a",
+      "--bn-species-status-accent": "#16a34a",
+      "--bn-species-status-bg": "#ecfdf3",
+      "--bn-species-status-hover": "#dcfce7",
+      "--bn-species-status-text": "#14532d",
+    },
+  };
+
+  function applySpeciesStatusStyles() {
+    const dropdown = document.getElementById(DROPDOWN_ID);
+    if (!dropdown) return;
+    const map = statusMap();
+
+    dropdown.querySelectorAll('li[data-testid="dropdown-option"]').forEach((option) => {
+      const speciesName = cleanOptionText(option.getAttribute("aria-label") || option.textContent || "");
+      const status = speciesStatus(map, speciesName);
+      option.classList.remove(...STATUS_CLASSES);
+      option.classList.add(`bn-species-option-${status}`);
+      option.dataset.speciesStatus = status;
+      Object.entries(STATUS_STYLES[status] || STATUS_STYLES.unvalidated).forEach(([property, value]) => {
+        option.style.setProperty(property, value);
+      });
+      const entry = speciesEntry(map, speciesName) || {};
+      const reviewed = typeof entry === "object" ? Number(entry.reviewed || 0) : 0;
+      const total = typeof entry === "object" ? Number(entry.total || 0) : 0;
+      option.title = total ? `${reviewed}/${total} reviewed` : "No reviewed segments yet";
+    });
+
+    dropdown.classList.remove(...SELECTED_CLASSES);
+    const input = dropdown.querySelector('input[role="listbox"]');
+    const selected = cleanOptionText(input ? input.value : "");
+    if (selected) {
+      dropdown.classList.add(`bn-species-selected-${speciesStatus(map, selected)}`);
+    }
+  }
+
+  const observer = new MutationObserver(applySpeciesStatusStyles);
+  observer.observe(document.body, { childList: true, subtree: true });
+  window.addEventListener("focus", applySpeciesStatusStyles);
+  document.addEventListener("click", () => window.setTimeout(applySpeciesStatusStyles, 0), true);
+  window.setInterval(applySpeciesStatusStyles, 700);
+  applySpeciesStatusStyles();
+})();
+</script>
+"""
+
+
+def _validate_hf_admin_storage_source_dataset(
+    *,
+    project: Project,
+    token: str | None,
+    api: HfApi | None = None,
+) -> None:
+    if (project.visibility or "").strip().lower() != "collaborative":
+        raise HfBucketValidationError(
+            "Admin-owned private storage projects must use app visibility 'collaborative'. "
+            "The Hugging Face dataset and storage remain private; this app visibility enables assigned validators."
+        )
+    token_value = (token or "").strip()
+    if not token_value:
+        raise HfBucketValidationError(
+            "Admin-owned HF storage requires BIRDNET_HF_STORAGE_TOKEN to be configured as a Space secret."
+        )
+
+    client = api or HfApi()
+    namespace = project.dataset_repo_id.split("/", 1)[0].strip()
+    try:
+        identity = client.whoami(token=token_value)
+    except Exception as exc:
+        raise HfBucketValidationError(
+            f"Could not verify the configured administrator storage credential: {exc}"
+        ) from exc
+    owner_username = str(identity.get("name") if isinstance(identity, dict) else "").strip()
+    if not owner_username or owner_username.casefold() != namespace.casefold():
+        raise HfBucketValidationError(
+            "Admin-owned HF storage requires the dataset to be in the personal namespace of the configured "
+            f"storage account. Expected '{owner_username or 'authenticated user'}/...', received "
+            f"'{project.dataset_repo_id}'."
+        )
+    try:
+        dataset_info = client.repo_info(
+            repo_id=project.dataset_repo_id,
+            repo_type="dataset",
+            token=token_value,
+        )
+    except Exception as exc:
+        raise HfBucketValidationError(f"Could not verify the Hugging Face dataset before creating private state: {exc}") from exc
+    if not bool(getattr(dataset_info, "private", False)):
+        raise HfBucketValidationError(
+            "Admin-owned HF storage only accepts a private dataset. Make the dataset private in Hugging Face "
+            "before creating the validation project."
+        )
+
+
+def _initialize_hf_admin_storage(
+    *,
+    project: Project,
+    token: str | None,
+    api: HfApi | None = None,
+    bucket_initializer: HfBucketValidationInitializer | None = None,
+):
+    _validate_hf_admin_storage_source_dataset(project=project, token=token, api=api)
+    token_value = (token or "").strip()
+    initializer = bucket_initializer or HfBucketValidationInitializer()
+    result = initializer.initialize(
+        project_slug=project.project_slug,
+        dataset_repo_id=project.dataset_repo_id,
+        token=token_value,
+    )
+    project.dataset_token = None
+    project.validation_backend = HF_BUCKET_VALIDATION_BACKEND
+    project.validation_bucket_id = result.bucket_id
+    return result
+
+
+def _resolve_username_login_policy(runtime_config: RuntimeConfig) -> tuple[bool, str, str]:
+    mode = (runtime_config.auth_mode or "auto").strip().lower()
+    if mode == "username":
+        return True, "OAuth or username", "OAuth is recommended; username-only login is enabled by explicit development configuration."
+    if mode == "username_or_token":
+        return True, "OAuth or username", "OAuth is recommended; username fallback is enabled for local compatibility."
+    if mode == "hf_token":
+        return False, "Hugging Face OAuth", "Production identity mode: sign in securely with Hugging Face OAuth."
+
+    if runtime_config.enable_demo_bootstrap or not _is_running_in_hf_space():
+        return True, "auto: OAuth or local username", "Development/demo identity mode: OAuth is preferred and local username login remains available."
+    return False, "Hugging Face OAuth", "Production identity mode: sign in securely with Hugging Face OAuth."
+
+
 def _page_to_table(
     service: _QueueServiceProtocol,
     snapshot_reader: _ValidationReadRepositoryProtocol,
@@ -1423,9 +1917,10 @@ def _page_to_table(
     updated_after: object = None,
     conflict_detection_key: str = "",
     show_conflicts_only: bool = False,
+    actor_username: str = "",
 ):
     filter_name = scientific_name.strip() if scientific_name.strip() else None
-    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug, actor_username=actor_username)
     normalized_status_filter = status_filter.strip().lower() if status_filter else "all"
     normalized_validator_filter = validator_filter.strip().lower()
 
@@ -1490,8 +1985,18 @@ def _page_to_table(
             item.end_time,
             str(snapshot.get(item.detection_key, {}).get("status", "pending")),
             int(snapshot.get(item.detection_key, {}).get("version", 0)),
-            "CONFLICT" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
-            "HIGH" if conflict_detection_key and item.detection_key == conflict_detection_key else "",
+            "CONFLICT"
+            if (
+                (conflict_detection_key and item.detection_key == conflict_detection_key)
+                or bool(snapshot.get(item.detection_key, {}).get("conflict"))
+            )
+            else "",
+            "HIGH"
+            if (
+                (conflict_detection_key and item.detection_key == conflict_detection_key)
+                or bool(snapshot.get(item.detection_key, {}).get("conflict"))
+            )
+            else "",
         ]
         for item in items
     ]
@@ -1524,7 +2029,7 @@ def _page_to_table(
     if show_conflicts_only:
         rows = [row for row in rows if str(row[8]) == "CONFLICT"]
 
-    rows = _sort_rows_by_confidence_desc(rows)
+    rows = _sort_rows_for_validation_queue(rows)
     filtered_total = len(rows)
     total_pages = max(1, ((filtered_total - 1) // page_size) + 1) if filtered_total else 1
     safe_page = max(1, min(int(page), total_pages))
@@ -1567,9 +2072,9 @@ def _build_queue_badge(service: _QueueServiceProtocol, project_slug: str | None)
     )
 
 
-def _build_validation_report(snapshot_reader: _ValidationReadRepositoryProtocol, project_slug: str) -> str:
-    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug)
-    events = snapshot_reader.list_events(project_slug=project_slug)
+def _build_validation_report(snapshot_reader: _ValidationReadRepositoryProtocol, project_slug: str, actor_username: str = "") -> str:
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug, actor_username=actor_username)
+    events = snapshot_reader.list_events(project_slug=project_slug, actor_username=actor_username)
 
     counts: dict[str, int] = {}
     for payload in snapshot.values():
@@ -1675,6 +2180,24 @@ def _extract_expected_version(rows: object, selected_index: int) -> int:
     return int(value)
 
 
+def _audio_fetch_error_message(dataset_repo: str, exc: Exception, hf_token: str | None) -> str:
+    raw_message = str(exc)
+    lower_message = raw_message.lower()
+    access_markers = ("401", "403", "404", "repository not found", "unauthorized", "forbidden")
+    if any(marker in lower_message for marker in access_markers):
+        identity_hint = (
+            "The credential used by the app does not have read access"
+            if (hf_token or "").strip()
+            else "No credential with private dataset read access was provided"
+        )
+        return (
+            f"Cannot read audio dataset '{dataset_repo}'. {identity_hint}. "
+            "For administrator-owned private storage, confirm `BIRDNET_HF_STORAGE_TOKEN` is configured in the "
+            "Space and belongs to the personal account that owns this private dataset."
+        )
+    return f"Failed to load audio: {raw_message}"
+
+
 def _fetch_selected_audio(
     audio_service: _AudioServiceProtocol,
     dataset_repo: str,
@@ -1703,9 +2226,10 @@ def _fetch_selected_audio(
         status = f"Audio loaded ({result.source}) for audio_id={audio_id}"
         return result.local_path, result.cache_key, status
     except Exception as exc:
+        status = _audio_fetch_error_message(repo, exc, hf_token)
         if previous_cache_key:
-            return None, previous_cache_key, f"Failed to load audio: {exc}"
-        return None, "", f"Failed to load audio: {exc}"
+            return None, previous_cache_key, status
+        return None, "", status
 
 
 def _load_pcm_wave(audio_path: Path) -> tuple[int, np.ndarray]:
@@ -1864,6 +2388,77 @@ def _build_validation_summary_cards(rows: object) -> str:
     )
 
 
+def _build_validation_summary_cards_for_species(
+    *,
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    scientific_name: str,
+    min_confidence: float,
+    actor_username: str = "",
+) -> str:
+    slug = (project_slug or "").strip()
+    species_name = (scientific_name or "").strip()
+    if not slug or not species_name:
+        return _build_validation_summary_cards([])
+
+    list_all = getattr(queue_service, "list_all_detections", None)
+    if callable(list_all):
+        detections = list_all(
+            project_slug=slug,
+            scientific_name=species_name,
+            min_confidence=min_confidence,
+            max_confidence=None,
+        )
+    else:
+        page_result = queue_service.get_page(
+            project_slug=slug,
+            page=1,
+            page_size=1,
+            scientific_name=species_name,
+            min_confidence=min_confidence,
+        )
+        total_items = int(getattr(page_result, "total_items", 0))
+        page_result = queue_service.get_page(
+            project_slug=slug,
+            page=1,
+            page_size=max(1, total_items),
+            scientific_name=species_name,
+            min_confidence=min_confidence,
+        )
+        detections = list(getattr(page_result, "items", []))
+
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=slug, actor_username=actor_username)
+    total = len(detections)
+    positive = 0
+    negative = 0
+    uncertain = 0
+    skipped = 0
+    for detection in detections:
+        status_value = str(snapshot.get(detection.detection_key, {}).get("status", "pending")).strip().lower()
+        if status_value == "positive":
+            positive += 1
+        elif status_value == "negative":
+            negative += 1
+        elif status_value == "uncertain":
+            uncertain += 1
+        elif status_value == "skip":
+            skipped += 1
+
+    reviewed = positive + negative + uncertain + skipped
+    pending = max(0, total - reviewed)
+    reviewed_pct = round((reviewed / total) * 100, 1) if total else 0.0
+
+    return compact_metric_grid(
+        [
+            ("Queue total", str(total), "segments in species", "info"),
+            ("Accepted", str(positive), "positive validations", "positive"),
+            ("Rejected", str(negative), "negative validations", "negative"),
+            ("Reviewed", f"{reviewed_pct}%", f"{pending} pending in species", "warning"),
+        ]
+    )
+
+
 def _autofetch_first_row(
     audio_service: _AudioServiceProtocol,
     dataset_repo: str,
@@ -1874,18 +2469,22 @@ def _autofetch_first_row(
 ) -> tuple[int, str | None, str, str, str | None]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
-        return 0, None, "", "No detections available to auto-load audio", None
+        return -1, None, "", "No detections available to auto-load audio", None
+
+    pending_index = _pending_row_index_or_none(normalized_rows)
+    if pending_index is None:
+        return -1, None, "", VALIDATION_QUEUE_COMPLETE_STATUS, None
 
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
         dataset_repo=dataset_repo,
         rows=normalized_rows,
-        selected_index=0,
+        selected_index=pending_index,
         previous_cache_key=cache_key,
         allow_demo_fallback=allow_demo_fallback,
         hf_token=hf_token,
     )
-    return 0, audio_path, updated_cache_key, status, spectrogram_path
+    return pending_index, audio_path, updated_cache_key, status, spectrogram_path
 
 
 def _select_and_fetch_audio(
@@ -1949,6 +2548,8 @@ def _spectrogram_title(species_name: str | None, confidence: float | None) -> st
 
 def _selected_row_species_and_confidence(rows: object, selected_index: int) -> tuple[str | None, float | None]:
     normalized_rows = _normalize_rows(rows)
+    if int(selected_index) < 0:
+        return None, None
     if normalized_rows:
         safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
         row = normalized_rows[safe_index]
@@ -1977,6 +2578,8 @@ def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
         return []
+    if int(selected_index) < 0:
+        return normalized_rows
 
     safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
     marked_rows: list[list[object]] = []
@@ -1997,6 +2600,14 @@ def _mark_selected_row(rows: object, selected_index: int) -> list[list[object]]:
 def _selected_segment_card(rows: object, selected_index: int) -> str:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
+        return selected_segment_html(None)
+    if int(selected_index) < 0:
+        if _pending_row_index_or_none(normalized_rows) is None:
+            return selected_segment_html(
+                None,
+                empty_title=VALIDATION_QUEUE_COMPLETE_CARD_TITLE,
+                empty_note=VALIDATION_QUEUE_COMPLETE_CARD_NOTE,
+            )
         return selected_segment_html(None)
     safe_index = max(0, min(int(selected_index), len(normalized_rows) - 1))
     return selected_segment_html(normalized_rows[safe_index], safe_index, len(normalized_rows))
@@ -2032,8 +2643,169 @@ def _extract_species_options_from_queue(
     return sorted(species_set)
 
 
-def _sort_rows_by_confidence_desc(rows: list[list[object]]) -> list[list[object]]:
-    return sorted(rows, key=lambda row: float(row[3]) if len(row) > 3 else 0.0, reverse=True)
+def _species_status_payload(status_map: dict[str, dict[str, object]] | None) -> str:
+    payload = json.dumps(status_map or {}, ensure_ascii=False, sort_keys=True)
+    escaped_payload = html_lib.escape(payload, quote=True)
+    return f'<span class="bn-species-status-data" data-json="{escaped_payload}"></span>'
+
+
+def _coerce_species_status_map(raw_map: object) -> dict[str, dict[str, object]]:
+    if isinstance(raw_map, str):
+        try:
+            parsed = json.loads(raw_map)
+        except Exception:
+            parsed = {}
+    else:
+        parsed = raw_map
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    normalized: dict[str, dict[str, object]] = {}
+    for key, value in parsed.items():
+        species = str(key).strip()
+        if not species:
+            continue
+        if isinstance(value, dict):
+            status = str(value.get("status", "unvalidated")).strip().lower()
+            total = int(value.get("total") or 0)
+            reviewed = int(value.get("reviewed") or 0)
+        else:
+            status = str(value or "unvalidated").strip().lower()
+            total = 0
+            reviewed = 0
+        if status not in {"unvalidated", "partial", "complete"}:
+            status = "unvalidated"
+        normalized[species] = {"status": status, "total": total, "reviewed": reviewed}
+    return normalized
+
+
+def _species_status_label(species: str, status_entry: object) -> str:
+    if isinstance(status_entry, dict):
+        status = str(status_entry.get("status", "unvalidated")).strip().lower()
+    else:
+        status = str(status_entry or "unvalidated").strip().lower()
+    marker = {
+        "complete": "🟢",
+        "partial": "🟡",
+        "unvalidated": "⚪",
+    }.get(status, "⚪")
+    return f"{marker} {species}"
+
+
+def _species_dropdown_choices(status_map: object) -> list[tuple[str, str]]:
+    normalized = _coerce_species_status_map(status_map)
+    return [
+        (_species_status_label(species, normalized.get(species, {})), species)
+        for species in sorted(normalized)
+    ]
+
+
+def _list_detection_items_for_status(
+    queue_service: _QueueServiceProtocol,
+    project_slug: str,
+    page_size: int,
+    scientific_name: str | None = None,
+) -> list[object]:
+    list_all = getattr(queue_service, "list_all_detections", None)
+    if callable(list_all):
+        return list(
+            list_all(
+                project_slug=project_slug,
+                scientific_name=scientific_name,
+                min_confidence=None,
+                max_confidence=None,
+            )
+        )
+
+    items: list[object] = []
+    page = 1
+    while True:
+        page_result = queue_service.get_page(
+            project_slug=project_slug,
+            page=page,
+            page_size=page_size,
+            scientific_name=scientific_name,
+            min_confidence=None,
+            max_confidence=None,
+        )
+        items.extend(list(page_result.items))
+        if not page_result.has_next:
+            break
+        page += 1
+    return items
+
+
+def _build_species_status_map(
+    queue_service: _QueueServiceProtocol,
+    snapshot_reader: _ValidationReadRepositoryProtocol,
+    project_slug: str,
+    page_size: int,
+    actor_username: str = "",
+    scientific_name: str | None = None,
+) -> dict[str, dict[str, object]]:
+    if not project_slug:
+        return {}
+
+    items = _list_detection_items_for_status(
+        queue_service=queue_service,
+        project_slug=project_slug,
+        page_size=page_size,
+        scientific_name=(scientific_name or "").strip() or None,
+    )
+    snapshot = snapshot_reader.load_current_snapshot(project_slug=project_slug, actor_username=actor_username)
+    counters: dict[str, dict[str, int]] = {}
+
+    for item in items:
+        species = str(getattr(item, "scientific_name", "")).strip()
+        if not species:
+            continue
+        detection_key = str(getattr(item, "detection_key", "")).strip()
+        status_value = str(snapshot.get(detection_key, {}).get("status", "pending")).strip().lower()
+        species_counter = counters.setdefault(species, {"total": 0, "reviewed": 0})
+        species_counter["total"] += 1
+        if status_value and status_value != "pending":
+            species_counter["reviewed"] += 1
+
+    status_map: dict[str, dict[str, object]] = {}
+    for species, counter in sorted(counters.items()):
+        total = int(counter["total"])
+        reviewed = int(counter["reviewed"])
+        if reviewed <= 0:
+            status = "unvalidated"
+        elif reviewed >= total:
+            status = "complete"
+        else:
+            status = "partial"
+        status_map[species] = {"status": status, "total": total, "reviewed": reviewed}
+    return status_map
+
+
+def _row_confidence(row: list[object]) -> float:
+    try:
+        return float(row[3]) if len(row) > 3 else 0.0
+    except Exception:
+        return 0.0
+
+
+def _row_is_pending(row: list[object]) -> bool:
+    status_value = str(row[6] if len(row) > 6 else "pending").strip().lower()
+    return status_value in {"", "pending"}
+
+
+def _sort_rows_for_validation_queue(rows: list[list[object]]) -> list[list[object]]:
+    """Prioritize unreviewed detections, keeping confidence-desc order within each group."""
+    return [
+        row
+        for _, row in sorted(
+            enumerate(rows),
+            key=lambda item: (
+                0 if _row_is_pending(item[1]) else 1,
+                -_row_confidence(item[1]),
+                item[0],
+            ),
+        )
+    ]
 
 
 def _select_and_fetch_audio_with_title(
@@ -2103,11 +2875,15 @@ def _advance_to_next_row_with_title(
 ) -> tuple[int, str | None, str, str, str | None, str]:
     normalized_rows = _normalize_rows(rows)
     if not normalized_rows:
-        return 0, None, cache_key, "No detections available", None, _spectrogram_title(None, None)
+        return -1, None, cache_key, "No detections available", None, _spectrogram_title(None, None)
+
+    pending_index = _pending_row_index_or_none(normalized_rows)
+    if pending_index is None:
+        return -1, None, cache_key, VALIDATION_QUEUE_COMPLETE_STATUS, None, _spectrogram_title(None, None)
 
     safe_index = int(selected_index) + 1
-    if safe_index >= len(normalized_rows):
-        safe_index = _first_pending_row_index(normalized_rows)
+    if safe_index >= len(normalized_rows) or not _row_is_pending(normalized_rows[safe_index]):
+        safe_index = pending_index
     safe_index = max(0, safe_index)
     audio_path, updated_cache_key, status, spectrogram_path = _fetch_selected_audio_with_spectrogram(
         audio_service=audio_service,
@@ -2123,12 +2899,16 @@ def _advance_to_next_row_with_title(
 
 
 def _first_pending_row_index(rows: object) -> int:
+    pending_index = _pending_row_index_or_none(rows)
+    return pending_index if pending_index is not None else 0
+
+
+def _pending_row_index_or_none(rows: object) -> int | None:
     normalized_rows = _normalize_rows(rows)
     for index, row in enumerate(normalized_rows):
-        status_value = str(row[6] if len(row) > 6 else "pending").strip().lower()
-        if status_value in {"", "pending"}:
+        if _row_is_pending(row):
             return index
-    return 0
+    return None
 
 
 def _first_pending_queue_page(
@@ -2141,6 +2921,7 @@ def _first_pending_queue_page(
     status_filter: str,
     updated_after: object,
     show_conflicts_only: bool,
+    actor_username: str = "",
 ) -> tuple[list[list[object]], int, int] | None:
     normalized_status_filter = (status_filter or "all").strip().lower()
     if normalized_status_filter not in {"", "all", "pending"}:
@@ -2160,17 +2941,16 @@ def _first_pending_queue_page(
             status_filter=status_filter,
             updated_after=updated_after,
             show_conflicts_only=show_conflicts_only,
+            actor_username=actor_username,
         )
         if actual_page in visited_pages:
             return None
         visited_pages.add(actual_page)
 
-        page_rows = _sort_rows_by_confidence_desc(page_rows)
-        pending_index = _first_pending_row_index(page_rows)
-        if page_rows:
-            status_value = str(page_rows[pending_index][6] if len(page_rows[pending_index]) > 6 else "pending").strip().lower()
-            if status_value in {"", "pending"}:
-                return page_rows, actual_page, pending_index
+        page_rows = _sort_rows_for_validation_queue(page_rows)
+        pending_index = _pending_row_index_or_none(page_rows)
+        if pending_index is not None:
+            return page_rows, actual_page, pending_index
 
         requested_page = actual_page + 1
 
@@ -2187,6 +2967,42 @@ def _validator_name_from_session(session: object) -> str:
     return str(getattr(session, "username", "") or "").strip()
 
 
+def _reject_requires_corrected_species(status_value: str, corrected_species: str | None) -> bool:
+    return (status_value or "").strip().lower() == "negative" and not (corrected_species or "").strip()
+
+
+def _is_reject_correction_required_status(status_value: object) -> bool:
+    return str(status_value or "").strip().startswith(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
+
+
+def _is_validation_saved_status(status_value: object) -> bool:
+    return str(status_value or "").strip().startswith("Validation saved")
+
+
+def _is_validation_conflict_status(status_value: object) -> bool:
+    return "Concurrency conflict" in str(status_value or "")
+
+
+CORRECTED_SPECIES_REQUIRED_ALERT_HTML = """
+<div class="bn-corrected-species-alert">
+  <strong>Corrected species required</strong>
+  <span>Choose the corrected species, Noise, or Undetermined before rejecting this segment.</span>
+</div>
+"""
+
+
+def _corrected_species_error_update(active: bool) -> object:
+    return gr.update(visible=bool(active))
+
+
+def _corrected_species_ui_after_validation(save_status: object) -> tuple[object, object]:
+    if _is_reject_correction_required_status(save_status):
+        return gr.update(), _corrected_species_error_update(True)
+    if str(save_status or "").startswith("Validation saved"):
+        return gr.update(value=None), _corrected_species_error_update(False)
+    return gr.update(), _corrected_species_error_update(False)
+
+
 def _save_selected_validation(
     validation_service: _ValidationServiceProtocol,
     audio_service: _AudioServiceProtocol,
@@ -2198,10 +3014,13 @@ def _save_selected_validation(
     notes: str,
     cache_key: str,
     corrected_species: str | None = None,
-) -> tuple[str, str, str | None]:
+) -> tuple[str, str, object]:
     validator_name = validator.strip()
     if not validator_name:
         return "Provide validator name before saving", cache_key, None
+
+    if _reject_requires_corrected_species(status_value, corrected_species):
+        return VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS, cache_key, gr.update()
 
     try:
         detection_key = _extract_detection_key(rows=rows, selected_index=selected_index)
@@ -2230,6 +3049,29 @@ def _save_selected_validation(
         return f"Failed to save validation: {exc}", cache_key, None
 
 
+def _advance_after_validation_with_title(
+    audio_service: _AudioServiceProtocol,
+    dataset_repo: str,
+    rows: object,
+    selected_index: int,
+    cache_key: str,
+    save_status: object,
+    allow_demo_fallback: bool = False,
+    hf_token: str | None = None,
+) -> tuple[int, object, str, object, object, object]:
+    if not _is_validation_saved_status(save_status):
+        return int(selected_index), gr.update(), cache_key, save_status, gr.update(), gr.update()
+    return _advance_to_next_row_with_title(
+        audio_service=audio_service,
+        dataset_repo=dataset_repo,
+        rows=rows,
+        selected_index=selected_index,
+        cache_key=cache_key,
+        allow_demo_fallback=allow_demo_fallback,
+        hf_token=hf_token,
+    )
+
+
 def _save_selected_validation_with_refresh(
     validation_service: _ValidationServiceProtocol,
     audio_service: _AudioServiceProtocol,
@@ -2250,8 +3092,20 @@ def _save_selected_validation_with_refresh(
     updated_after: object,
     show_conflicts_only: bool,
     corrected_species: str | None = None,
-) -> tuple[str, str, str | None, list[list[object]], int, int, str, str]:
+) -> tuple[str, str, object, list[list[object]], int, int, str, str]:
     prior_rows = _normalize_rows(rows)
+    if _reject_requires_corrected_species(status_value, corrected_species):
+        return (
+            VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS,
+            cache_key,
+            gr.update(),
+            prior_rows,
+            int(page),
+            int(selected_index),
+            "",
+            "",
+        )
+
     selected_was_last_row = bool(prior_rows) and int(selected_index) >= len(prior_rows) - 1
     selected_key = ""
     try:
@@ -2272,6 +3126,18 @@ def _save_selected_validation_with_refresh(
         corrected_species=corrected_species,
     )
 
+    if not _is_validation_saved_status(save_status) and not _is_validation_conflict_status(save_status):
+        return (
+            save_status,
+            updated_cache_key,
+            audio_path,
+            prior_rows,
+            int(page),
+            int(selected_index),
+            "",
+            "",
+        )
+
     refreshed_rows, page_status, refreshed_page = _page_to_table(
         service=queue_service,
         snapshot_reader=snapshot_reader,
@@ -2283,15 +3149,16 @@ def _save_selected_validation_with_refresh(
         status_filter=status_filter,
         updated_after=updated_after,
         show_conflicts_only=show_conflicts_only,
+        actor_username=validator,
     )
-    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+    refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
 
     if selected_key:
         refreshed_index = _post_validation_queue_anchor(refreshed_rows, selected_key, selected_index)
     else:
         refreshed_index = 0
 
-    if "Concurrency conflict" in save_status:
+    if _is_validation_conflict_status(save_status):
         conflict_key = selected_key
         refreshed_rows, page_status, refreshed_page = _page_to_table(
             service=queue_service,
@@ -2305,15 +3172,24 @@ def _save_selected_validation_with_refresh(
             updated_after=updated_after,
             conflict_detection_key=conflict_key,
             show_conflicts_only=show_conflicts_only,
+            actor_username=validator,
         )
-        refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+        refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
         refreshed_index = _find_detection_row_index(refreshed_rows, selected_key) if selected_key else 0
         pending_status_value = status_value
         status = f"{save_status} Table reloaded to resolve conflict."
     else:
         conflict_key = ""
         pending_status_value = ""
-        if selected_was_last_row:
+        normalized_status_filter = (status_filter or "all").strip().lower()
+        pending_index = (
+            _pending_row_index_or_none(refreshed_rows)
+            if normalized_status_filter in {"", "all", "pending"} and int(refreshed_page) <= 1
+            else None
+        )
+        if pending_index is not None:
+            refreshed_index = pending_index - 1
+        elif normalized_status_filter in {"", "all", "pending"}:
             first_pending_page = _first_pending_queue_page(
                 queue_service=queue_service,
                 snapshot_reader=snapshot_reader,
@@ -2324,10 +3200,30 @@ def _save_selected_validation_with_refresh(
                 status_filter=status_filter,
                 updated_after=updated_after,
                 show_conflicts_only=show_conflicts_only,
+                actor_username=validator,
             )
             if first_pending_page is not None:
                 refreshed_rows, refreshed_page, pending_index = first_pending_page
                 refreshed_index = pending_index - 1
+            else:
+                if refreshed_page != 1:
+                    refreshed_rows, page_status, refreshed_page = _page_to_table(
+                        service=queue_service,
+                        snapshot_reader=snapshot_reader,
+                        project_slug=project_slug,
+                        page=1,
+                        scientific_name=scientific_name,
+                        min_confidence=min_confidence,
+                        validator_filter=validator_filter,
+                        status_filter=status_filter,
+                        updated_after=updated_after,
+                        show_conflicts_only=show_conflicts_only,
+                        actor_username=validator,
+                    )
+                    refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
+                refreshed_index = -1
+        elif selected_was_last_row:
+            refreshed_index = -1
         status = f"{save_status} | {page_status}"
 
     return (
@@ -2375,8 +3271,9 @@ def _reapply_last_conflict_validation_with_refresh(
             status_filter=status_filter,
             updated_after=updated_after,
             show_conflicts_only=show_conflicts_only,
+            actor_username=validator,
         )
-        refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+        refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
         return (
             f"No pending validation to reapply | {page_status}",
             cache_key,
@@ -2483,8 +3380,9 @@ def _batch_validate_conflicts(
         status_filter=status_filter,
         updated_after=updated_after,
         show_conflicts_only=False,
+        actor_username=validator_name,
     )
-    refreshed_rows = _sort_rows_by_confidence_desc(refreshed_rows)
+    refreshed_rows = _sort_rows_for_validation_queue(refreshed_rows)
 
     summary = f"Processed {len(conflict_rows)} conflicts: {success_count} success, {conflict_count} new conflicts, {failure_count} failures"
     status = f"{summary} | {page_status}"
@@ -2511,6 +3409,8 @@ _VALIDATION_EXPORT_STATE_COLUMNS = [
     "validation_validator",
     "validation_updated_at",
     "validation_version",
+    "validation_conflict",
+    "validation_conflict_reason",
     "validation_reviewed",
 ]
 
@@ -2595,6 +3495,8 @@ def _build_validation_export_rows(
             "validation_validator": str(state.get("validator") or ""),
             "validation_updated_at": str(state.get("updated_at") or ""),
             "validation_version": int(state.get("version") or 0),
+            "validation_conflict": bool(state.get("conflict")),
+            "validation_conflict_reason": str(state.get("conflict_reason") or ""),
             "validation_reviewed": validation_status.lower() != "pending",
         }
         for raw_key, raw_value in detection.source_metadata.items():
@@ -2700,6 +3602,11 @@ def create_app() -> gr.Blocks:
 
     projects_file_path, user_access_file_path, invites_file_path = _resolve_bootstrap_file_paths(runtime_config)
     state_store, supabase_validation_repository, state_backend_message = _build_supabase_state(runtime_config)
+    if runtime_config.hf_admin_storage_mode_enabled:
+        state_store = None
+        supabase_validation_repository = None
+        state_backend_message = "HF admin-owned private storage enabled."
+    allow_username_login, auth_mode_label, auth_mode_description = _resolve_username_login_policy(runtime_config)
     bootstrap_warning = _bootstrap_auth_and_projects(
         auth_service,
         admin_manager,
@@ -2708,6 +3615,7 @@ def create_app() -> gr.Blocks:
         user_access_file_path=str(user_access_file_path),
         invites_file_path=str(invites_file_path),
         state_store=state_store,
+        hf_project_state_token=_storage_hf_token() if runtime_config.hf_admin_storage_mode_enabled else _env_hf_token(),
     )
 
     def _current_project_map() -> dict[str, Project]:
@@ -2731,12 +3639,43 @@ def create_app() -> gr.Blocks:
     loaded_project_order: list[str] = []
     max_loaded_projects = 3
     audio_service = AudioFetchService(EphemeralCacheManager(ttl_seconds=300, max_files=128))
-    validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
+    base_validation_repository = supabase_validation_repository or AppendOnlyValidationRepository(base_dir=runtime_config.validation_base_dir)
+    hf_state_writes_enabled = runtime_config.hf_project_state_writes_enabled or runtime_config.hf_admin_storage_mode_enabled
+    hf_bucket_validations_enabled = runtime_config.hf_bucket_validations_enabled or runtime_config.hf_admin_storage_mode_enabled
+    validation_repository = ProjectAwareValidationRepository(
+        fallback_repository=base_validation_repository,
+        project_lookup=admin_manager.get_project,
+        token_provider=lambda project: (
+            (_storage_hf_token() or "").strip()
+            if runtime_config.hf_admin_storage_mode_enabled
+            and (project.validation_backend or "").strip() == HF_BUCKET_VALIDATION_BACKEND
+            else (
+                (project.dataset_token or "").strip()
+                or (auth_service.get_hf_token_for_user((project.owner_username or "").strip()) or "").strip()
+                or (_env_hf_token() or "").strip()
+            )
+        ) or None,
+        actor_token_provider=lambda _project, username: auth_service.get_hf_token_for_user(username),
+        enable_hf_project_state=hf_state_writes_enabled,
+        enable_hf_bucket_validations=hf_bucket_validations_enabled,
+        use_backend_token_for_bucket=runtime_config.hf_admin_storage_mode_enabled,
+    )
     validation_service = ValidationService(validation_repository)
+    hf_state_initializer = HfProjectStateStoreInitializer()
+    hf_bucket_initializer = HfBucketValidationInitializer()
+    hf_resource_deleter = HfProjectResourceDeleter()
+    hf_state_connector = HfProjectStateStoreConnector()
+    hf_state_sync = HfProjectStateStoreSync()
     report_cache: dict[tuple[str, int, int, str], tuple[float, tuple[object, ...]]] = {}
     report_cache_ttl_seconds = 30.0
 
-    with gr.Blocks(title="BirdNET-Validator-App", css=APP_CSS, elem_classes=["bn-shell"]) as wrapper:
+    with gr.Blocks(
+        title="BirdNET-Validator-App",
+        css=APP_CSS,
+        head=CRITICAL_HEAD_HTML + _species_status_dropdown_script(),
+        fill_width=False,
+        elem_classes=["bn-shell"],
+    ) as wrapper:
         gr.HTML(app_header_html(state_backend_message))
         if state_backend_message.startswith("⚠"):
             gr.Markdown(state_backend_message)
@@ -2748,6 +3687,7 @@ def create_app() -> gr.Blocks:
         selected_project_state = gr.State(value=None)
         selected_dataset_repo_state = gr.State(value="")
         seed_warning_state = gr.State(value=seed_warning)
+        oauth_login_intent_state = gr.Textbox(value="", visible=False)
 
         def _project_rows() -> list[list[object]]:
             projects = admin_manager.list_projects()
@@ -2793,6 +3733,14 @@ def create_app() -> gr.Blocks:
                 return False
             role = auth_service.get_user_role_for_project(session.username, slug)
             return role == Role.admin
+
+        def _can_access_project(session, project_slug: str) -> bool:
+            if session is None:
+                return False
+            slug = (project_slug or "").strip()
+            if not slug or slug not in session.authorized_projects:
+                return False
+            return auth_service.get_user_role_for_project(session.username, slug) in {Role.admin, Role.validator}
 
         def _refresh_session_copy(session):
             if session is None:
@@ -2862,6 +3810,8 @@ def create_app() -> gr.Blocks:
             slug = (project_slug or "").strip()
             if not slug:
                 return ""
+            if not _can_access_project(session, slug):
+                return "Access denied. Select a project assigned to your signed-in account."
 
             token = _project_fetch_token(slug, session)
             signature = _project_queue_signature(slug, token)
@@ -2882,7 +3832,85 @@ def create_app() -> gr.Blocks:
             _touch_loaded_project(slug)
             return warning
 
-        def _persist_admin_state() -> tuple[bool, str]:
+        def _project_state_write_token(project: Project, session=None) -> str | None:
+            if runtime_config.hf_admin_storage_mode_enabled:
+                return _storage_hf_token()
+            session_username = str(getattr(session, "username", "") or "").strip()
+            session_token = auth_service.get_hf_token_for_user(session_username) if session_username else None
+            owner_username = (project.owner_username or "").strip()
+            owner_token = auth_service.get_hf_token_for_user(owner_username) if owner_username else None
+            return (
+                (session_token or "").strip()
+                or (project.dataset_token or "").strip()
+                or (owner_token or "").strip()
+                or (_env_hf_token() or "").strip()
+                or None
+            )
+
+        def _sync_hf_admin_state(
+            *,
+            session=None,
+            sync_project_slugs: set[str] | None = None,
+            archived_projects: list[Project] | None = None,
+        ) -> list[str]:
+            if not hf_state_writes_enabled:
+                return []
+
+            user_access = auth_service.export_user_access_map(include_inactive=True)
+            pending_invites = auth_service.export_pending_invites_map()
+            target_slugs = {
+                slug.strip()
+                for slug in (sync_project_slugs or set())
+                if slug and slug.strip()
+            }
+            active_projects: list[Project] = []
+            for project_row in admin_manager.list_projects():
+                slug = str(project_row.get("project_slug") or "").strip()
+                if target_slugs and slug not in target_slugs:
+                    continue
+                project = admin_manager.get_project(slug)
+                if project is None:
+                    continue
+                if (project.state_backend or "").strip() != HF_PROJECT_STATE_BACKEND:
+                    continue
+                active_projects.append(project)
+
+            archived_targets = [
+                project
+                for project in (archived_projects or [])
+                if (project.state_backend or "").strip() == HF_PROJECT_STATE_BACKEND
+            ]
+
+            errors: list[str] = []
+            actor_username = str(getattr(session, "username", "") or "").strip()
+            for project in [*active_projects, *archived_targets]:
+                token = _project_state_write_token(project, session=session)
+                if not token:
+                    errors.append(
+                        f"{project.project_slug}: missing HF token with write access to {project.state_repo_id or project.dataset_repo_id}"
+                    )
+                    continue
+                try:
+                    hf_state_sync.sync_project_state(
+                        project=project,
+                        user_access=user_access,
+                        pending_invites=pending_invites,
+                        token=token,
+                        actor_username=actor_username,
+                        archived=project in archived_targets,
+                    )
+                except Exception as exc:
+                    errors.append(f"{project.project_slug}: {exc}")
+            return errors
+
+        def _persist_admin_state(
+            allowed_removed_project_slugs: set[str] | None = None,
+            *,
+            session=None,
+            sync_project_slugs: set[str] | None = None,
+            archived_projects: list[Project] | None = None,
+            sync_hf_state: bool = True,
+        ) -> tuple[bool, str]:
             try:
                 _persist_bootstrap_state(
                     projects_path=projects_file_path,
@@ -2891,7 +3919,19 @@ def create_app() -> gr.Blocks:
                     admin_manager=admin_manager,
                     auth_service=auth_service,
                     state_store=state_store,
+                    allowed_removed_project_slugs=allowed_removed_project_slugs,
                 )
+                sync_errors = (
+                    _sync_hf_admin_state(
+                        session=session,
+                        sync_project_slugs=sync_project_slugs,
+                        archived_projects=archived_projects,
+                    )
+                    if sync_hf_state
+                    else []
+                )
+                if sync_errors:
+                    return False, "HF project-state sync failed: " + " | ".join(sync_errors)
                 return True, ""
             except Exception as exc:
                 return False, str(exc)
@@ -2903,10 +3943,25 @@ def create_app() -> gr.Blocks:
                     section_header_html(
                         "Secure access",
                         "Sign in with your Hugging Face identity",
-                        "Your account controls project access, validator attribution, and private dataset access.",
+                        (
+                            "Validators sign in with their own identity; private datasets and validation storage remain accessible only through this app."
+                            if runtime_config.hf_admin_storage_mode_enabled
+                            else "Your account controls project access, validator attribution, and private dataset access."
+                        ),
                     )
                 )
-                username_input, session_output, login_button, error_message = create_login_page(auth_service)
+                session_output, error_message, oauth_login_button = create_login_page(
+                    auth_service,
+                    allow_username_login=allow_username_login,
+                    enable_oauth_login=_is_running_in_hf_space(),
+                    auth_mode_label=(
+                        "Private HF administrator storage is active. Your login verifies identity only; "
+                        "project access is granted by assignments or invitations inside this app."
+                        if runtime_config.hf_admin_storage_mode_enabled
+                        else auth_mode_description
+                    ),
+                    admin_storage_mode=runtime_config.hf_admin_storage_mode_enabled,
+                )
 
                 # Store session ID when login succeeds
                 def handle_login_success(session_id: str):
@@ -2921,6 +3976,63 @@ def create_app() -> gr.Blocks:
                     outputs=[session_state],
                 )
 
+                def render_oauth_button_label(session):
+                    return gr.update(value=oauth_action_button_html(signed_in=session is not None))
+
+                if oauth_login_button is not None and _is_running_in_hf_space():
+                    session_state.change(
+                        fn=render_oauth_button_label,
+                        inputs=[session_state],
+                        outputs=[oauth_login_button],
+                    )
+
+                def hydrate_oauth_session_after_click(
+                    login_intent: str,
+                    profile: gr.OAuthProfile | None,
+                    oauth_token: gr.OAuthToken | None,
+                ):
+                    """Complete app login only after the user clicked the app-controlled OAuth button."""
+                    if (login_intent or "").strip() != "1":
+                        return None, ""
+                    session_id, message = perform_oauth_login(auth_service, profile, oauth_token)
+                    if not session_id:
+                        return None, message
+                    return auth_service.get_session(session_id), message
+
+                oauth_intent_load = wrapper.load(
+                    fn=lambda intent: intent,
+                    inputs=[oauth_login_intent_state],
+                    outputs=[oauth_login_intent_state],
+                    js="""
+                    () => {
+                        const params = new URLSearchParams(window.location.search);
+                        const intentFromUrl = params.get("birdnet_login_intent") === "1";
+                        if (intentFromUrl) {
+                            params.delete("birdnet_login_intent");
+                            const nextQuery = params.toString();
+                            const nextUrl = window.location.pathname + (nextQuery ? `?${nextQuery}` : "") + window.location.hash;
+                            window.history.replaceState({}, "", nextUrl);
+                        }
+                        return sessionStorage.getItem("birdnet_hf_login_intent") || (intentFromUrl ? "1" : "");
+                    }
+                    """,
+                )
+                oauth_intent_load.then(
+                    fn=hydrate_oauth_session_after_click,
+                    inputs=[oauth_login_intent_state],
+                    outputs=[session_state, error_message],
+                ).then(
+                    fn=lambda: "",
+                    inputs=None,
+                    outputs=[oauth_login_intent_state],
+                    js="""
+                    () => {
+                        sessionStorage.removeItem("birdnet_hf_login_intent");
+                        return "";
+                    }
+                    """,
+                )
+
             # ===== TAB 2: Admin Panel =====
             with gr.Tab("Admin", id="admin_tab"):
                 gr.HTML(
@@ -2930,7 +4042,7 @@ def create_app() -> gr.Blocks:
                         "Administrative actions are scoped by project role. Keep dataset tokens restricted to the projects that need them.",
                     )
                 )
-                admin_info = gr.Markdown(value="Login required")
+                admin_info = gr.Markdown(value="", visible=False)
                 admin_scope_info = gr.Markdown(value="")
                 admin_overview = gr.HTML(value=admin_overview_html(username=None, total_projects=0, admin_projects=0, validator_projects=0, pending_invites=0))
 
@@ -2961,16 +4073,11 @@ def create_app() -> gr.Blocks:
                     """Show admin panel or access denied message."""
                     if session is None:
                         return (
-                            "**Not authenticated** - Login first in the **Login** tab.",
+                            "",
                             gr.update(visible=False),
                         )
-                    admin_projects = _admin_projects_for_session(session)
                     return (
-                        (
-                            f"**Admin workspace** - Welcome, {session.username}. "
-                            f"You are admin in {len(admin_projects)} project(s). "
-                            "You can always create a new project and become its admin."
-                        ),
+                        "",
                         gr.update(visible=True),
                     )
 
@@ -2984,6 +4091,15 @@ def create_app() -> gr.Blocks:
                                 class_name="bn-panel-soft",
                             )
                         )
+                        if runtime_config.hf_admin_storage_mode_enabled:
+                            gr.HTML(
+                                inline_hint_html(
+                                    "Private administrator-owned HF storage is active. Use a private dataset in your "
+                                    "personal Hugging Face namespace and collaborative visibility in this app. "
+                                    "Validators are assigned here and do not need direct Hub repository access.",
+                                    "info",
+                                )
+                            )
                         with gr.Row():
                             create_project_slug = gr.Textbox(
                                 label="New Project Slug",
@@ -3003,9 +4119,14 @@ def create_app() -> gr.Blocks:
                                 value="collaborative",
                             )
                             create_project_token = gr.Textbox(
-                                label="Project HF Token (optional)",
+                                label=(
+                                    "Storage credential configured as Space secret"
+                                    if runtime_config.hf_admin_storage_mode_enabled
+                                    else "Project HF Token (optional)"
+                                ),
                                 placeholder="hf_xxx...",
                                 type="password",
+                                visible=not runtime_config.hf_admin_storage_mode_enabled,
                             )
 
                         create_project_message = gr.Markdown()
@@ -3021,6 +4142,11 @@ def create_app() -> gr.Blocks:
                             elem_id="bn-admin-projects-table",
                             elem_classes=["bn-dataframe", "bn-polished-dataframe", "bn-admin-dataframe"],
                         )
+                        connect_state_repo = gr.Textbox(
+                            label="Connect existing private project state repository",
+                            placeholder="owner/audio_dataset_state",
+                        )
+                        connect_state_message = gr.Markdown()
 
                     with gr.Row(elem_classes=["bn-admin-action-row"]):
                         create_project_btn = gr.Button(
@@ -3031,6 +4157,10 @@ def create_app() -> gr.Blocks:
                             "Refresh List",
                             elem_classes=["bn-admin-action", "bn-admin-action-blue"],
                         )
+                    connect_state_btn = gr.Button(
+                        "Connect Existing State",
+                        elem_classes=["bn-admin-action", "bn-admin-action-blue"],
+                    )
 
                     def create_project(session, slug: str, name: str, repo_id: str, visibility: str, project_token: str):
                         if session is None:
@@ -3040,24 +4170,147 @@ def create_app() -> gr.Blocks:
                         name = (name or "").strip()
                         repo_id = (repo_id or "").strip()
                         visibility_value = (visibility or "collaborative").strip().lower()
-                        project_token_value = (project_token or "").strip() or _session_hf_token(session) or None
+                        explicit_project_token = (project_token or "").strip() or None
+                        operation_token = (
+                            _storage_hf_token()
+                            if runtime_config.hf_admin_storage_mode_enabled
+                            else explicit_project_token or _session_hf_token(session) or _env_hf_token()
+                        )
                         if not slug or not name or not repo_id:
                             return "Fill slug, name, and repo id.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
                         if visibility_value not in {"private", "collaborative"}:
                             return "Visibility must be private or collaborative.", gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), gr.update(), session
-
-                        created = admin_manager.register_project(
-                            Project(
-                                project_id=str(uuid4()),
-                                project_slug=slug,
-                                name=name,
-                                dataset_repo_id=repo_id,
-                                visibility=visibility_value,
-                                owner_username=session.username,
-                                dataset_token=project_token_value,
-                                active=True,
+                        if (
+                            _is_running_in_hf_space()
+                            and hf_state_writes_enabled
+                            and not runtime_config.hf_admin_storage_mode_enabled
+                            and getattr(session, "authentication_method", "") != "oauth"
+                        ):
+                            return (
+                                "Private `_state` test projects must be created through OAuth. Return to Login, complete "
+                                "both Hugging Face sign-in steps, and create a new test project.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
                             )
+                        if admin_manager.get_project(slug) is not None:
+                            admin_projects = _admin_projects_for_session(session)
+                            return (
+                                f"Project '{slug}' already exists.",
+                                _project_rows(),
+                                gr.update(choices=admin_projects),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(choices=admin_projects),
+                                gr.update(choices=admin_projects),
+                                gr.update(choices=["all", *admin_projects], value="all"),
+                                gr.update(),
+                                session,
+                            )
+                        project = Project(
+                            project_id=str(uuid4()),
+                            project_slug=slug,
+                            name=name,
+                            dataset_repo_id=repo_id,
+                            visibility=visibility_value,
+                            owner_username=session.username,
+                            dataset_token=None if runtime_config.hf_admin_storage_mode_enabled else explicit_project_token,
+                            active=True,
                         )
+                        bucket_result = None
+                        if runtime_config.hf_admin_storage_mode_enabled:
+                            try:
+                                bucket_result = _initialize_hf_admin_storage(
+                                    project=project,
+                                    token=operation_token,
+                                    bucket_initializer=hf_bucket_initializer,
+                                )
+                            except HfBucketValidationError as exc:
+                                return (
+                                    f"Project was not created because its private validation Bucket could not be initialized: {exc}",
+                                    _project_rows(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    session,
+                                )
+                        try:
+                            state_result = hf_state_initializer.initialize(
+                                project=project,
+                                creator_username=session.username,
+                                token=operation_token,
+                            )
+                        except HfProjectStateStoreError as exc:
+                            return (
+                                f"Project was not created because the private companion state repo could not be initialized: {exc}",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        if state_result.reused_existing:
+                            return (
+                                "An existing private state repository was found. Use Connect Existing State so its "
+                                "saved project manifest and ACL remain authoritative.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        project.state_backend = HF_PROJECT_STATE_BACKEND
+                        project.state_repo_id = state_result.state_repo_id
+                        project.state_schema_version = HF_PROJECT_STATE_SCHEMA_VERSION
+                        project.state_status = "ready"
+                        state_repo_action = "initialized" if state_result.initialized else "connected"
+                        bucket_message = (
+                            f" Private validation Bucket ready: {bucket_result.bucket_id}."
+                            if bucket_result is not None
+                            else ""
+                        )
+                        recovery_message = (
+                            " This private state repository will be discovered automatically after a Space restart."
+                            if runtime_config.hf_admin_storage_mode_enabled
+                            else ""
+                        )
+
+                        created = admin_manager.register_project(project)
                         if not created:
                             admin_projects = _admin_projects_for_session(session)
                             return (
@@ -3078,7 +4331,10 @@ def create_app() -> gr.Blocks:
 
                         # Project creator is always admin of the project.
                         auth_service.upsert_user_project_role(session.username, slug, Role.admin)
-                        persisted, persist_error = _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={slug},
+                        )
                         _invalidate_project_queue(slug)
                         refreshed_warning = ""
                         refreshed_session = _refresh_session_copy(session)
@@ -3086,9 +4342,9 @@ def create_app() -> gr.Blocks:
 
                         return (
                             (
-                                f"Project '{slug}' created successfully."
+                                f"Project '{slug}' created successfully. Private state repo {state_repo_action}: {state_result.state_repo_id}.{bucket_message}{recovery_message}"
                                 if persisted
-                                else f"Project '{slug}' created, but could not persist bootstrap files: {persist_error}"
+                                else f"Project '{slug}' created with private state repo {state_repo_action} ({state_result.state_repo_id}).{bucket_message}{recovery_message} Could not persist bootstrap files: {persist_error}"
                             ),
                             _project_rows(),
                             gr.update(choices=admin_projects, value=slug),
@@ -3104,7 +4360,156 @@ def create_app() -> gr.Blocks:
                             refreshed_session,
                         )
 
-                    gr.HTML("<div class='bn-spacer'></div>")
+                    def connect_existing_state(session, state_repo_id: str):
+                        if session is None:
+                            return (
+                                "Access denied. Login required.",
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        repo_id = (state_repo_id or "").strip()
+                        if not repo_id:
+                            return (
+                                "Provide the private `_state` repository id to connect.",
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+                        try:
+                            loaded = hf_state_connector.connect_admin_project(
+                                state_repo_id=repo_id,
+                                token=(
+                                    _storage_hf_token()
+                                    if runtime_config.hf_admin_storage_mode_enabled
+                                    else _session_hf_token(session)
+                                ),
+                                actor_username=session.username,
+                            )
+                        except HfProjectStateStoreError as exc:
+                            return (
+                                f"Project state could not be connected: {exc}",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        if runtime_config.hf_admin_storage_mode_enabled:
+                            if (
+                                (loaded.project.validation_backend or "").strip() != HF_BUCKET_VALIDATION_BACKEND
+                                or not (loaded.project.validation_bucket_id or "").strip()
+                            ):
+                                return (
+                                    "Project state could not be connected in administrator-storage mode because its "
+                                    "manifest does not declare private Hugging Face Bucket validation storage.",
+                                    _project_rows(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    session,
+                                )
+                            try:
+                                _validate_hf_admin_storage_source_dataset(
+                                    project=loaded.project,
+                                    token=_storage_hf_token(),
+                                )
+                            except HfBucketValidationError as exc:
+                                return (
+                                    f"Project state could not be connected in administrator-storage mode: {exc}",
+                                    _project_rows(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    gr.update(),
+                                    session,
+                                )
+
+                        slug = loaded.project.project_slug
+                        if admin_manager.get_project(slug) is not None:
+                            return (
+                                f"Project '{slug}' is already registered in this workspace.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        if not admin_manager.register_project(loaded.project):
+                            return (
+                                f"Project '{slug}' could not be connected because its slug is already in use.",
+                                _project_rows(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                gr.update(),
+                                session,
+                            )
+
+                        loaded_users = set(loaded.user_access)
+                        for username, project_roles in loaded.user_access.items():
+                            role = project_roles.get(slug)
+                            if role is not None:
+                                auth_service.upsert_user_project_role(username, slug, role)
+                        for username in auth_service.list_usernames(include_inactive=True):
+                            if username not in loaded_users:
+                                auth_service.remove_user_project_role(username, slug)
+                        merged_invites = _merge_project_invites_from_hf_state(
+                            auth_service.export_pending_invites_map(),
+                            loaded.pending_invites,
+                            slug,
+                        )
+                        auth_service.load_pending_invites_map(merged_invites)
+
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_hf_state=False,
+                        )
+                        _invalidate_project_queue(slug)
+                        refreshed_session = _refresh_session_copy(session)
+                        admin_projects = _admin_projects_for_session(refreshed_session)
+                        validation_store = (
+                            f" Validation storage: {loaded.project.validation_bucket_id}."
+                            if loaded.project.validation_bucket_id
+                            else ""
+                        )
+                        message = (
+                            f"Project '{slug}' securely connected from {loaded.state_repo_id}.{validation_store}"
+                            if persisted
+                            else (
+                                f"Project '{slug}' connected from {loaded.state_repo_id}, but local bootstrap "
+                                f"persistence failed: {persist_error}"
+                            )
+                        )
+                        return (
+                            message,
+                            _project_rows(),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=admin_projects, value=slug),
+                            gr.update(choices=["all", *admin_projects], value="all"),
+                            gr.update(value=""),
+                            refreshed_session,
+                        )
 
                     def _render_admin_scope_info(session, selected_admin_project: str):
                         if session is None:
@@ -3176,6 +4581,18 @@ def create_app() -> gr.Blocks:
                         project = admin_manager.get_project(project_slug)
                         if project is None:
                             return "Select a valid project.", gr.update(), gr.update(), gr.update(), gr.update()
+                        if (
+                            runtime_config.hf_admin_storage_mode_enabled
+                            and (project.validation_backend or "").strip() == HF_BUCKET_VALIDATION_BACKEND
+                        ):
+                            return (
+                                "Administrator-owned HF projects never store a project token. Private storage access "
+                                "uses only the configured Space secret; validator logins verify identity.",
+                                gr.update(value=""),
+                                gr.update(value=False),
+                                _project_rows(),
+                                "",
+                            )
 
                         if bool(clear_token):
                             project.dataset_token = None
@@ -3187,7 +4604,10 @@ def create_app() -> gr.Blocks:
                             project.dataset_token = candidate
                             message = f"Project token updated for {project_slug}"
 
-                        persisted, persist_error = _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={project_slug},
+                        )
                         if not persisted:
                             message = f"{message} | Persistence failed: {persist_error}"
 
@@ -3202,19 +4622,56 @@ def create_app() -> gr.Blocks:
                         outputs=[token_update_message, token_new_value, token_clear_checkbox, projects_table, seed_warning_state],
                     )
 
-                def delete_project(session, project_slug: str):
+                def delete_project(session, project_slug: str, confirm_slug: str, confirm_checked: bool):
                     if session is None:
-                        return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                        return "Access denied. Login required.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
                     if not _is_admin_for_project(session, project_slug):
-                        return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update()
+                        return "Access denied. You must be admin of the selected project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
+
+                    project_to_delete = admin_manager.get_project(project_slug)
+                    if project_to_delete is None:
+                        return "Select a valid project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
+                    if (project_to_delete.owner_username or "").strip().casefold() != session.username.casefold():
+                        return "Only the project creator can permanently delete this project.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+
+                    if runtime_config.hf_admin_storage_mode_enabled:
+                        try:
+                            delete_result = hf_resource_deleter.delete_project_resources(
+                                project=project_to_delete,
+                                actor_username=session.username,
+                                storage_token=_storage_hf_token(),
+                                confirmed_slug=confirm_slug,
+                                confirmation_checked=bool(confirm_checked),
+                            )
+                        except HfProjectResourceDeletionError as exc:
+                            return str(exc), gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+                        except Exception as exc:
+                            return f"Could not permanently delete Hugging Face project resources: {exc}", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+                    else:
+                        typed_slug = (confirm_slug or "").strip()
+                        if typed_slug != project_slug or not bool(confirm_checked):
+                            return "Deletion was not confirmed. Type the exact project slug and check the confirmation box.", gr.update(), gr.update(), gr.update(), session, gr.update(), gr.update(), gr.update(), gr.update()
+                        delete_result = None
 
                     success, msg = admin_manager.delete_project(session.username, project_slug)
                     if not success:
-                        return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update()
+                        return msg, _project_rows(), gr.update(choices=_project_slugs()), gr.update(choices=_project_slugs()), session, gr.update(), gr.update(), gr.update(value=""), gr.update(value=False)
 
-                    persisted, persist_error = _persist_admin_state()
+                    persisted, persist_error = _persist_admin_state(
+                        allowed_removed_project_slugs={project_slug},
+                        session=session,
+                        sync_project_slugs=set(),
+                        sync_hf_state=False,
+                    )
                     if not persisted:
                         msg = f"{msg} | Persistence failed: {persist_error}"
+                    if delete_result is not None:
+                        msg = (
+                            f"Project '{project_slug}' and its Hugging Face resources were permanently deleted "
+                            f"(dataset: {delete_result.deleted_dataset_repo_id}, "
+                            f"state: {delete_result.deleted_state_repo_id or 'none'}, "
+                            f"bucket: {delete_result.deleted_bucket_id or 'none'})."
+                        )
 
                     _invalidate_project_queue(project_slug)
                     refreshed_warning = ""
@@ -3229,6 +4686,8 @@ def create_app() -> gr.Blocks:
                         refreshed_session,
                         refreshed_warning,
                         gr.update(choices=admin_projects, value=None),
+                        gr.update(value=""),
+                        gr.update(value=False),
                     )
 
                 with gr.Column(visible=False, elem_classes=["bn-admin-section", "bn-admin-delete-section"]) as admin_delete_controls:
@@ -3237,14 +4696,22 @@ def create_app() -> gr.Blocks:
                             section_header_html(
                                 "Project",
                                 "Delete project",
-                                "Remove a project from this validator workspace without deleting its Hugging Face dataset.",
+                                "Permanently delete the project, source dataset, private state repo, and validation Bucket.",
                                 class_name="bn-panel-soft",
                             )
                         )
-                        gr.HTML(inline_hint_html("Deleting a project removes assignments and pending invites.", "danger"))
+                        gr.HTML(inline_hint_html("This cannot be undone. Only the project creator can delete a project.", "danger"))
                         delete_project_slug = gr.Dropdown(
                             choices=_project_slugs(),
                             label="Project to delete",
+                        )
+                        delete_project_confirm_slug = gr.Textbox(
+                            label="Type the project slug to confirm",
+                            placeholder="Exact project slug",
+                        )
+                        delete_project_confirm_checkbox = gr.Checkbox(
+                            label="I understand this permanently deletes the project resources",
+                            value=False,
                         )
                         delete_project_message = gr.Markdown()
                     delete_project_btn = gr.Button(
@@ -3336,7 +4803,10 @@ def create_app() -> gr.Blocks:
                             role,
                         )
                         if success:
-                            persisted, persist_error = _persist_admin_state()
+                            persisted, persist_error = _persist_admin_state(
+                                session=session,
+                                sync_project_slugs={project},
+                            )
                             final_message = msg if persisted else f"{msg} | Persistence failed: {persist_error}"
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
@@ -3365,7 +4835,10 @@ def create_app() -> gr.Blocks:
                             role=role,
                         )
                         if success:
-                            persisted, persist_error = _persist_admin_state()
+                            persisted, persist_error = _persist_admin_state(
+                                session=session,
+                                sync_project_slugs={project},
+                            )
                             final_message = msg if persisted else f"{msg} | Persistence failed: {persist_error}"
                             return final_message, gr.update(value=""), gr.update(value=""), gr.update(value=None), gr.update(value="validator")
                         return msg, gr.update(), gr.update(), gr.update(), gr.update()
@@ -3482,7 +4955,10 @@ def create_app() -> gr.Blocks:
                             return "Access denied. You must be admin of the selected project.", _pending_invites_rows(project_filter, session)
                         success, msg = admin_manager.revoke_invite(username=username, project_slug=project_slug)
                         if success:
-                            persisted, persist_error = _persist_admin_state()
+                            persisted, persist_error = _persist_admin_state(
+                                session=session,
+                                sync_project_slugs={project_slug},
+                            )
                             if not persisted:
                                 msg = f"{msg} | Persistence failed: {persist_error}"
                         return msg, _pending_invites_rows(project_filter, session)
@@ -3501,7 +4977,12 @@ def create_app() -> gr.Blocks:
 
                     delete_project_btn.click(
                         fn=delete_project,
-                        inputs=[session_state, delete_project_slug],
+                        inputs=[
+                            session_state,
+                            delete_project_slug,
+                            delete_project_confirm_slug,
+                            delete_project_confirm_checkbox,
+                        ],
                         outputs=[
                             delete_project_message,
                             projects_table,
@@ -3510,6 +4991,8 @@ def create_app() -> gr.Blocks:
                             session_state,
                             seed_warning_state,
                             delete_project_slug,
+                            delete_project_confirm_slug,
+                            delete_project_confirm_checkbox,
                         ],
                     )
 
@@ -3529,6 +5012,21 @@ def create_app() -> gr.Blocks:
                         pending_invite_project,
                         pending_invites_filter_project,
                         seed_warning_state,
+                        session_state,
+                    ],
+                )
+
+                connect_state_btn.click(
+                    fn=connect_existing_state,
+                    inputs=[session_state, connect_state_repo],
+                    outputs=[
+                        connect_state_message,
+                        projects_table,
+                        admin_project,
+                        token_project_select,
+                        pending_invite_project,
+                        pending_invites_filter_project,
+                        connect_state_repo,
                         session_state,
                     ],
                 )
@@ -3553,7 +5051,7 @@ def create_app() -> gr.Blocks:
 
                 session_state.change(
                     fn=lambda s: (
-                        gr.update(visible=bool(s is not None)),
+                        gr.update(visible=bool(s is not None and not runtime_config.hf_admin_storage_mode_enabled)),
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
                         gr.update(visible=bool(s is not None)),
@@ -3596,7 +5094,7 @@ def create_app() -> gr.Blocks:
                         "Project access is filtered by your role. Invitations can be accepted here before validation starts.",
                     )
                 )
-                project_overview = gr.HTML(value=project_overview_html([], []), visible=False)
+                project_overview = gr.HTML(value="", visible=False)
                 project_info_display = gr.Markdown(
                     value="Login first in the **Login** tab"
                 )
@@ -3607,21 +5105,22 @@ def create_app() -> gr.Blocks:
                     interactive=False,
                     allow_custom_value=True,
                 )
-                invitations_info = gr.Markdown(value="")
-                invitations_overview = gr.HTML(value=invite_panel_html(0))
-                invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
-                with gr.Row():
-                    refresh_invites_btn = gr.Button("Refresh invites", elem_classes=["bn-soft-action"])
-                    accept_invite_btn = gr.Button("Accept Invite", elem_classes=["bn-soft-action"])
-                    accept_all_invites_btn = gr.Button("Accept All", elem_classes=["bn-soft-action"])
-                    reject_invite_btn = gr.Button("Reject Invite", elem_classes=["bn-soft-action"])
+                invitations_info = gr.Markdown(value="", visible=False)
+                invitations_overview = gr.HTML(value="", visible=False)
+                with gr.Group(visible=False) as invite_controls:
+                    invite_selector = gr.Dropdown(choices=[], label="Pending Invites", interactive=False)
+                    with gr.Row():
+                        refresh_invites_btn = gr.Button("Refresh invites", elem_classes=["bn-soft-action"])
+                        accept_invite_btn = gr.Button("Accept Invite", elem_classes=["bn-soft-action"])
+                        accept_all_invites_btn = gr.Button("Accept All", elem_classes=["bn-soft-action"])
+                        reject_invite_btn = gr.Button("Reject Invite", elem_classes=["bn-soft-action"])
 
                 def update_project_selector(session):
                     """Update project dropdown when user logs in."""
                     if session is None:
                         return (
                             gr.update(choices=[], value=None, interactive=False),
-                            project_overview_html([], []),
+                            gr.update(value="", visible=False),
                             "Not authenticated. Login first.",
                             project_context_html(None),
                             None,
@@ -3632,7 +5131,7 @@ def create_app() -> gr.Blocks:
                     if not projects:
                         return (
                             gr.update(choices=[], value=None, interactive=False),
-                            project_overview_html(_project_rows(), []),
+                            gr.update(value="", visible=False),
                             (
                                 "**No projects available yet**\n\n"
                                 "To get started:\n"
@@ -3654,7 +5153,7 @@ def create_app() -> gr.Blocks:
                     project_row = next((row for row in _project_rows() if row and str(row[0]) == selected), None)
                     return (
                         gr.update(choices=projects, value=selected, interactive=True),
-                        project_overview_html(_project_rows(), projects, selected),
+                        gr.update(value="", visible=False),
                         "",
                         project_context_html(project_row, role_label),
                         selected,
@@ -3691,16 +5190,17 @@ def create_app() -> gr.Blocks:
 
                 def _build_invites_ui(session):
                     if session is None:
-                        return gr.update(value="", visible=False), invite_panel_html(0), gr.update(choices=[], value=None, interactive=False)
+                        return gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(choices=[], value=None, interactive=False), gr.update(visible=False)
                     invites = auth_service.list_pending_invites(session.username)
                     if not invites:
-                        return gr.update(value="No pending invites", visible=True), invite_panel_html(0), gr.update(choices=[], value=None, interactive=False)
+                        return gr.update(value="", visible=False), gr.update(value="", visible=False), gr.update(choices=[], value=None, interactive=False), gr.update(visible=False)
                     encoded = [_format_invite_option(item) for item in invites]
                     labeled_choices = [(_build_invite_label(invite), encoded_value) for invite, encoded_value in zip(invites, encoded)]
                     return (
                         gr.update(value=f"Pending invites: {len(labeled_choices)}", visible=True),
-                        invite_panel_html(len(labeled_choices)),
+                        gr.update(value=invite_panel_html(len(labeled_choices)), visible=True),
                         gr.update(choices=labeled_choices, value=encoded[0], interactive=True),
+                        gr.update(visible=True),
                     )
 
                 def _parse_invite_option(raw_option: str) -> tuple[str, str, str]:
@@ -3720,7 +5220,12 @@ def create_app() -> gr.Blocks:
                     success, message = auth_service.accept_project_invite(session.username, project_slug)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if success:
-                        _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={project_slug},
+                        )
+                        if not persisted:
+                            message = f"{message} | Persistence failed: {persist_error}"
                     return message, refreshed
 
                 def _reject_invite(session, selected_option: str):
@@ -3732,16 +5237,29 @@ def create_app() -> gr.Blocks:
                     success, message = auth_service.reject_project_invite(session.username, project_slug)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if success:
-                        _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs={project_slug},
+                        )
+                        if not persisted:
+                            message = f"{message} | Persistence failed: {persist_error}"
                     return message, refreshed
 
                 def _accept_all_invites(session):
                     if session is None:
                         return "Login first", session
+                    invited_project_slugs = {
+                        invite.project_slug for invite in auth_service.list_pending_invites(session.username)
+                    }
                     accepted, failed, message = auth_service.accept_all_project_invites(session.username)
                     refreshed = auth_service.refresh_session_authorizations(session.session_id) or session
                     if accepted > 0:
-                        _persist_admin_state()
+                        persisted, persist_error = _persist_admin_state(
+                            session=session,
+                            sync_project_slugs=invited_project_slugs,
+                        )
+                        if not persisted:
+                            message = f"{message} | Persistence failed: {persist_error}"
                     detail = f"{message}"
                     if failed:
                         detail = f"{detail} | failed={failed}"
@@ -3756,13 +5274,13 @@ def create_app() -> gr.Blocks:
                 session_state.change(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 refresh_invites_btn.click(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 accept_invite_btn.click(
@@ -3776,7 +5294,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 accept_all_invites_btn.click(
@@ -3790,7 +5308,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 reject_invite_btn.click(
@@ -3800,19 +5318,19 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 )
 
                 def update_selected_project(selected: str, session):
                     """Update state when project is selected."""
-                    if session and selected:
+                    if session and selected and selected in session.authorized_projects:
                         selected_project = admin_manager.get_project(selected)
                         dataset_repo_id = selected_project.dataset_repo_id if selected_project else ""
                         role = auth_service.get_user_role_for_project(session.username, selected)
                         role_label = role.value.upper() if role else "UNKNOWN"
                         project_row = next((row for row in _project_rows() if row and str(row[0]) == selected), None)
-                        return selected, dataset_repo_id, project_overview_html(_project_rows(), session.authorized_projects, selected), project_context_html(project_row, role_label)
-                    return None, "", project_overview_html([], []), project_context_html(None)
+                        return selected, dataset_repo_id, gr.update(value="", visible=False), project_context_html(project_row, role_label)
+                    return None, "", gr.update(value="", visible=False), project_context_html(None)
 
                 project_selector.change(
                     fn=update_selected_project,
@@ -3827,7 +5345,7 @@ def create_app() -> gr.Blocks:
                 ).then(
                     fn=_build_invites_ui,
                     inputs=[session_state],
-                    outputs=[invitations_info, invitations_overview, invite_selector],
+                    outputs=[invitations_info, invitations_overview, invite_selector, invite_controls],
                 ).then(
                     fn=_render_admin_overview,
                     inputs=[session_state],
@@ -3921,6 +5439,7 @@ def create_app() -> gr.Blocks:
 
                 page_state = gr.State(value=1)
                 project_species_state = gr.State(value=[])
+                project_species_status_state = gr.State(value={})
                 custom_corrected_species_state = gr.State(value={})
                 favorite_detection_state = gr.State(value={})
 
@@ -3941,11 +5460,11 @@ def create_app() -> gr.Blocks:
                         auto_play_audio = gr.Checkbox(label="Auto-play when selecting a row", value=True)
 
                         with gr.Row(elem_classes=["bn-action-row"]):
-                            approve_btn = gr.Button("Confirm", variant="primary")
-                            reject_btn = gr.Button("Reject")
-                            uncertain_btn = gr.Button("Uncertain")
-                            skip_btn = gr.Button("Skip")
-                            favorite_btn = gr.Button("Favorite", variant="secondary")
+                            approve_btn = gr.Button(VALIDATION_CONFIRM_LABEL, variant="primary", elem_id="bn-validate-confirm-btn")
+                            reject_btn = gr.Button(VALIDATION_REJECT_LABEL, elem_id="bn-validate-reject-btn")
+                            uncertain_btn = gr.Button(VALIDATION_UNCERTAIN_LABEL, elem_id="bn-validate-uncertain-btn")
+                            skip_btn = gr.Button(VALIDATION_SKIP_LABEL, elem_id="bn-validate-skip-btn")
+                            favorite_btn = gr.Button(VALIDATION_FAVORITE_LABEL, variant="secondary", elem_id="bn-validate-favorite-btn")
 
                         corrected_species_input = gr.Dropdown(
                             label="Corrected species",
@@ -3953,6 +5472,12 @@ def create_app() -> gr.Blocks:
                             allow_custom_value=True,
                             filterable=True,
                             value=None,
+                            elem_id="bn-corrected-species-input",
+                        )
+                        corrected_species_error_panel = gr.HTML(
+                            value=CORRECTED_SPECIES_REQUIRED_ALERT_HTML,
+                            visible=False,
+                            elem_id="bn-corrected-species-error-panel",
                         )
 
                         status = gr.Markdown(value="", elem_classes=["bn-status-strip"])
@@ -3985,12 +5510,18 @@ def create_app() -> gr.Blocks:
                         selected_index = gr.Number(label="Selected row", value=0, precision=0, visible=False)
 
                     with gr.Column(scale=4, elem_classes=["bn-sidebar-panel"]):
+                        gr.Markdown("### Dataset Selection")
                         dataset_repo = gr.Textbox(label="Dataset repo", interactive=False)
                         species_filter = gr.Dropdown(
                             label="Species",
                             choices=[],
                             value=None,
                             interactive=False,
+                            elem_id="bn-species-filter",
+                        )
+                        species_status_payload = gr.HTML(
+                            value=_species_status_payload({}),
+                            elem_id="bn-species-status-payload",
                         )
 
                         gr.Markdown("### Queue navigation")
@@ -3998,41 +5529,29 @@ def create_app() -> gr.Blocks:
                             prev_btn = gr.Button("Previous")
                             next_btn = gr.Button("Next")
 
-                        with gr.Group(elem_classes=["bn-filter-panel"]):
-                            gr.Markdown("### Filters")
-                            min_confidence = gr.Slider(label="Minimum confidence", minimum=0.0, maximum=1.0, step=0.01, value=0.0)
-                            validation_status_filter = gr.Dropdown(
-                                label="Status",
-                                choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
-                                value="all",
-                            )
-                            validator_filter = gr.Textbox(label="Validator", placeholder="Ex: validator_001")
-                            updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
-                            show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
-                            refresh_btn = gr.Button("Apply filters", variant="primary")
+                        gr.Markdown("### Filters")
+                        min_confidence = gr.Slider(
+                            label="Minimum confidence",
+                            minimum=0.0,
+                            maximum=1.0,
+                            step=0.01,
+                            value=0.0,
+                            elem_classes=["bn-clean-slider"],
+                        )
+                        validation_status_filter = gr.Dropdown(
+                            label="Status",
+                            choices=["all", "pending", "positive", "negative", "uncertain", "skip"],
+                            value="all",
+                        )
+                        validator_filter = gr.Textbox(label="Validator", placeholder="Ex: validator_001")
+                        updated_after_filter = gr.DateTime(label="Updated since", include_time=False, type="string")
+                        show_conflicts_only = gr.Checkbox(label="Show only conflicts", value=False)
+                        refresh_btn = gr.Button("Apply filters", variant="primary")
 
                         gr.Markdown("### Review details")
                         validator_name = gr.Textbox(label="Validator", value="", interactive=False)
                         validation_notes = gr.Textbox(label="Notes", placeholder="Optional", lines=4)
-                        keyboard_shortcuts_info = gr.HTML(
-                            value="<script>"
-                            "document.addEventListener('keydown', function(event) {"
-                            "  if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') return;"
-                            "  const key = event.key;"
-                            "  let buttonText = null;"
-                            "  if (key === 'ArrowUp' || key === '1') buttonText = 'Confirm';"
-                            "  else if (key === 'ArrowDown' || key === '2') buttonText = 'Reject';"
-                            "  else if (key === '3') buttonText = 'Uncertain';"
-                            "  else if (key === '4') buttonText = 'Skip';"
-                            "  if (!buttonText) return;"
-                            "  event.preventDefault();"
-                            "  const buttons = document.querySelectorAll('button');"
-                            "  for (const btn of buttons) {"
-                            "    if ((btn.textContent || '').includes(buttonText)) { btn.click(); break; }"
-                            "  }"
-                            "});"
-                            "</script>"
-                        )
+                        keyboard_shortcuts_info = gr.HTML(value=_validation_shortcuts_script())
 
                 cache_key_state = gr.State(value="")
                 pending_status_state = gr.State(value="")
@@ -4043,6 +5562,10 @@ def create_app() -> gr.Blocks:
                     return auth_service.get_hf_token_for_user(session.username)
 
                 def _project_fetch_token(project_slug: str, session) -> str | None:
+                    if not _can_access_project(session, project_slug):
+                        return None
+                    if runtime_config.hf_admin_storage_mode_enabled:
+                        return _storage_hf_token()
                     session_token = _session_hf_token(session)
                     project = admin_manager.get_project(project_slug) if project_slug else None
                     return _resolve_project_fetch_token(project, session_token)
@@ -4056,27 +5579,34 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     if not project_slug:
                         return [], "", 1
+                    if not _can_access_project(session, project_slug):
+                        return [], "Access denied. Select a project assigned to your signed-in account.", 1
                     species_name = (species or "").strip()
                     if not species_name:
                         return [], "Select a species to start validation", 1
 
-                    rows, status_text, updated_page = _page_to_table(
-                        service=service_ref["queue"],
-                        snapshot_reader=validation_repository,
-                        project_slug=project_slug,
-                        page=page,
-                        scientific_name=species_name,
-                        min_confidence=confidence,
-                        page_size=10,
-                        validator_filter=validator_filter_value,
-                        status_filter=status_filter_value,
-                        updated_after=updated_after_value,
-                        show_conflicts_only=only_conflicts,
-                    )
-                    rows = _sort_rows_by_confidence_desc(rows)
+                    try:
+                        rows, status_text, updated_page = _page_to_table(
+                            service=service_ref["queue"],
+                            snapshot_reader=validation_repository,
+                            project_slug=project_slug,
+                            page=page,
+                            scientific_name=species_name,
+                            min_confidence=confidence,
+                            page_size=10,
+                            validator_filter=validator_filter_value,
+                            status_filter=status_filter_value,
+                            updated_after=updated_after_value,
+                            show_conflicts_only=only_conflicts,
+                            actor_username=_validator_name_from_session(session),
+                        )
+                    except HfBucketValidationError as exc:
+                        return [], str(exc), 1
+                    rows = _sort_rows_for_validation_queue(rows)
                     return rows, status_text, updated_page
 
                 def go_next(
@@ -4088,6 +5618,7 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     return refresh(
                         project_slug,
@@ -4098,6 +5629,7 @@ def create_app() -> gr.Blocks:
                         status_filter_value,
                         updated_after_value,
                         only_conflicts,
+                        session,
                     )
 
                 def go_prev(
@@ -4109,6 +5641,7 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     return refresh(
                         project_slug,
@@ -4119,22 +5652,56 @@ def create_app() -> gr.Blocks:
                         status_filter_value,
                         updated_after_value,
                         only_conflicts,
+                        session,
                     )
 
                 def refresh_for_selected_project(project_slug: str, session):
                     if not project_slug:
-                        return gr.update(choices=[], value=None, interactive=False), [], "", 1, None, None, _spectrogram_title(None, None), _build_validation_summary_cards([]), gr.update(choices=["Noise", "Undetermined"], value=None), []
+                        return (
+                            gr.update(choices=[], value=None, interactive=False),
+                            [],
+                            "",
+                            1,
+                            None,
+                            None,
+                            _spectrogram_title(None, None),
+                            _build_validation_summary_cards([]),
+                            gr.update(choices=["Noise", "Undetermined"], value=None),
+                            [],
+                            {},
+                            _species_status_payload({}),
+                        )
+
+                    if not _can_access_project(session, project_slug):
+                        return (
+                            gr.update(choices=[], value=None, interactive=False),
+                            [],
+                            "Access denied. Select an assigned project.",
+                            1,
+                            None,
+                            None,
+                            _spectrogram_title(None, None),
+                            _build_validation_summary_cards([]),
+                            gr.update(choices=["Noise", "Undetermined"], value=None),
+                            [],
+                            {},
+                            _species_status_payload({}),
+                        )
 
                     warning = _ensure_project_queue_loaded(project_slug, session)
 
-                    species_options = _extract_species_options_from_queue(
+                    species_status_map = _build_species_status_map(
                         queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
                         project_slug=project_slug,
                         page_size=max(32, runtime_config.page_size),
+                        actor_username=_validator_name_from_session(session),
                     )
+                    species_options = sorted(species_status_map)
+                    species_choices = _species_dropdown_choices(species_status_map)
                     corrected_choices = species_options + ["Noise", "Undetermined"]
                     return (
-                        gr.update(choices=species_options, value=None, interactive=True),
+                        gr.update(choices=species_choices, value=None, interactive=True),
                         [],
                         warning or "Select a species to start validation",
                         1,
@@ -4144,6 +5711,8 @@ def create_app() -> gr.Blocks:
                         _build_validation_summary_cards([]),
                         gr.update(choices=corrected_choices, value=None),
                         species_options,
+                        species_status_map,
+                        _species_status_payload(species_status_map),
                     )
 
                 def save_for_project(
@@ -4164,10 +5733,12 @@ def create_app() -> gr.Blocks:
                     only_conflicts: bool,
                 ):
                     if not project_slug:
-                        return "Select a project before validating", cache_key, None, rows, page, idx, "", ""
+                        return "Select a project before validating", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_update(False)
                     validator_name_value = _validator_name_from_session(session)
                     if not validator_name_value:
-                        return "Login before validating", cache_key, None, rows, page, idx, "", ""
+                        return "Login before validating", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_update(False)
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project", cache_key, None, rows, page, idx, "", "", gr.update(), _corrected_species_error_update(False)
                     result = _save_selected_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -4189,8 +5760,10 @@ def create_app() -> gr.Blocks:
                         updated_after=updated_after_value,
                         show_conflicts_only=bool(only_conflicts),
                     )
-                    _invalidate_report_cache(project_slug)
-                    return result
+                    if str(result[0]).startswith("Validation saved"):
+                        _invalidate_report_cache(project_slug)
+                    corrected_update, corrected_error_payload = _corrected_species_ui_after_validation(result[0])
+                    return (*result, corrected_update, corrected_error_payload)
 
                 def reapply_for_project(
                     project_slug: str,
@@ -4208,9 +5781,12 @@ def create_app() -> gr.Blocks:
                     status_filter_value: str,
                     updated_after_value: object,
                     only_conflicts: bool,
+                    session=None,
                 ):
                     if not project_slug:
                         return "Select a project before reapplying", cache_key, None, rows, page, idx, pending_status, conflict_key
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project", cache_key, None, rows, page, idx, pending_status, conflict_key
                     result = _reapply_last_conflict_validation_with_refresh(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -4248,9 +5824,12 @@ def create_app() -> gr.Blocks:
                     validator_filter_value: str,
                     status_filter_value: str,
                     updated_after_value: object,
+                    session=None,
                 ):
                     if not project_slug:
                         return "Select a project before validating", cache_key, None, rows, page
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project", cache_key, None, rows, page
                     result = _batch_validate_conflicts(
                         validation_service=validation_service,
                         audio_service=audio_service,
@@ -4272,10 +5851,12 @@ def create_app() -> gr.Blocks:
                     _invalidate_report_cache(project_slug)
                     return result
 
-                def build_report_for_project(project_slug: str) -> str:
+                def build_report_for_project(project_slug: str, session=None) -> str:
                     if not project_slug:
                         return "Select a project to generate report"
-                    return _build_validation_report(validation_repository, project_slug)
+                    if not _can_access_project(session, project_slug):
+                        return "Access denied for this project"
+                    return _build_validation_report(validation_repository, project_slug, _validator_name_from_session(session))
 
                 def save_corrected_species_option(
                     project_slug: str,
@@ -4287,7 +5868,7 @@ def create_app() -> gr.Blocks:
                     value = (corrected_value or "").strip()
 
                     if not project_slug:
-                        return gr.update(choices=base_choices, value=value or None), custom_by_project
+                        return gr.update(choices=base_choices, value=value or None), custom_by_project, _corrected_species_error_update(False)
 
                     updated = {k: list(v) for k, v in (custom_by_project or {}).items()}
                     custom_values = updated.get(project_slug, [])
@@ -4296,7 +5877,7 @@ def create_app() -> gr.Blocks:
                         updated[project_slug] = custom_values
 
                     final_choices = list(dict.fromkeys([*base_choices, *updated.get(project_slug, [])]))
-                    return gr.update(choices=final_choices, value=value or None), updated
+                    return gr.update(choices=final_choices, value=value or None), updated, _corrected_species_error_update(False)
 
                 def toggle_favorite_detection(
                     project_slug: str,
@@ -4305,8 +5886,8 @@ def create_app() -> gr.Blocks:
                     favorite_map: dict[str, list[str]],
                 ):
                     normalized_rows = _normalize_rows(rows)
-                    if not project_slug or not normalized_rows:
-                        return "No detection selected to favorite", favorite_map, gr.update(value="Favorite", variant="secondary")
+                    if not project_slug or not normalized_rows or int(idx) < 0:
+                        return "No detection selected to favorite", favorite_map, gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
                     detection_key = str(normalized_rows[safe_idx][0]).strip()
@@ -4315,11 +5896,11 @@ def create_app() -> gr.Blocks:
                     if detection_key in project_favs:
                         project_favs.remove(detection_key)
                         action = "removed from favorites"
-                        button_update = gr.update(value="Favorite", variant="secondary")
+                        button_update = gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
                     else:
                         project_favs.add(detection_key)
                         action = "added to favorites"
-                        button_update = gr.update(value="Favorited", variant="primary")
+                        button_update = gr.update(value=VALIDATION_FAVORITED_LABEL, variant="primary")
                     updated_map[project_slug] = sorted(project_favs)
                     return f"Detection {detection_key} {action}", updated_map, button_update
 
@@ -4330,17 +5911,19 @@ def create_app() -> gr.Blocks:
                     favorite_map: dict[str, list[str]],
                 ):
                     normalized_rows = _normalize_rows(rows)
-                    if not project_slug or not normalized_rows:
-                        return gr.update(value="Favorite", variant="secondary")
+                    if not project_slug or not normalized_rows or int(idx) < 0:
+                        return gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                     safe_idx = max(0, min(int(idx), len(normalized_rows) - 1))
                     detection_key = str(normalized_rows[safe_idx][0]).strip()
                     favs = set((favorite_map or {}).get(project_slug, []))
                     if detection_key in favs:
-                        return gr.update(value="Favorited", variant="primary")
-                    return gr.update(value="Favorite", variant="secondary")
+                        return gr.update(value=VALIDATION_FAVORITED_LABEL, variant="primary")
+                    return gr.update(value=VALIDATION_FAVORITE_LABEL, variant="secondary")
 
                 def on_table_select(project_slug: str, repo: str, rows: object, cache_key: str, session, evt: gr.SelectData):
+                    if not _can_access_project(session, project_slug):
+                        return None, None, cache_key, "Access denied for this project", None, _spectrogram_title(None, None)
                     return _select_and_fetch_audio_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
@@ -4350,6 +5933,39 @@ def create_app() -> gr.Blocks:
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     )
+
+                def build_species_summary(project_slug: str, species: str, confidence: float, session=None) -> str:
+                    if not project_slug or not species or not _can_access_project(session, project_slug):
+                        return _build_validation_summary_cards([])
+                    return _build_validation_summary_cards_for_species(
+                        queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        scientific_name=species,
+                        min_confidence=float(confidence or 0.0),
+                        actor_username=_validator_name_from_session(session),
+                    )
+
+                def refresh_species_status_for_current_species(
+                    project_slug: str,
+                    current_status_map: object,
+                    species: str,
+                    session=None,
+                ):
+                    status_map = _coerce_species_status_map(current_status_map)
+                    species_name = (species or "").strip()
+                    if not project_slug or not species_name or not _can_access_project(session, project_slug):
+                        return status_map, _species_status_payload(status_map), gr.update(choices=_species_dropdown_choices(status_map), value=species_name or None)
+                    updated_species = _build_species_status_map(
+                        queue_service=service_ref["queue"],
+                        snapshot_reader=validation_repository,
+                        project_slug=project_slug,
+                        page_size=max(32, runtime_config.page_size),
+                        actor_username=_validator_name_from_session(session),
+                        scientific_name=species_name,
+                    )
+                    status_map.update(updated_species)
+                    return status_map, _species_status_payload(status_map), gr.update(choices=_species_dropdown_choices(status_map), value=species_name)
 
                 refresh_event = refresh_btn.click(
                     fn=refresh,
@@ -4362,6 +5978,7 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 )
@@ -4376,6 +5993,7 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 )
@@ -4390,6 +6008,7 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 )
@@ -4402,11 +6021,24 @@ def create_app() -> gr.Blocks:
                 project_change_event = selected_project_state.change(
                     fn=refresh_for_selected_project,
                     inputs=[selected_project_state, session_state],
-                    outputs=[species_filter, table, status, page_state, audio_player, spectrogram_image, spectrogram_title, validation_summary_cards, corrected_species_input, project_species_state],
+                    outputs=[
+                        species_filter,
+                        table,
+                        status,
+                        page_state,
+                        audio_player,
+                        spectrogram_image,
+                        spectrogram_title,
+                        validation_summary_cards,
+                        corrected_species_input,
+                        project_species_state,
+                        project_species_status_state,
+                        species_status_payload,
+                    ],
                 )
 
                 species_filter.change(
-                    fn=lambda project_slug, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: refresh(
+                    fn=lambda project_slug, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts, session: refresh(
                         project_slug,
                         1,
                         species,
@@ -4415,6 +6047,7 @@ def create_app() -> gr.Blocks:
                         status_filter_value,
                         updated_after_value,
                         only_conflicts,
+                        session,
                     ),
                     inputs=[
                         selected_project_state,
@@ -4424,11 +6057,12 @@ def create_app() -> gr.Blocks:
                         validation_status_filter,
                         updated_after_filter,
                         show_conflicts_only,
+                        session_state,
                     ],
                     outputs=[table, status, page_state],
                 ).then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -4480,8 +6114,8 @@ def create_app() -> gr.Blocks:
                 )
 
                 refresh_event.then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -4504,8 +6138,8 @@ def create_app() -> gr.Blocks:
                     outputs=[favorite_btn],
                 )
                 next_event.then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -4528,8 +6162,8 @@ def create_app() -> gr.Blocks:
                     outputs=[favorite_btn],
                 )
                 prev_event.then(
-                    fn=lambda rows: _build_validation_summary_cards(rows),
-                    inputs=[table],
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
                     outputs=[validation_summary_cards],
                 ).then(
                     fn=lambda project_slug, repo, rows, cache_key, session: _autofetch_first_row_with_title(
@@ -4561,7 +6195,7 @@ def create_app() -> gr.Blocks:
                 corrected_species_input.change(
                     fn=save_corrected_species_option,
                     inputs=[selected_project_state, corrected_species_input, project_species_state, custom_corrected_species_state],
-                    outputs=[corrected_species_input, custom_corrected_species_state],
+                    outputs=[corrected_species_input, custom_corrected_species_state, corrected_species_error_panel],
                 )
 
                 approve_event = approve_btn.click(
@@ -4598,7 +6232,18 @@ def create_app() -> gr.Blocks:
                         updated_after_filter,
                         show_conflicts_only,
                     ],
-                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                    outputs=[
+                        status,
+                        cache_key_state,
+                        audio_player,
+                        table,
+                        page_state,
+                        selected_index,
+                        pending_status_state,
+                        conflict_detection_key_state,
+                        corrected_species_input,
+                        corrected_species_error_panel,
+                    ],
                 )
                 reject_event = reject_btn.click(
                     fn=lambda project_slug, rows, idx, session, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
@@ -4634,7 +6279,18 @@ def create_app() -> gr.Blocks:
                         updated_after_filter,
                         show_conflicts_only,
                     ],
-                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                    outputs=[
+                        status,
+                        cache_key_state,
+                        audio_player,
+                        table,
+                        page_state,
+                        selected_index,
+                        pending_status_state,
+                        conflict_detection_key_state,
+                        corrected_species_input,
+                        corrected_species_error_panel,
+                    ],
                 )
                 uncertain_event = uncertain_btn.click(
                     fn=lambda project_slug, rows, idx, session, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
@@ -4670,7 +6326,18 @@ def create_app() -> gr.Blocks:
                         updated_after_filter,
                         show_conflicts_only,
                     ],
-                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                    outputs=[
+                        status,
+                        cache_key_state,
+                        audio_player,
+                        table,
+                        page_state,
+                        selected_index,
+                        pending_status_state,
+                        conflict_detection_key_state,
+                        corrected_species_input,
+                        corrected_species_error_panel,
+                    ],
                 )
                 skip_event = skip_btn.click(
                     fn=lambda project_slug, rows, idx, session, notes, corrected_species_value, cache_key, page, species, confidence, validator_filter_value, status_filter_value, updated_after_value, only_conflicts: save_for_project(
@@ -4706,20 +6373,32 @@ def create_app() -> gr.Blocks:
                         updated_after_filter,
                         show_conflicts_only,
                     ],
-                    outputs=[status, cache_key_state, audio_player, table, page_state, selected_index, pending_status_state, conflict_detection_key_state],
+                    outputs=[
+                        status,
+                        cache_key_state,
+                        audio_player,
+                        table,
+                        page_state,
+                        selected_index,
+                        pending_status_state,
+                        conflict_detection_key_state,
+                        corrected_species_input,
+                        corrected_species_error_panel,
+                    ],
                 )
 
                 approve_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
@@ -4729,19 +6408,28 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
+                )
 
                 reject_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
@@ -4751,19 +6439,28 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
+                )
 
                 uncertain_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
@@ -4773,19 +6470,28 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
+                )
 
                 skip_event.then(
-                    fn=lambda project_slug, repo, rows, idx, cache_key, session: _advance_to_next_row_with_title(
+                    fn=lambda project_slug, repo, rows, idx, cache_key, session, save_status: _advance_after_validation_with_title(
                         audio_service=audio_service,
                         dataset_repo=repo,
                         rows=rows,
                         selected_index=int(idx),
                         cache_key=cache_key,
+                        save_status=save_status,
                         allow_demo_fallback=False,
                         hf_token=_project_fetch_token(project_slug, session),
                     ),
-                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state],
+                    inputs=[selected_project_state, selected_dataset_repo_state, table, selected_index, cache_key_state, session_state, status],
                     outputs=[selected_index, audio_player, cache_key_state, status, spectrogram_image, spectrogram_title],
                 ).then(
                     fn=lambda rows, idx: _mark_selected_row(rows, int(idx)),
@@ -4795,7 +6501,15 @@ def create_app() -> gr.Blocks:
                     fn=update_favorite_button_state,
                     inputs=[selected_project_state, table, selected_index, favorite_detection_state],
                     outputs=[favorite_btn],
-                ).then(fn=lambda rows: _build_validation_summary_cards(rows), inputs=[table], outputs=[validation_summary_cards])
+                ).then(
+                    fn=build_species_summary,
+                    inputs=[selected_project_state, species_filter, min_confidence, session_state],
+                    outputs=[validation_summary_cards],
+                ).then(
+                    fn=refresh_species_status_for_current_species,
+                    inputs=[selected_project_state, project_species_status_state, species_filter, session_state],
+                    outputs=[project_species_status_state, species_status_payload, species_filter],
+                )
 
                 session_state.change(
                     fn=lambda s: gr.update(value=(s.username if s is not None else "")),
@@ -4883,7 +6597,7 @@ def create_app() -> gr.Blocks:
                     slug = (project_slug or "").strip()
                     if session is None:
                         return None, "Login before exporting project data."
-                    if not slug or slug not in session.authorized_projects:
+                    if not _can_access_project(session, slug):
                         return None, "Choose an authorized project before exporting."
 
                     project = _project_map().get(slug)
@@ -4891,7 +6605,10 @@ def create_app() -> gr.Blocks:
                     if not items:
                         return None, f"Project '{slug}' has no detections loaded for export."
 
-                    snapshot = validation_repository.load_current_snapshot(project_slug=slug)
+                    snapshot = validation_repository.load_current_snapshot(
+                        project_slug=slug,
+                        actor_username=_validator_name_from_session(session),
+                    )
                     output_path = _write_validation_export(
                         items,
                         snapshot,
@@ -4932,6 +6649,16 @@ def create_app() -> gr.Blocks:
                             1,
                             "Select a project to view the dashboard",
                         )
+                    if not _can_access_project(session, slug):
+                        return (
+                            "",
+                            coverage_bars_html([]),
+                            paged_activity_html("Validator activity", ["Validator", "Validations"], []),
+                            paged_activity_html("Recent activity", ["Timestamp", "Validator", "Status", "Detection"], []),
+                            1,
+                            1,
+                            "Access denied. Select a project assigned to your signed-in account.",
+                        )
 
                     warning = _ensure_project_queue_loaded(slug, session)
                     signature = loaded_project_signatures.get(slug, "")
@@ -4941,8 +6668,22 @@ def create_app() -> gr.Blocks:
                         return cached[1]
 
                     items = service_ref["queue"].list_all_detections(project_slug=slug)
-                    snapshot = validation_repository.load_current_snapshot(project_slug=slug)
-                    events = validation_repository.list_events(project_slug=slug)
+                    snapshot = validation_repository.load_current_snapshot(
+                        project_slug=slug,
+                        actor_username=_validator_name_from_session(session),
+                    )
+                    recent_events_reader = getattr(validation_repository, "list_recent_events", None)
+                    if callable(recent_events_reader):
+                        events = recent_events_reader(
+                            project_slug=slug,
+                            limit=max(11, (recent_page * 10) + 1),
+                            actor_username=_validator_name_from_session(session),
+                        )
+                    else:
+                        events = validation_repository.list_events(
+                            project_slug=slug,
+                            actor_username=_validator_name_from_session(session),
+                        )
                     total_recordings = len(items)
 
                     species_totals: dict[str, dict[str, int]] = {}
@@ -5137,15 +6878,55 @@ def create_app() -> gr.Blocks:
                 def _render_settings_health():
                     backend = (runtime_config.state_backend or "filesystem").strip().lower()
                     supabase_ready = bool(runtime_config.supabase_url and runtime_config.supabase_service_role_key)
-                    state_label = "Supabase" if backend in {"supabase", "postgres", "postgresql"} and supabase_ready else "Filesystem"
-                    state_tone = "ok" if state_label == "Supabase" else "warn"
+                    if runtime_config.hf_admin_storage_mode_enabled:
+                        state_label = "HF admin-owned private storage"
+                        state_tone = "ok"
+                    else:
+                        state_label = "Supabase" if backend in {"supabase", "postgres", "postgresql"} and supabase_ready else "Filesystem"
+                        state_tone = "ok" if state_label == "Supabase" else "warn"
+                    normalized_bootstrap_dir = str(runtime_config.bootstrap_base_dir).replace("\\", "/").rstrip("/")
+                    filesystem_durable = normalized_bootstrap_dir == "/data" or normalized_bootstrap_dir.startswith("/data/")
+                    if state_label == "HF admin-owned private storage":
+                        durability_label = "private HF state/Bucket"
+                        durability_tone = "ok"
+                    elif state_label == "Supabase":
+                        durability_label = "external durable"
+                        durability_tone = "ok"
+                    elif filesystem_durable:
+                        durability_label = "persistent volume"
+                        durability_tone = "ok"
+                    else:
+                        durability_label = "ephemeral local"
+                        durability_tone = "warn"
                     demo_label = "enabled" if runtime_config.enable_demo_bootstrap else "disabled"
                     demo_tone = "warn" if runtime_config.enable_demo_bootstrap else "ok"
                     invite_email_label = "enabled" if runtime_config.invite_email_enabled and runtime_config.emailjs_enabled else "disabled"
+                    hf_project_state_label = "enabled" if hf_state_writes_enabled else "disabled"
+                    hf_bucket_validation_label = (
+                        "admin-owned storage active"
+                        if runtime_config.hf_admin_storage_mode_enabled
+                        else ("legacy experimental" if runtime_config.hf_bucket_validations_enabled else "disabled")
+                    )
+                    hf_project_state_repos_label = (
+                        "automatic discovery"
+                        if runtime_config.hf_admin_storage_mode_enabled
+                        else str(len(runtime_config.hf_project_state_repos))
+                    )
                     hf_space_label = os.getenv("SPACE_ID") or "local runtime"
                     health_html = settings_health_html(
                         [
                             ("State backend", state_label, state_tone),
+                            ("HF project-state writes", hf_project_state_label, "ok" if hf_state_writes_enabled else "info"),
+                            ("HF Bucket validations", hf_bucket_validation_label, "ok" if runtime_config.hf_admin_storage_mode_enabled else ("warn" if runtime_config.hf_bucket_validations_enabled else "info")),
+                            (
+                                "HF project-state repos",
+                                hf_project_state_repos_label,
+                                "ok" if runtime_config.hf_admin_storage_mode_enabled or runtime_config.hf_project_state_repos else "info",
+                            ),
+                            ("Auth mode", auth_mode_label, "ok" if not allow_username_login else "warn"),
+                            ("Destructive write guard", "enabled", "ok"),
+                            ("Local JSON backups", "enabled" if state_label == "Filesystem" else "not used", "ok" if state_label == "Filesystem" else "info"),
+                            ("Durability", durability_label, durability_tone),
                             ("Supabase URL", "configured" if runtime_config.supabase_url else "missing", "ok" if runtime_config.supabase_url else "warn"),
                             ("Supabase service role", "configured" if runtime_config.supabase_service_role_key else "missing", "ok" if runtime_config.supabase_service_role_key else "warn"),
                             ("Demo bootstrap", demo_label, demo_tone),
@@ -5156,9 +6937,18 @@ def create_app() -> gr.Blocks:
                         ]
                     )
                     status_text = (
-                        "Supabase persistence is active."
-                        if state_label == "Supabase"
-                        else "Filesystem persistence is active. On free Spaces, local files are not durable across rebuilds."
+                        (
+                            "HF administrator-owned storage is active. Private dataset and Bucket access use only the "
+                            "protected Space storage credential; validator identities are authorized inside this app; "
+                            "private companion state repositories are discovered automatically for restart recovery."
+                            if state_label == "HF admin-owned private storage"
+                            else "Supabase persistence is active. Project and ACL removals are guarded against accidental broad overwrites."
+                        )
+                        if state_label in {"HF admin-owned private storage", "Supabase"}
+                        else (
+                            "Filesystem persistence is active with local JSON backups and destructive-write guards. "
+                            "On free Spaces without persistent storage, local files are still not durable across rebuilds."
+                        )
                     )
                     return health_html, status_text
 

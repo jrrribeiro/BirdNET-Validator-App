@@ -8,6 +8,7 @@ from uuid import uuid4
 
 from src.domain.models import Project, Role, Validation
 from src.repositories.append_only_validation_repository import OptimisticLockError
+from src.repositories.state_safety import assert_bootstrap_persist_is_safe
 
 
 class SupabaseStateError(Exception):
@@ -103,6 +104,12 @@ class SupabaseBootstrapStore:
                         visibility=str(row.get("visibility") or "collaborative").strip(),
                         owner_username=(str(row.get("owner_username") or "").strip() or None),
                         dataset_token=(str(row.get("dataset_token") or "").strip() or None),
+                        state_backend=str(row.get("state_backend") or "app_backend").strip() or "app_backend",
+                        state_repo_id=(str(row.get("state_repo_id") or "").strip() or None),
+                        state_schema_version=int(row.get("state_schema_version") or 1),
+                        state_status=str(row.get("state_status") or "not_configured").strip() or "not_configured",
+                        validation_backend=str(row.get("validation_backend") or "app_backend").strip() or "app_backend",
+                        validation_bucket_id=(str(row.get("validation_bucket_id") or "").strip() or None),
                         active=bool(row.get("active", True)),
                     )
                 )
@@ -143,7 +150,34 @@ class SupabaseBootstrapStore:
             }
         return payload
 
-    def persist(self, projects: list[dict[str, object]], user_access: dict[str, dict[str, str]], invites: dict[str, dict[str, dict[str, str]]]) -> None:
+    def persist(
+        self,
+        projects: list[dict[str, object]],
+        user_access: dict[str, dict[str, str]],
+        invites: dict[str, dict[str, dict[str, str]]],
+        *,
+        allowed_removed_project_slugs: set[str] | None = None,
+    ) -> None:
+        existing_project_rows = self._client.select("projects")
+        existing_access_rows = self._client.select("user_project_access")
+        existing_access: dict[str, dict[str, str]] = {}
+        for row in existing_access_rows:
+            if not bool(row.get("active", True)):
+                continue
+            username = str(row.get("username") or "").strip()
+            project_slug = str(row.get("project_slug") or "").strip()
+            role = str(row.get("role") or "").strip()
+            if username and project_slug:
+                existing_access.setdefault(username, {})[project_slug] = role
+
+        assert_bootstrap_persist_is_safe(
+            existing_projects=existing_project_rows,
+            new_projects=projects,
+            existing_user_access=existing_access,
+            new_user_access=user_access,
+            allowed_removed_project_slugs=allowed_removed_project_slugs,
+        )
+
         project_rows = [
             {
                 "project_id": str(project.get("project_id") or uuid4()),
@@ -166,9 +200,14 @@ class SupabaseBootstrapStore:
             for project in projects
             if str(project.get("project_slug") or "").strip()
         }
+        allowed_removed_project_slugs = {
+            slug.strip()
+            for slug in (allowed_removed_project_slugs or set())
+            if slug.strip()
+        }
         for row in self._client.select("projects"):
             project_slug = str(row.get("project_slug") or "").strip()
-            if project_slug and project_slug not in active_project_slugs:
+            if project_slug and project_slug not in active_project_slugs and project_slug in allowed_removed_project_slugs:
                 self._client.patch(
                     "projects",
                     {"active": False, "updated_at": datetime.now(UTC).isoformat()},
@@ -193,7 +232,7 @@ class SupabaseBootstrapStore:
 
         for row in self._client.select("user_project_access"):
             key = (str(row.get("username") or ""), str(row.get("project_slug") or ""))
-            if key not in seen_access and key != ("", ""):
+            if key not in seen_access and key != ("", "") and key[1] in allowed_removed_project_slugs:
                 self._client.patch(
                     "user_project_access",
                     {"active": False, "updated_at": datetime.now(UTC).isoformat()},
@@ -283,7 +322,8 @@ class SupabaseValidationRepository:
             )
             return new_version
 
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+        _ = actor_username
         rows = self._client.select("current_validations", query={"project_slug": SupabaseRestClient.eq(project_slug)})
         snapshot: dict[str, dict[str, object]] = {}
         for row in rows:
@@ -300,7 +340,8 @@ class SupabaseValidationRepository:
             }
         return snapshot
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]:
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
+        _ = actor_username
         rows = self._client.select(
             "validation_events",
             query={"project_slug": SupabaseRestClient.eq(project_slug), "order": "created_at.asc"},

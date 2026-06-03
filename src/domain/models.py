@@ -24,6 +24,12 @@ class Project(BaseModel):
     visibility: str = Field(default="collaborative", pattern="^(private|collaborative)$")
     owner_username: Optional[str] = None
     dataset_token: Optional[str] = None
+    state_backend: str = "app_backend"
+    state_repo_id: Optional[str] = None
+    state_schema_version: int = 1
+    state_status: str = "not_configured"
+    validation_backend: str = "app_backend"
+    validation_bucket_id: Optional[str] = None
     active: bool = True
 
 

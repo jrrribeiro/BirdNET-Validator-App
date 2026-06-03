@@ -96,8 +96,11 @@ def test_validation_write_refreshes_table_and_snapshot(tmp_path: Path) -> None:
     assert refreshed_page == 1
     assert pending_status == ""
     assert conflict_key == ""
-    assert refreshed_rows[0][6] == "positive"
-    assert refreshed_rows[0][7] == 1
+    assert refreshed_rows[0][0] == "0000000000000002"
+    assert refreshed_rows[0][6] == "pending"
+    assert refreshed_rows[1][0] == "0000000000000001"
+    assert refreshed_rows[1][6] == "positive"
+    assert refreshed_rows[1][7] == 1
     assert audio_service.cleaned == ["cache:audio_001"]
 
     events = validation_repo.list_events(project_slug)
@@ -149,6 +152,7 @@ def test_stale_version_returns_conflict_and_marks_conflict_row(tmp_path: Path) -
         status_filter="all",
         updated_after=None,
         show_conflicts_only=False,
+        corrected_species="Noise",
     )
 
     assert "Concurrency conflict" in status

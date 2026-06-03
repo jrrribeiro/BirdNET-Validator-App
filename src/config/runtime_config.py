@@ -30,6 +30,11 @@ class RuntimeConfig:
     state_backend: str = "filesystem"
     supabase_url: str | None = None
     supabase_service_role_key: str | None = None
+    auth_mode: str = "auto"
+    hf_project_state_writes_enabled: bool = False
+    hf_bucket_validations_enabled: bool = False
+    hf_admin_storage_mode_enabled: bool = False
+    hf_project_state_repos: tuple[str, ...] = ()
 
     @classmethod
     def from_env(cls) -> "RuntimeConfig":
@@ -100,6 +105,25 @@ class RuntimeConfig:
         state_backend = (os.getenv("BIRDNET_STATE_BACKEND") or "filesystem").strip().lower() or "filesystem"
         supabase_url = (os.getenv("SUPABASE_URL") or "").strip().rstrip("/") or None
         supabase_service_role_key = (os.getenv("SUPABASE_SERVICE_ROLE_KEY") or "").strip() or None
+        auth_mode = (os.getenv("BIRDNET_AUTH_MODE") or "auto").strip().lower() or "auto"
+        if auth_mode not in {"auto", "hf_token", "username", "username_or_token"}:
+            auth_mode = "auto"
+        raw_hf_project_state_writes = (os.getenv("BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED") or "").strip().lower()
+        hf_project_state_writes_enabled = raw_hf_project_state_writes in {"1", "true", "yes", "on"}
+        raw_hf_bucket_validations = (os.getenv("BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED") or "").strip().lower()
+        hf_bucket_validations_enabled = raw_hf_bucket_validations in {"1", "true", "yes", "on"}
+        raw_hf_admin_storage_mode = (os.getenv("BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED") or "").strip().lower()
+        has_dedicated_hf_storage_secret = bool((os.getenv("BIRDNET_HF_STORAGE_TOKEN") or "").strip())
+        hf_admin_storage_mode_enabled = (
+            raw_hf_admin_storage_mode in {"1", "true", "yes", "on"}
+            or has_dedicated_hf_storage_secret
+        )
+        raw_hf_project_state_repos = (os.getenv("BIRDNET_HF_PROJECT_STATE_REPOS") or "").strip()
+        hf_project_state_repos = tuple(
+            repo.strip()
+            for repo in re_split_repos(raw_hf_project_state_repos)
+            if repo.strip()
+        )
 
         return cls(
             detection_seed_path=detection_seed_path,
@@ -126,4 +150,14 @@ class RuntimeConfig:
             state_backend=state_backend,
             supabase_url=supabase_url,
             supabase_service_role_key=supabase_service_role_key,
+            auth_mode=auth_mode,
+            hf_project_state_writes_enabled=hf_project_state_writes_enabled,
+            hf_bucket_validations_enabled=hf_bucket_validations_enabled,
+            hf_admin_storage_mode_enabled=hf_admin_storage_mode_enabled,
+            hf_project_state_repos=hf_project_state_repos,
         )
+
+
+def re_split_repos(raw_value: str) -> list[str]:
+    normalized = raw_value.replace("\n", ",").replace(";", ",")
+    return normalized.split(",")

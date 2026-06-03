@@ -4,6 +4,13 @@ Status: planning document
 Created: 2026-05-21  
 Scope: BirdNET Validator App project persistence, authentication, authorization, secret handling, and validation-state ownership
 
+> Update (2026-05-25): the experimental personal private Bucket path failed its
+> two-account validator authorization test. The replacement implementation plan
+> is documented in
+> [`HF_PRIVATE_STATE_OAUTH_BATCHING_IMPLEMENTATION_PLAN.md`](HF_PRIVATE_STATE_OAUTH_BATCHING_IMPLEMENTATION_PLAN.md).
+> Bucket-backed validation must remain experimental and disabled by default
+> while the private `_state` OAuth permission proof is evaluated.
+
 ## Purpose
 
 This document records the next structural review for the BirdNET Validator App after the Gradio UI and current Supabase-backed workflows reached a usable test state.
@@ -263,7 +270,8 @@ class ProjectStateBackend:
 |---|---|
 | Filesystem | local/demo/dev and offline tests |
 | Supabase | current backend, advanced hosted DB mode |
-| Hugging Face project store | recommended community/default mode |
+| Hugging Face companion `_state` repository | recommended control-plane store for project manifest, ACL, invites and checkpoints |
+| Hugging Face Storage Bucket | target high-frequency store for validation events and mutable snapshots |
 
 ## Authentication and Authorization Plan
 
@@ -487,6 +495,40 @@ Exit criteria:
 
 1. One real project can validate, reload, report progress, and survive app redeploy without Supabase.
 
+### 2026-05-24 Architecture Decision Update: high-frequency validation writes
+
+The companion private dataset repository remains appropriate for project manifest,
+ACL, invite metadata, durable exports, and recovery anchors. It must not remain
+the primary write target for every validation click at production scale.
+
+Reason:
+
+1. An expert validator may submit one validation approximately every three seconds.
+2. Several validators can work simultaneously on the same project.
+3. A Git-backed dataset commit for every action produces avoidable commit pressure,
+   history growth, and latency.
+4. Hugging Face documentation now recommends Storage Buckets for mutable data and
+   high-frequency small writes, while repositories remain appropriate for versioned
+   artifacts and documentation.
+
+Target storage split:
+
+| State | Target store | Write profile |
+|---|---|---|
+| Project manifest, ACL and invite policy | private companion `_state` repository | infrequent administrative commits |
+| Validation events and current snapshot | private admin-owned Storage Bucket | frequent mutable writes |
+| Periodic validation export/checkpoint | private companion `_state` repository or downloadable export | infrequent audited checkpoint |
+
+Token and permission policy:
+
+1. Users authenticate with their own Hugging Face OAuth identity.
+2. Tokens remain session-scoped and are never serialized into project state.
+3. The project admin creates/owns the private state resources through the app.
+4. A multi-user permission proof is required before enabling bucket-backed
+   validation by default; validators must never depend on a shared admin token.
+5. If Hugging Face resource permissions cannot grant validator writes safely, an
+   alternative delegated write path must be designed before production rollout.
+
 ## Phase 4: project onboarding flow
 
 Deliverables:
@@ -575,7 +617,7 @@ Measure:
 
 The next review must decide:
 
-1. Is the first HF state backend a Storage Bucket or companion dataset?
+1. Confirm real multi-user Bucket permissions for validator read/write access under OAuth.
 2. Should project state default to private even if audio is public?
 3. Are validators allowed to write directly to state stores with their HF identity?
 4. Do we support organization-owned projects in the first implementation?
@@ -652,4 +694,303 @@ The redesign is complete when:
 5. ACL, invites, validation writes, and reports are covered by backend contract tests.
 6. One migrated real project completes validation workflow without Supabase.
 7. Admins can understand where their project state lives and how to export it.
+
+## Implementation Progress
+
+### 2026-05-24: Initial safety foundation
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added destructive-write protection for bootstrap persistence.
+   - Project and ACL removals are blocked unless the caller declares an explicit project-delete intent.
+   - Supabase persistence no longer broadly deactivates missing projects or ACL rows during ordinary create/update/invite operations.
+
+2. Added local JSON backups for filesystem state.
+   - Existing bootstrap JSON files are copied into `.backups/` before replacement.
+   - Validation `current.json` snapshots are also backed up before updates.
+
+3. Added append-only snapshot recovery.
+   - If filesystem `current.json` is missing or invalid, the current validation snapshot is rebuilt from validation event logs.
+   - Malformed event lines are skipped instead of breaking report/validation loading.
+
+4. Added production identity guardrails.
+   - New `BIRDNET_AUTH_MODE` config: `auto`, `hf_token`, `username`, or `username_or_token`.
+   - In automatic mode, Hugging Face Spaces without demo bootstrap require HF-token identity instead of username-only login.
+   - Local/demo mode preserves username login for testing.
+
+5. Added explicit repository contracts for future state backends.
+   - Project catalog.
+   - Project access.
+   - Project invites.
+   - Validation events.
+   - Current validation snapshots.
+
+Validation:
+
+1. `pytest -q`: 182 passed.
+2. `python scripts/check_deployment.py`: passed.
+
+### 2026-05-24: Automatic HF companion state repository on project creation
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added a Hugging Face project state store initializer.
+   - New projects derive a private companion dataset repo from the audio dataset repo.
+   - Example: `jrrribeiro/upload_test2` creates or connects `jrrribeiro/upload_test2_state`.
+   - The state repo is created as a private dataset repository.
+
+2. Added the first state-store manifest files.
+   - `README.md`
+   - `project.json`
+   - `acl.json`
+   - `invites.json`
+   - `snapshots/current.json`
+   - `events/.gitkeep`
+
+3. Added overwrite protection for existing companion state repos.
+   - If `project.json` already exists, the app connects the existing state repo without rewriting current state.
+   - If the repo has files but no project manifest, initialization is blocked to avoid accidental state loss.
+
+4. Added project-level state metadata.
+   - `state_backend`
+   - `state_repo_id`
+   - `state_schema_version`
+   - `state_status`
+
+5. Reduced token persistence risk during project creation.
+   - A session/env token may be used to create the private state repo.
+   - The app only stores a project dataset token when the admin explicitly enters one.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_admin_panel_manager.py tests\unit\test_supabase_state.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+
+### 2026-05-24: HF project-state validation backend spike
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added an HF-backed validation repository for companion state repos.
+   - Writes one append-only event JSON under `events/YYYYMMDD/`.
+   - Updates `snapshots/current.json` with the latest state.
+   - Preserves optimistic version checks before writing.
+
+2. Added snapshot recovery from events.
+   - If `snapshots/current.json` is missing or invalid, current state can be rebuilt from event files.
+   - Event listing ignores unrelated project events and non-event placeholders.
+
+3. Added a project-aware validation router.
+   - Default behavior remains unchanged.
+   - Filesystem/Supabase remain the active path unless `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true`.
+   - When enabled, projects with `state_backend=hf_project_store`, a `state_repo_id`, and an available token can route writes/reads to the admin-owned `_state` repo.
+
+4. Added Settings health visibility.
+   - The Settings tab now exposes whether HF project-state writes are enabled.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_validation_repository.py tests\unit\test_project_aware_validation_repository.py tests\unit\test_runtime_config.py tests\unit\test_hf_project_state_store.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+
+### 2026-05-24: HF project-state administrative sync
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added project-owned administrative state sync.
+   - `project.json` stores the project manifest.
+   - `acl.json` stores project-scoped admins and validators.
+   - `invites.json` stores pending invites for the project.
+
+2. Added safety boundaries for admin-state sync.
+   - Dataset/project tokens are not serialized into the `_state` repo.
+   - Sync is filtered by project and does not include users/invites from other projects.
+   - Sync only writes `project.json`, `acl.json`, and `invites.json`.
+   - Validation history under `events/` and `snapshots/` is never deleted or rewritten by admin sync.
+
+3. Connected admin workflows to the `_state` repo when HF project-state writes are enabled.
+   - Project creation.
+   - Project token updates.
+   - Project archival/deletion from the workspace.
+   - Direct user assignment.
+   - Invite creation.
+   - Invite revocation.
+   - Invite acceptance/rejection.
+
+4. Added safe archive behavior.
+   - Deleting a project from the validator workspace does not delete the HF audio dataset or the `_state` repo.
+   - The `_state` manifest is marked archived and ACL/invites are cleared while validation history remains intact.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_admin_panel_manager.py tests\unit\test_project_aware_validation_repository.py tests\unit\test_hf_project_state_validation_repository.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+
+### 2026-05-24: HF project-state recovery bootstrap
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added explicit recovery from admin-owned `_state` repositories.
+   - New env var: `BIRDNET_HF_PROJECT_STATE_REPOS`.
+   - Accepts comma, semicolon, or newline-separated repo IDs.
+   - Example: `BIRDNET_HF_PROJECT_STATE_REPOS=jrrribeiro/upload_test2_state`.
+
+2. Added a project-state loader.
+   - Reads `project.json`, `acl.json`, and `invites.json`.
+   - Reconstructs `Project`, project-scoped user roles, and pending invites.
+   - Skips archived projects.
+   - Rejects future schema versions instead of guessing.
+
+3. Added bootstrap overlay behavior.
+   - HF project-state data overlays only the matching project slug.
+   - Existing unrelated projects, access entries, and invites are preserved.
+   - Loaded ACL/invites replace stale local/Supabase entries for the same project.
+
+4. Added recovery status visibility.
+   - Settings health now reports how many HF project-state repos are configured.
+   - Bootstrap warnings report missing tokens or repo-specific load failures.
+
+Validation:
+
+1. `pytest tests\unit\test_hf_project_state_store.py tests\unit\test_app_factory_audio_helpers.py tests\unit\test_runtime_config.py -q`: passed.
+2. `python -m compileall app.py src`: passed.
+
+### 2026-05-24: OAuth identity and high-frequency Bucket foundation
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added Hugging Face OAuth session integration.
+   - The Space login UI uses `gr.LoginButton` in the hosted environment.
+   - An OAuth profile and its short-lived user token create the app session directly.
+   - Manual HF-token login remains a fallback; username-only login remains restricted by deployment mode.
+   - Personal tokens are held in memory for the session and are not serialized into project state.
+
+2. Added least-privilege OAuth metadata.
+   - Requests repository read access for authorized audio datasets.
+   - Requests contributed-repository access for state repositories created through the app.
+   - Broader shared-write permissions are not silently requested before a permission proof.
+
+3. Added an opt-in Hugging Face Storage Bucket validation backend.
+   - New configuration flag: `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED`.
+   - When enabled for creation, a private admin-owned validation Bucket is initialized automatically.
+   - Validation events and `snapshots/current.json` are updated through mutable Bucket file operations rather than one Git commit per review.
+   - Existing projects and the existing `_state` route remain unchanged unless explicitly enabled.
+
+4. Bound Bucket operations to the acting collaborator.
+   - Validation saves, queue snapshot reads, progress reads, and exports can route with the signed-in validator identity.
+   - A Bucket-backed write fails instead of falling back to an admin token when the validator has no own HF authorization.
+
+Still required before production enablement:
+
+1. A real two-user permission proof in a Space to confirm the safest Bucket sharing model.
+2. A multi-validator concurrency/load test at expected review speed.
+3. Onboarding/recovery UI for connecting existing state resources and migrating projects.
+
+### 2026-05-24: Bucket reconciliation and persistent conflict visibility
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Strengthened Bucket event recovery.
+   - Current snapshots are reconciled against append-only validation events.
+   - A snapshot overwritten by a parallel writer no longer silently omits valid events for other detections.
+   - Event payloads are downloaded through a batched read path rather than one request per event file.
+
+2. Persisted evidence of parallel same-version decisions.
+   - If two writers produce different decisions for the same detection version, the reconstructed state is marked with `conflict=true`.
+   - The validation queue surfaces that persisted conflict using the existing conflict workflow.
+   - CSV/XLSX exports now include `validation_conflict` and `validation_conflict_reason`.
+
+### 2026-05-24: Bounded active event window and compact audit archives
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added automatic Bucket event compaction.
+   - An active window of up to 250 individual validation events is retained for reconciliation during ordinary writes.
+   - Before the next write after the active window fills, events are rolled into an append-only JSONL audit archive and the reconciled snapshot is updated.
+   - The original individual event objects are removed only in the same Bucket batch that writes their archive and snapshot.
+
+2. Kept historical recovery and auditing intact.
+   - A missing or corrupt snapshot can be rebuilt from archived and active events.
+   - Duplicate event IDs produced by parallel compactors are de-duplicated during reads.
+   - If an active event cannot be read safely, compaction aborts instead of deleting it.
+
+3. Added bounded recent-activity reads for the Progress dashboard.
+   - The dashboard asks for only the events required for the visible recent-activity page plus one look-ahead row.
+   - Bucket-backed reads inspect the active window and only as many newest archive files as necessary.
+   - Full CSV/XLSX scientific exports remain based on the complete current detection snapshot.
+
+Remaining validation before real-data enablement:
+
+1. Exercise simultaneous validators against the compacted strategy and measure latency at expected review speed.
+2. Confirm multi-user Bucket authorization in a real Space.
+3. Implement migration/import tooling for existing non-HF project state resources.
+
+### 2026-05-24: Secure existing-state connection flow
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Added an Admin recovery action for existing private `_state` repositories.
+   - The admin enters an existing companion repository id in **Project management** and chooses **Connect Existing State**.
+   - The app loads its saved project manifest, ACL, and pending invites using the signed-in user's Hugging Face session authorization.
+   - Connected project state is made available in the current workspace without rewriting the authoritative `_state` files.
+
+2. Enforced recovery authorization before state is attached to the workspace.
+   - The authenticated identity must be listed as `admin` in the stored ACL.
+   - Private projects can only be connected by their recorded owner.
+   - Missing authenticated tokens and archived state repositories are rejected.
+
+3. Prevented state takeover through the creation screen.
+   - If project creation discovers an existing `_state` manifest, it no longer registers the newly entered project definition.
+   - The admin is directed to the connection flow so the existing manifest and ACL remain authoritative.
+
+4. Prevented validation-state fragmentation during recovery.
+   - A project whose manifest declares Bucket-backed validation state now fails clearly if the deployment has the Bucket backend disabled or the stored Bucket reference is incomplete.
+   - It never silently writes recovered validations to filesystem or Supabase instead of the project-owned Bucket.
+
+Still required before production enablement:
+
+1. Exercise simultaneous validators against the compacted strategy and measure latency at expected review speed.
+2. Confirm multi-user Bucket authorization in a real Space.
+3. Add assisted migration/import verification for legacy filesystem or Supabase project state.
+
+### 2026-05-27: Administrator project-storage integrity diagnostics
+
+Implemented on branch `feature/project-state-security-privacy-review`:
+
+1. Expanded the private storage health action into a project-level integrity check.
+   - Confirms the source audio dataset remains private and accessible through the protected backend credential.
+   - Reloads the private `_state` manifest and confirms it still references the active dataset and validation Bucket.
+   - Confirms the acting administrator remains persisted as `ADMIN` in the recovered ACL.
+
+2. Added Bucket structural inspection without scanning the source audio collection.
+   - Checks the Bucket manifest and current snapshot identities.
+   - Reports current validated snapshot items, active audit event count, archived audit-batch count, and latest event timestamp.
+   - Rejects a snapshot that does not represent the newest inspected audit event.
+
+3. Preserved the existing write proof.
+   - The final health status is successful only after a temporary backend write can be read and removed from the private Bucket.
+   - Ordinary validation, export, and authorization flows are unchanged.
+
+Acceptance performed:
+
+1. Ran the health check for a real private project in the deployed Space.
+2. Restarted the Space and confirmed recovery from `_state` and preserved validations.
+3. Confirmed simultaneous authorized-user operation before removing the diagnostic UI from the product experience.
+
+### 2026-05-27: Post-acceptance removal of diagnostic and token-login UI
+
+Implemented after successful private-storage and restart testing:
+
+1. Removed manual Hugging Face token login from the product interface.
+   - Hosted deployments now present Hugging Face OAuth as the only end-user authentication path.
+   - Local/demo username access remains available only for development.
+   - The protected backend storage secret remains unchanged and is never exposed as a login method.
+
+2. Removed acceptance-only diagnostics from the Projects experience.
+   - Removed the private Bucket backend health button and its temporary marker flow.
+   - Removed the experimental direct `_state` OAuth write diagnostic.
+   - Kept the tested storage architecture, recovery, ACL enforcement, event compaction, and exports unchanged.
+
+3. Reduced dormant code associated with those workflows.
+   - Removed the user-token authentication method.
+   - Removed diagnostic service classes and their narrowly scoped tests after acceptance was completed.
 

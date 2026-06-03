@@ -8,6 +8,8 @@ sdk_version: "5.23.1"
 python_version: "3.11"
 app_file: app.py
 hf_oauth: true
+hf_oauth_scopes:
+  - read-repos
 pinned: false
 ---
 
@@ -175,6 +177,7 @@ User access bootstrap file example (`BIRDNET_USER_ACCESS_FILE`):
 - SDK: `Gradio`
 - Python: `3.11`
 - OAuth: enabled (`hf_oauth: true` in this README metadata)
+- OAuth scopes: `read-repos` only; in administrator-owned storage mode user OAuth is used only for identity
 
 2. Push this repository to the Space.
 
@@ -194,14 +197,36 @@ Optional runtime settings:
 - `BIRDNET_INVITE_TTL_HOURS` (default `72`)
 - `BIRDNET_PAGE_SIZE` (default `25`)
 - `BIRDNET_ENABLE_DEMO_BOOTSTRAP` (`false` in production)
+- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED=true` (legacy migration support for existing `_state` projects)
+- `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED=true` (legacy experimental access for existing Bucket projects)
+- `BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true` (private HF-only delivery mode for a small trusted team)
+- `BIRDNET_HF_PROJECT_STATE_REPOS=jrrribeiro/audio-dataset_state` (optional manual recovery list; administrator-owned mode discovers companion state repos automatically)
 
-Supabase state backend, recommended for free Spaces without persistent disk:
+The HF administrator-owned storage mode is intended for confidential projects run by a small trusted research team. The source audio dataset must already be private in the administrator's personal Hugging Face namespace. When a project is created, the app creates a private `_state` repository for project/ACL/invite recovery and a private Storage Bucket for validation events and snapshots in that same namespace. Select `collaborative` inside the app: this enables app-managed validators and does not make any Hugging Face resource public.
+
+The Space stores the administrator storage credential as a protected secret. Validators log in with their own Hugging Face identity and are invited or assigned inside the app; they do not need repository or Bucket permissions, organization membership, or the administrator token. Resource operations are performed server-side only after the app confirms the user's project role.
+
+When this mode is enabled it takes precedence over any existing Supabase settings: project ACL/invites are restored from private `*_state` repositories and validations are read and written in the project's private Bucket. Configuring the dedicated `BIRDNET_HF_STORAGE_TOKEN` Secret also enables this mode automatically, preventing a configured private-storage credential from remaining unused behind a legacy backend.
+
+Recommended administrator-owned Space settings:
+
+```text
+BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED=true
+BIRDNET_AUTH_MODE=hf_token
+BIRDNET_HF_STORAGE_TOKEN=<administrator token stored only as a Space secret>
+```
+
+`HF_TOKEN` remains a compatibility fallback for the server-side storage credential, but `BIRDNET_HF_STORAGE_TOKEN` is preferred because its purpose is explicit. Users sign in through Hugging Face OAuth; no personal-token login is exposed in the production interface. On restart the app uses the protected credential to find the administrator's companion `*_state` repositories automatically; `BIRDNET_HF_PROJECT_STATE_REPOS` remains available as an explicit fallback or migration list.
+
+Projects previously created with a private `_state` repository in this mode can be recovered from the **Admin** tab using **Connect Existing State**. Sign in as an administrator recorded in its `acl.json`, then provide the `_state` repo id (for example, `jrrribeiro/audio_dataset_state`). Recovery accepts only a manifest with private Bucket validation storage and a private personal-namespace source dataset accessible to the configured storage account. The app loads the saved manifest, ACL, and pending invites.
+
+Legacy Supabase state backend, available while migrating existing projects:
 
 - `BIRDNET_STATE_BACKEND=supabase`
 - `SUPABASE_URL` (Secret, example: `https://xxxx.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY` (Secret)
 
-When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`.
+When Supabase is enabled, projects, ACL, invites, validation events, and current validation snapshots are stored in Supabase instead of `/data`. For eventual public distribution, the planned backend is administrator-owned Supabase provisioned through OAuth with an Edge Function validating Hugging Face identity; see `docs/TEMP_BYO_SUPABASE_EDGE_FUNCTION_HF_IDENTITY_PLAN.md`.
 
 Optional invite email settings:
 
@@ -235,7 +260,7 @@ Notes:
 - The app entrypoint reads `PORT` automatically in Spaces.
 - Keep user/project bootstrap files private if they contain sensitive assignments.
 - Use Supabase or persistent Space storage to keep projects, invites, ACL, and validations across redeploys. The free Space filesystem is ephemeral.
-- Collaborative access is token-per-user: each collaborator logs in with their own Hugging Face token.
+- In administrator-owned storage mode, each collaborator signs in with their own Hugging Face identity, while only the Space backend credential accesses private project storage.
 - Datasets uploaded by `HF_Dataset_Uploader` are read from `index/files.parquet` first; older `index/shards/*.parquet`, CSV, JSONL, and audio-path fallback layouts remain supported.
 
 ## Local Uploader CLI
@@ -520,6 +545,11 @@ python -m src.uploader_cli.main start --repo-id alice/birdnet-2026 --segments C:
 - `BIRDNET_STATE_BACKEND`
 - `SUPABASE_URL`
 - `SUPABASE_SERVICE_ROLE_KEY`
+- `BIRDNET_HF_ADMIN_STORAGE_MODE_ENABLED`
+- `BIRDNET_HF_STORAGE_TOKEN` (Secret)
+- `BIRDNET_HF_PROJECT_STATE_REPOS`
+- `BIRDNET_HF_PROJECT_STATE_WRITES_ENABLED`
+- `BIRDNET_HF_BUCKET_VALIDATIONS_ENABLED`
 
 ### Uploader CLI Environment Variables
 

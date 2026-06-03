@@ -5,8 +5,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Dict, List, Optional
 import uuid
 
-from huggingface_hub import HfApi
-
 from src.domain.models import Role, User
 
 
@@ -30,6 +28,7 @@ class Session:
     created_at: datetime
     last_activity: datetime
     expires_at: datetime
+    authentication_method: str = "username"
 
     def is_expired(self) -> bool:
         """Check if session has expired."""
@@ -216,6 +215,7 @@ class AuthService:
         self,
         username: str,
         auto_promote_to_admin: bool = False,
+        authentication_method: str = "username",
     ) -> Optional[Session]:
         if username not in self._user_access:
             if not auto_promote_to_admin:
@@ -251,43 +251,44 @@ class AuthService:
             created_at=now,
             last_activity=now,
             expires_at=now + timedelta(minutes=self.session_ttl_minutes),
+            authentication_method=authentication_method,
         )
 
         self._sessions[session_id] = session
         return session
 
-    def login_with_hf_token(self, token: str) -> tuple[Optional[Session], str]:
-        """Authenticate using Hugging Face personal token and resolve username via whoami."""
+    def login_with_verified_hf_identity(
+        self,
+        *,
+        username: str,
+        token: str,
+        email: str | None = None,
+        authentication_method: str = "oauth",
+    ) -> tuple[Optional[Session], str]:
+        """Create a session from an identity already verified by Hugging Face OAuth."""
+        username_value = (username or "").strip()
         token_value = (token or "").strip()
-        if not token_value:
-            return None, "Please provide a Hugging Face token"
+        if not username_value or not token_value:
+            return None, "Unable to authenticate with the verified Hugging Face identity"
 
-        try:
-            whoami = HfApi().whoami(token=token_value)
-        except Exception:
-            return None, "Invalid Hugging Face token or network error"
-
-        username = str(whoami.get("name") or "").strip()
-        if not username:
-            return None, "Unable to resolve Hugging Face username from token"
-
-        email_value = str(whoami.get("email") or "").strip() or None
-        self._hf_tokens_by_username[username] = token_value
-        self._user_profiles[username] = UserProfile(username=username, hf_email=email_value)
+        email_value = (email or "").strip() or None
+        self._hf_tokens_by_username[username_value] = token_value
+        self._user_profiles[username_value] = UserProfile(username=username_value, hf_email=email_value)
 
         is_first_user = len(self._user_access) == 0
         session = self.login_internal(
-            username=username,
+            username=username_value,
             auto_promote_to_admin=is_first_user,
+            authentication_method=authentication_method,
         )
         if session is None:
-            return None, f"User '{username}' is not invited to any project yet"
+            return None, f"User '{username_value}' is not invited to any project yet"
 
         if is_first_user:
-            return session, f"Welcome, {username}. Admin access enabled."
+            return session, f"Welcome, {username_value}. Admin access enabled."
         if session.role == Role.admin:
-            return session, f"Welcome, {username}. Admin access enabled."
-        return session, f"Welcome, {username}. Validator access enabled."
+            return session, f"Welcome, {username_value}. Admin access enabled."
+        return session, f"Welcome, {username_value}. Validator access enabled."
 
     def get_session(self, session_id: str) -> Optional[Session]:
         """Retrieve an active session by ID.

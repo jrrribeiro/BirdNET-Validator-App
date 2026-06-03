@@ -1,6 +1,118 @@
+CRITICAL_HEAD_HTML = """
+<style>
+:root {
+  --bn-bg: #f5f7fb;
+  --bn-shell-width: min(1540px, calc(100vw - 32px));
+  --bn-content-width: clamp(1200px, 78vw, 1490px);
+  --bn-login-width: min(680px, calc(100vw - 32px));
+}
+
+html,
+body,
+gradio-app,
+main.app,
+.wrap,
+.contain,
+.gradio-container {
+  background: var(--bn-bg) !important;
+}
+
+.gradio-container {
+  box-sizing: border-box !important;
+  width: calc(100% - 32px) !important;
+  max-width: var(--bn-shell-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-shell {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: var(--bn-shell-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-app-header,
+.bn-tabs,
+.bn-panel,
+.bn-login-row {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: var(--bn-content-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-login-row {
+  justify-content: center !important;
+}
+
+.bn-login-panel {
+  box-sizing: border-box !important;
+  flex: 0 1 var(--bn-login-width) !important;
+  max-width: var(--bn-login-width) !important;
+  min-width: 0 !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-oauth-login-html {
+  box-sizing: border-box !important;
+  width: 100% !important;
+  max-width: var(--bn-login-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-hf-oauth-link {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  min-height: 48px !important;
+  padding: 12px 18px !important;
+  border: 1px solid #d0d7de !important;
+  border-radius: 8px !important;
+  background: #ffffff !important;
+  color: #142033 !important;
+  font-weight: 760 !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.05) !important;
+}
+
+.bn-hf-oauth-mark {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 999px !important;
+  background: #ffd166 !important;
+  color: #503500 !important;
+  font-size: 11px !important;
+  font-weight: 850 !important;
+  letter-spacing: 0 !important;
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --bn-content-width: calc(100vw - 32px);
+  }
+}
+</style>
+"""
+
+
 APP_CSS = """
 :root {
   --bn-bg: #f5f7fb;
+  --bn-shell-width: min(1540px, calc(100vw - 32px));
+  --bn-content-width: clamp(1200px, 78vw, 1490px);
+  --bn-login-width: min(680px, calc(100vw - 32px));
   --bn-panel: #ffffff;
   --bn-panel-soft: #f9fafb;
   --bn-border: #d9e0ea;
@@ -29,20 +141,56 @@ main.app,
 }
 
 .gradio-container {
-  max-width: 1540px !important;
+  width: calc(100% - 32px) !important;
+  max-width: var(--bn-shell-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
 }
 
 .bn-shell {
+  width: 100% !important;
+  max-width: var(--bn-shell-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
   padding-top: 8px;
 }
 
+.bn-login-row {
+  justify-content: center !important;
+  width: 100% !important;
+  max-width: var(--bn-content-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-login-spacer {
+  display: none !important;
+}
+
+.bn-login-panel {
+  flex: 0 1 var(--bn-login-width) !important;
+  max-width: var(--bn-login-width) !important;
+  min-width: 0 !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-login-panel > *,
+.bn-login-panel .block,
+.bn-login-panel .form {
+  width: 100% !important;
+}
+
 .bn-app-header {
+  box-sizing: border-box;
   display: flex;
   justify-content: space-between;
   gap: 20px;
   align-items: center;
+  width: 100% !important;
+  max-width: var(--bn-content-width) !important;
   padding: 18px 22px;
-  margin: 0 0 16px 0;
+  margin: 0 auto 16px auto !important;
   background: linear-gradient(135deg, #ffffff 0%, #eef6f8 100%);
   border: 1px solid var(--bn-border);
   border-radius: 8px;
@@ -124,13 +272,123 @@ main.app,
   border-bottom: 1px solid var(--bn-border) !important;
 }
 
+.bn-tabs {
+  box-sizing: border-box;
+  width: 100% !important;
+  max-width: var(--bn-content-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+}
+
+.bn-tabs .tabitem {
+  width: 100% !important;
+}
+
 .bn-tabs button,
 .tabs button {
   border-radius: 6px 6px 0 0 !important;
   font-weight: 650 !important;
 }
 
+.bn-oauth-login-button button,
+button.bn-oauth-login-button {
+  width: 100% !important;
+  max-width: var(--bn-login-width) !important;
+  margin-left: auto !important;
+  margin-right: auto !important;
+  min-height: 48px !important;
+  border: 1px solid #f97316 !important;
+  border-radius: 8px !important;
+  background: #f97316 !important;
+  color: #ffffff !important;
+  font-weight: 780 !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 8px !important;
+  white-space: nowrap !important;
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.bn-oauth-login-button button:hover,
+button.bn-oauth-login-button:hover {
+  border-color: #ea580c !important;
+  background: #ea580c !important;
+  color: #ffffff !important;
+}
+
+.bn-oauth-login-button button *,
+button.bn-oauth-login-button * {
+  white-space: nowrap !important;
+}
+
+.bn-hf-oauth-link {
+  box-sizing: border-box !important;
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  gap: 10px !important;
+  width: 100% !important;
+  max-width: var(--bn-login-width) !important;
+  min-height: 48px !important;
+  padding: 12px 18px !important;
+  border: 1px solid #d0d7de !important;
+  border-radius: 8px !important;
+  background: #ffffff !important;
+  color: var(--bn-text) !important;
+  font-weight: 760 !important;
+  text-decoration: none !important;
+  white-space: nowrap !important;
+  box-shadow: 0 1px 2px rgba(20, 32, 51, 0.05) !important;
+  transition: background 120ms ease, border-color 120ms ease, box-shadow 120ms ease, transform 120ms ease !important;
+}
+
+.bn-hf-oauth-link:hover,
+.bn-hf-oauth-link:focus-visible {
+  border-color: #f59e0b !important;
+  background: #fffaf0 !important;
+  color: var(--bn-text) !important;
+  box-shadow: 0 6px 18px rgba(20, 32, 51, 0.08) !important;
+  text-decoration: none !important;
+}
+
+.bn-hf-oauth-link:active {
+  transform: translateY(1px) !important;
+}
+
+.bn-hf-oauth-mark {
+  display: inline-flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  flex: 0 0 auto !important;
+  width: 26px !important;
+  height: 26px !important;
+  border-radius: 999px !important;
+  background: #ffd166 !important;
+  color: #503500 !important;
+  font-size: 11px !important;
+  font-weight: 850 !important;
+  letter-spacing: 0 !important;
+  line-height: 1 !important;
+}
+
+.bn-hf-oauth-label {
+  overflow: hidden !important;
+  text-overflow: ellipsis !important;
+}
+
+.bn-hf-oauth-link-signed-in .bn-hf-oauth-mark {
+  background: #e0f2fe !important;
+  color: var(--bn-info) !important;
+}
+
 .bn-panel {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: var(--bn-content-width);
+  margin-left: auto;
+  margin-right: auto;
   background: var(--bn-panel);
   border: 1px solid var(--bn-border);
   border-radius: 8px;
@@ -285,6 +543,32 @@ main.app,
 
 .bn-filter-panel .form {
   gap: 8px !important;
+}
+
+.bn-clean-slider,
+.bn-clean-slider .block,
+.bn-clean-slider .form,
+.bn-clean-slider .styler,
+.bn-clean-slider > div {
+  background: #ffffff !important;
+}
+
+.bn-clean-slider input,
+.bn-clean-slider [data-testid="number-input"] {
+  background: #ffffff !important;
+}
+
+.bn-sidebar-panel .block,
+.bn-sidebar-panel .form,
+.bn-sidebar-panel .styler,
+.bn-sidebar-panel .wrap,
+.bn-sidebar-panel .contain,
+.bn-sidebar-panel .gradio-slider,
+.bn-sidebar-panel .gradio-slider > div,
+.bn-sidebar-panel .gradio-slider label,
+.bn-sidebar-panel .gradio-slider input,
+.bn-sidebar-panel .gradio-slider [data-testid="number-input"] {
+  background: #ffffff !important;
 }
 
 .bn-danger-zone {
@@ -503,15 +787,18 @@ main.app,
 
 .bn-activity-table-wrap {
   margin-top: 10px;
-  overflow-x: auto;
+  overflow: hidden;
   border: 1px solid var(--bn-border);
   border-radius: 8px;
+  background: #ffffff;
 }
 
 .bn-activity-table {
   width: 100%;
   min-width: 520px;
-  border-collapse: collapse;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 0 !important;
   background: #ffffff;
   color: var(--bn-text);
   font-size: 13px;
@@ -520,7 +807,8 @@ main.app,
 .bn-activity-table th,
 .bn-activity-table td {
   padding: 9px 11px;
-  border-bottom: 1px solid var(--bn-border);
+  border: 0 !important;
+  border-bottom: 1px solid var(--bn-border) !important;
   text-align: left;
   vertical-align: top;
 }
@@ -531,8 +819,21 @@ main.app,
   font-weight: 750;
 }
 
+.bn-activity-table th + th,
+.bn-activity-table td + td {
+  border-left: 1px solid var(--bn-border) !important;
+}
+
+.bn-activity-table thead th:first-child {
+  border-top-left-radius: 8px;
+}
+
+.bn-activity-table thead th:last-child {
+  border-top-right-radius: 8px;
+}
+
 .bn-activity-table tbody tr:last-child td {
-  border-bottom: 0;
+  border-bottom: 0 !important;
 }
 
 .bn-activity-empty {
@@ -1313,10 +1614,116 @@ button.bn-report-download-action-blue:hover {
   display: none !important;
 }
 
+#bn-species-status-payload {
+  display: none !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"] {
+  box-sizing: border-box !important;
+  margin: 4px 8px !important;
+  padding: 8px 10px !important;
+  border: 1px solid var(--bn-species-status-border, var(--bn-border)) !important;
+  border-left-width: 1px !important;
+  border-radius: 8px !important;
+  background: var(--bn-species-status-bg, #ffffff) !important;
+  box-shadow: inset 6px 0 0 var(--bn-species-status-accent, #94a3b8) !important;
+  color: var(--bn-species-status-text, var(--bn-text)) !important;
+  font-weight: 650 !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"] .inner-item {
+  display: none !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].active,
+#bn-species-filter li[data-testid="dropdown-option"].selected,
+#bn-species-filter li[data-testid="dropdown-option"]:hover {
+  background: var(--bn-species-status-hover, #eff6ff) !important;
+  color: var(--bn-species-status-text, var(--bn-text)) !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-unvalidated,
+#bn-species-filter li[data-testid="dropdown-option"][data-species-status="unvalidated"] {
+  --bn-species-status-border: #cbd5e1;
+  --bn-species-status-accent: #94a3b8;
+  --bn-species-status-bg: #f8fafc;
+  --bn-species-status-hover: #eef2f7;
+  --bn-species-status-text: #243348;
+  border-color: #cbd5e1 !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-partial,
+#bn-species-filter li[data-testid="dropdown-option"][data-species-status="partial"] {
+  --bn-species-status-border: #f59e0b;
+  --bn-species-status-accent: #f59e0b;
+  --bn-species-status-bg: #fff7ed;
+  --bn-species-status-hover: #ffedd5;
+  --bn-species-status-text: #7c2d12;
+  border-color: #f59e0b !important;
+}
+
+#bn-species-filter li[data-testid="dropdown-option"].bn-species-option-complete,
+#bn-species-filter li[data-testid="dropdown-option"][data-species-status="complete"] {
+  --bn-species-status-border: #16a34a;
+  --bn-species-status-accent: #16a34a;
+  --bn-species-status-bg: #ecfdf3;
+  --bn-species-status-hover: #dcfce7;
+  --bn-species-status-text: #14532d;
+  border-color: #16a34a !important;
+}
+
+#bn-species-filter.bn-species-selected-unvalidated .wrap-inner {
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 0 0 1px rgba(148, 163, 184, 0.3) !important;
+}
+
+#bn-species-filter.bn-species-selected-partial .wrap-inner {
+  border-color: #f59e0b !important;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35) !important;
+}
+
+#bn-species-filter.bn-species-selected-complete .wrap-inner {
+  border-color: #16a34a !important;
+  box-shadow: 0 0 0 1px rgba(22, 163, 74, 0.35) !important;
+}
+
+#bn-corrected-species-error-panel {
+  margin-top: -6px !important;
+  margin-bottom: 8px !important;
+}
+
+.bn-corrected-species-alert {
+  border: 1px solid #ef4444;
+  border-left: 6px solid #dc2626;
+  border-radius: 8px;
+  background: #fff5f5;
+  color: #7f1d1d;
+  padding: 12px 14px;
+  box-shadow: 0 10px 24px rgba(127, 29, 29, 0.08);
+}
+
+.bn-corrected-species-alert strong {
+  display: block;
+  color: #991b1b;
+  font-weight: 800;
+  margin-bottom: 3px;
+}
+
+.bn-corrected-species-alert span {
+  color: #7f1d1d;
+  font-size: 0.94rem;
+}
+
 textarea,
 input,
 select {
   border-radius: 7px !important;
+}
+
+@media (max-width: 1280px) {
+  :root {
+    --bn-content-width: calc(100vw - 32px);
+  }
 }
 
 @media (max-width: 900px) {
@@ -1449,10 +1856,17 @@ select {
 
 
 def app_header_html(state_backend_message: str = "") -> str:
-    backend_text = "Supabase ready" if "Supabase state backend enabled" in state_backend_message else "Filesystem state"
-    backend_class = "bn-pill-ok" if "Supabase state backend enabled" in state_backend_message else "bn-pill-warn"
+    if "HF admin-owned private storage enabled" in state_backend_message:
+        backend_text = "Private HF storage ready"
+        backend_class = "bn-pill-ok"
+    elif "Supabase state backend enabled" in state_backend_message:
+        backend_text = "Supabase ready"
+        backend_class = "bn-pill-ok"
+    else:
+        backend_text = "Filesystem state"
+        backend_class = "bn-pill-warn"
     return f"""
-    <div class="bn-app-header">
+    <div class="bn-app-header" style="box-sizing:border-box;width:100%;max-width:var(--bn-content-width,1490px);margin:0 auto 16px auto;">
       <div>
         <div class="bn-brand-kicker">BirdNET validation workspace</div>
         <div class="bn-brand-title">BirdNET Validator</div>

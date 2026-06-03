@@ -3,6 +3,7 @@ from datetime import date
 from pathlib import Path
 import hashlib
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
@@ -10,8 +11,10 @@ import pytest
 from src.ui.app_factory import (
     _build_validation_export_rows,
     _build_validation_report,
+    _build_species_status_map,
     _cleanup_selected_audio,
     _advance_to_next_row_with_title,
+    _autofetch_first_row,
     _extract_audio_id,
     _extract_detection_key,
     _find_detection_row_index,
@@ -20,7 +23,9 @@ from src.ui.app_factory import (
     _post_validation_queue_anchor,
     _save_selected_validation,
     _save_selected_validation_with_refresh,
+    _advance_after_validation_with_title,
     _selected_dataframe_row_index,
+    _selected_segment_card,
     _reapply_last_conflict_validation_with_refresh,
     _batch_validate_conflicts,
     create_app,
@@ -29,15 +34,31 @@ from src.ui.app_factory import (
     _build_detection_repository,
     _get_project_detection_count,
     _build_queue_badge,
+    _build_validation_summary_cards_for_species,
     _load_projects_from_file,
     _load_user_access_from_file,
     _bootstrap_auth_and_projects,
+    _discover_hf_admin_state_repos,
+    _persist_bootstrap_state,
+    _resolve_username_login_policy,
     _resolve_project_fetch_token,
+    _initialize_hf_admin_storage,
     _write_validation_export,
+    _validation_shortcuts_script,
+    _species_status_dropdown_script,
+    _species_status_payload,
+    _species_dropdown_choices,
+    _corrected_species_error_update,
+    _corrected_species_ui_after_validation,
+    CORRECTED_SPECIES_REQUIRED_ALERT_HTML,
+    VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS,
 )
 from src.auth.auth_service import AuthService
 from src.config.runtime_config import RuntimeConfig
-from src.domain.models import Detection, Project
+from src.domain.models import Detection, Project, Role
+from src.repositories.hf_bucket_validation_repository import HfBucketValidationError, HfBucketValidationInitResult
+from src.repositories.state_safety import StateSafetyError
+from src.services.hf_project_state_store import HfProjectStateStoreError, HfProjectStateStoreLoadedProject
 from src.ui.admin_panel import AdminPanelManager
 
 
@@ -51,13 +72,64 @@ class FakeFetchResult:
 class FakeAudioService:
     def __init__(self) -> None:
         self.cleaned: list[str] = []
+        self.fetches: list[tuple[str, str]] = []
 
     def fetch(self, dataset_repo: str, audio_id: str) -> FakeFetchResult:
-        _ = dataset_repo
+        self.fetches.append((dataset_repo, audio_id))
         return FakeFetchResult(cache_key=f"key:{audio_id}", local_path=f"/tmp/{audio_id}.wav", source="remote")
 
     def cleanup_after_validation(self, cache_key: str) -> None:
         self.cleaned.append(cache_key)
+
+
+class FakeDatasetInfoApi:
+    def __init__(self, private: bool, owner_username: str = "jrrribeiro") -> None:
+        self.private = private
+        self.owner_username = owner_username
+
+    def whoami(self, token: str):  # noqa: ANN001
+        assert token == "hf_admin"
+        return {"name": self.owner_username}
+
+    def repo_info(self, *, repo_id: str, repo_type: str, token: str):  # noqa: ANN001
+        assert repo_id == "jrrribeiro/private-audio"
+        assert repo_type == "dataset"
+        assert token == "hf_admin"
+        return SimpleNamespace(private=self.private)
+
+
+class FakeBucketInitializer:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str, str | None]] = []
+
+    def initialize(self, *, project_slug: str, dataset_repo_id: str, token: str | None):
+        self.calls.append((project_slug, dataset_repo_id, token))
+        return HfBucketValidationInitResult(
+            bucket_id="jrrribeiro/private-audio_validation_state",
+            initialized=True,
+            reused_existing=False,
+        )
+
+
+class FakeStateDiscoveryApi:
+    def whoami(self, token: str):  # noqa: ANN001
+        assert token == "hf_storage"
+        return {"name": "jrrribeiro"}
+
+    def list_datasets(self, *, author: str, token: str):  # noqa: ANN001
+        assert author == "jrrribeiro"
+        assert token == "hf_storage"
+        return [
+            SimpleNamespace(id="jrrribeiro/project-a_state"),
+            SimpleNamespace(id="jrrribeiro/audio-source"),
+            SimpleNamespace(id="someone-else/project-b_state"),
+        ]
+
+
+class InaccessibleAudioService:
+    def fetch(self, dataset_repo: str, audio_id: str, **kwargs: object) -> FakeFetchResult:
+        _ = (dataset_repo, audio_id, kwargs)
+        raise RuntimeError("404 Client Error: Repository Not Found")
 
 
 class FakeValidationService:
@@ -74,17 +146,23 @@ class FakeValidationService:
         corrected_species: str | None = None,
         expected_version: int | None = None,
     ) -> dict[str, str]:
-        _ = corrected_species
         payload = {
             "project_slug": project_slug,
             "detection_key": detection_key,
             "status": status,
             "validator": validator,
             "notes": notes,
+            "corrected_species": corrected_species or "",
             "expected_version": str(expected_version),
         }
         self.calls.append(payload)
         return payload
+
+
+class NoopInviteNotifier:
+    def send(self, payload):  # noqa: ANN001
+        _ = payload
+        return True, "not sent"
 
 
 class FakeConflictValidationService:
@@ -110,6 +188,21 @@ class FakeConflictValidationService:
         raise OptimisticLockError("dkey_01", expected_version or 0, 3)
 
 
+class FakeFailingValidationService:
+    def validate_detection(
+        self,
+        project_slug: str,
+        detection_key: str,
+        status: str,
+        validator: str,
+        notes: str = "",
+        corrected_species: str | None = None,
+        expected_version: int | None = None,
+    ) -> dict[str, str]:
+        _ = (project_slug, detection_key, status, validator, notes, corrected_species, expected_version)
+        raise RuntimeError("storage unavailable")
+
+
 class FakeSnapshotReader:
     def __init__(self) -> None:
         self.snapshot: dict[str, dict[str, object]] = {
@@ -131,12 +224,12 @@ class FakeSnapshotReader:
             {"detection_key": "dkey_02", "status": "negative"},
         ]
 
-    def load_current_snapshot(self, project_slug: str) -> dict[str, dict[str, object]]:
-        _ = project_slug
+    def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+        _ = (project_slug, actor_username)
         return self.snapshot
 
-    def list_events(self, project_slug: str) -> list[dict[str, object]]:
-        _ = project_slug
+    def list_events(self, project_slug: str, actor_username: str = "") -> list[dict[str, object]]:
+        _ = (project_slug, actor_username)
         return self.events
 
 
@@ -179,6 +272,143 @@ class FakeQueueService:
     def get_page(self, **kwargs: object) -> "FakeQueueService._Page":
         self.last_kwargs = kwargs
         return FakeQueueService._Page()
+
+
+def test_build_validation_summary_cards_for_species_uses_species_total_not_page_rows() -> None:
+    class QueueWithListAll(FakeQueueService):
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            self.last_kwargs = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="dkey_01",
+                    audio_id="audio_01",
+                    scientific_name="sp",
+                    confidence=0.9,
+                    start_time=0,
+                    end_time=1,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_02",
+                    audio_id="audio_02",
+                    scientific_name="sp",
+                    confidence=0.8,
+                    start_time=1,
+                    end_time=2,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_03",
+                    audio_id="audio_03",
+                    scientific_name="sp",
+                    confidence=0.7,
+                    start_time=2,
+                    end_time=3,
+                ),
+            ]
+
+    html = _build_validation_summary_cards_for_species(
+        queue_service=QueueWithListAll(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="project-a",
+        scientific_name="sp",
+        min_confidence=0.0,
+        actor_username="validator",
+    )
+
+    assert "Queue total" in html
+    assert "segments in species" in html
+    assert "66.7%" in html
+    assert "1 pending in species" in html
+
+
+def test_initialize_hf_admin_storage_sets_bucket_without_persisting_shared_token() -> None:
+    project = Project(
+        project_slug="private-audio",
+        name="Private Audio",
+        dataset_repo_id="jrrribeiro/private-audio",
+        dataset_token="hf_shared_should_be_removed",
+    )
+    bucket_initializer = FakeBucketInitializer()
+
+    result = _initialize_hf_admin_storage(
+        project=project,
+        token="hf_admin",
+        api=FakeDatasetInfoApi(private=True),  # type: ignore[arg-type]
+        bucket_initializer=bucket_initializer,  # type: ignore[arg-type]
+    )
+
+    assert result.bucket_id == "jrrribeiro/private-audio_validation_state"
+    assert project.validation_bucket_id == result.bucket_id
+    assert project.validation_backend == "hf_bucket"
+    assert project.dataset_token is None
+    assert bucket_initializer.calls == [("private-audio", "jrrribeiro/private-audio", "hf_admin")]
+
+
+def test_initialize_hf_admin_storage_rejects_public_source_dataset() -> None:
+    project = Project(
+        project_slug="private-audio",
+        name="Private Audio",
+        dataset_repo_id="jrrribeiro/private-audio",
+    )
+    bucket_initializer = FakeBucketInitializer()
+
+    with pytest.raises(HfBucketValidationError, match="only accepts a private dataset"):
+        _initialize_hf_admin_storage(
+            project=project,
+            token="hf_admin",
+            api=FakeDatasetInfoApi(private=False),  # type: ignore[arg-type]
+            bucket_initializer=bucket_initializer,  # type: ignore[arg-type]
+        )
+
+    assert bucket_initializer.calls == []
+
+
+def test_initialize_hf_admin_storage_requires_storage_owner_personal_namespace() -> None:
+    project = Project(
+        project_slug="private-audio",
+        name="Private Audio",
+        dataset_repo_id="jrrribeiro/private-audio",
+    )
+    bucket_initializer = FakeBucketInitializer()
+
+    with pytest.raises(HfBucketValidationError, match="personal namespace"):
+        _initialize_hf_admin_storage(
+            project=project,
+            token="hf_admin",
+            api=FakeDatasetInfoApi(private=True, owner_username="another-admin"),  # type: ignore[arg-type]
+            bucket_initializer=bucket_initializer,  # type: ignore[arg-type]
+        )
+
+    assert bucket_initializer.calls == []
+
+
+def test_initialize_hf_admin_storage_requires_collaborative_app_visibility() -> None:
+    project = Project(
+        project_slug="private-audio",
+        name="Private Audio",
+        dataset_repo_id="jrrribeiro/private-audio",
+        visibility="private",
+    )
+    bucket_initializer = FakeBucketInitializer()
+
+    with pytest.raises(HfBucketValidationError, match="visibility 'collaborative'"):
+        _initialize_hf_admin_storage(
+            project=project,
+            token="hf_admin",
+            api=FakeDatasetInfoApi(private=True),  # type: ignore[arg-type]
+            bucket_initializer=bucket_initializer,  # type: ignore[arg-type]
+        )
+
+    assert bucket_initializer.calls == []
+
+
+def test_discover_hf_admin_state_repos_filters_personal_companion_datasets() -> None:
+    repo_ids, warning = _discover_hf_admin_state_repos(
+        token="hf_storage",
+        api=FakeStateDiscoveryApi(),  # type: ignore[arg-type]
+    )
+
+    assert warning == ""
+    assert repo_ids == ("jrrribeiro/project-a_state",)
 
 
 def test_extract_audio_id_from_list_rows() -> None:
@@ -228,6 +458,34 @@ def test_fetch_selected_audio_validates_repo() -> None:
     assert path is None
     assert cache_key == ""
     assert "Provide dataset repo" in status
+
+
+def test_fetch_selected_audio_explains_private_dataset_access_uses_backend_credential() -> None:
+    path, cache_key, status = _fetch_selected_audio(
+        audio_service=InaccessibleAudioService(),
+        dataset_repo="owner/private-audio",
+        rows=[["k1", "audio_03", "sp", 0.9, 0.0, 1.0]],
+        selected_index=0,
+        previous_cache_key="",
+        hf_token="hf_validator",
+    )
+
+    assert path is None
+    assert cache_key == ""
+    assert "credential used by the app does not have read access" in status
+    assert "BIRDNET_HF_STORAGE_TOKEN" in status
+
+
+def test_fetch_selected_audio_explains_missing_private_dataset_credential() -> None:
+    _, _, status = _fetch_selected_audio(
+        audio_service=InaccessibleAudioService(),
+        dataset_repo="owner/private-audio",
+        rows=[["k1", "audio_03", "sp", 0.9, 0.0, 1.0]],
+        selected_index=0,
+        previous_cache_key="old",
+    )
+
+    assert "No credential with private dataset read access was provided" in status
 
 
 def test_cleanup_selected_audio() -> None:
@@ -322,12 +580,14 @@ def test_build_validation_export_rows_keep_detections_metadata_and_current_valid
         ],
         {
             "0000000000000001": {
-                "status": "positive",
+                "status": "negative",
                 "corrected_species": "Corrected species",
                 "notes": "Checked twice",
                 "validator": "scientist",
                 "updated_at": "2026-05-22T12:00:00+00:00",
                 "version": 2,
+                "conflict": True,
+                "conflict_reason": "parallel_events_same_version",
             }
         },
         project_slug="analysis-project",
@@ -346,9 +606,12 @@ def test_build_validation_export_rows_keep_detections_metadata_and_current_valid
     ]
     assert columns[8:10] == ["source_Common Name", "source_Latitude"]
     assert rows[0]["detection_key"] == "0000000000000001"
-    assert rows[0]["validation_status"] == "positive"
+    assert rows[0]["validation_status"] == "negative"
+    assert rows[0]["validation_corrected_species"] == "Corrected species"
     assert rows[0]["validation_effective_species"] == "Corrected species"
     assert rows[0]["validation_version"] == 2
+    assert rows[0]["validation_conflict"] is True
+    assert rows[0]["validation_conflict_reason"] == "parallel_events_same_version"
     assert rows[1]["validation_status"] == "pending"
     assert rows[1]["validation_effective_species"] == "Species B"
     assert rows[1]["validation_reviewed"] is False
@@ -439,6 +702,137 @@ def test_page_to_table_includes_validation_status() -> None:
     assert queue.last_kwargs["project_slug"] == "kenya-2024"
 
 
+def test_page_to_table_prioritizes_pending_then_confidence() -> None:
+    class QueueWithMixedStatus:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="reviewed_high",
+                    audio_id="reviewed_high.wav",
+                    scientific_name="sp",
+                    confidence=0.99,
+                    start_time=0,
+                    end_time=1,
+                ),
+                SimpleNamespace(
+                    detection_key="pending_mid",
+                    audio_id="pending_mid.wav",
+                    scientific_name="sp",
+                    confidence=0.82,
+                    start_time=1,
+                    end_time=2,
+                ),
+                SimpleNamespace(
+                    detection_key="pending_low",
+                    audio_id="pending_low.wav",
+                    scientific_name="sp",
+                    confidence=0.61,
+                    start_time=2,
+                    end_time=3,
+                ),
+                SimpleNamespace(
+                    detection_key="reviewed_low",
+                    audio_id="reviewed_low.wav",
+                    scientific_name="sp",
+                    confidence=0.55,
+                    start_time=3,
+                    end_time=4,
+                ),
+            ]
+
+    class SnapshotWithMixedStatus:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {
+                "reviewed_high": {"status": "positive", "version": 1},
+                "reviewed_low": {"status": "negative", "version": 1},
+            }
+
+    rows, _, _ = _page_to_table(
+        service=QueueWithMixedStatus(),
+        snapshot_reader=SnapshotWithMixedStatus(),
+        project_slug="demo-project",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        page_size=10,
+    )
+
+    assert [row[0] for row in rows] == [
+        "pending_mid",
+        "pending_low",
+        "reviewed_high",
+        "reviewed_low",
+    ]
+
+
+def test_build_species_status_map_marks_progress_levels() -> None:
+    class QueueWithSpecies:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(detection_key="sp_a_1", scientific_name="Species A"),
+                SimpleNamespace(detection_key="sp_a_2", scientific_name="Species A"),
+                SimpleNamespace(detection_key="sp_b_1", scientific_name="Species B"),
+                SimpleNamespace(detection_key="sp_c_1", scientific_name="Species C"),
+            ]
+
+    class SnapshotWithSpecies:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {
+                "sp_a_1": {"status": "positive"},
+                "sp_b_1": {"status": "negative"},
+            }
+
+    status_map = _build_species_status_map(
+        queue_service=QueueWithSpecies(),
+        snapshot_reader=SnapshotWithSpecies(),
+        project_slug="demo-project",
+        page_size=10,
+    )
+
+    assert status_map["Species A"] == {"status": "partial", "total": 2, "reviewed": 1}
+    assert status_map["Species B"] == {"status": "complete", "total": 1, "reviewed": 1}
+    assert status_map["Species C"] == {"status": "unvalidated", "total": 1, "reviewed": 0}
+
+
+def test_species_status_dropdown_script_targets_dropdown_without_changing_choices() -> None:
+    script = _species_status_dropdown_script()
+
+    assert "bn-species-filter" in script
+    assert "bn-species-status-payload" in script
+    assert "bn-species-option-complete" in script
+    assert "bn-species-option-partial" in script
+    assert "bn-species-option-unvalidated" in script
+
+
+def test_species_status_payload_is_hidden_json_carrier() -> None:
+    payload = _species_status_payload({"Species A": {"status": "complete", "total": 1, "reviewed": 1}})
+
+    assert 'class="bn-species-status-data"' in payload
+    assert "data-json=" in payload
+    assert "&quot;Species A&quot;" in payload
+    assert "&quot;complete&quot;" in payload
+
+
+def test_species_dropdown_choices_keep_clean_backend_values() -> None:
+    choices = _species_dropdown_choices(
+        {
+            "Species A": {"status": "partial", "total": 2, "reviewed": 1},
+            "Species B": {"status": "complete", "total": 1, "reviewed": 1},
+            "Species C": {"status": "unvalidated", "total": 1, "reviewed": 0},
+        }
+    )
+
+    assert choices == [
+        ("🟡 Species A", "Species A"),
+        ("🟢 Species B", "Species B"),
+        ("⚪ Species C", "Species C"),
+    ]
+
+
 def test_page_to_table_marks_conflict_row() -> None:
     rows, _, _ = _page_to_table(
         service=FakeQueueService(),
@@ -448,6 +842,22 @@ def test_page_to_table_marks_conflict_row() -> None:
         scientific_name="",
         min_confidence=0.0,
         conflict_detection_key="dkey_01",
+    )
+
+    assert rows[0][8] == "CONFLICT"
+    assert rows[0][9] == "HIGH"
+
+
+def test_page_to_table_marks_persisted_backend_conflict_row() -> None:
+    reader = FakeSnapshotReader()
+    reader.snapshot["dkey_01"]["conflict"] = True
+    rows, _, _ = _page_to_table(
+        service=FakeQueueService(),
+        snapshot_reader=reader,
+        project_slug="demo-project",
+        page=1,
+        scientific_name="",
+        min_confidence=0.0,
     )
 
     assert rows[0][8] == "CONFLICT"
@@ -615,6 +1025,45 @@ def test_advance_to_next_row_wraps_to_first_pending_row() -> None:
     assert cache_key == "key:audio_02"
 
 
+def test_autofetch_first_row_stops_when_filtered_species_is_complete() -> None:
+    service = FakeAudioService()
+    rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0, "positive"],
+        ["dkey_02", "audio_02", "sp", 0.8, 1.0, 2.0, "negative"],
+    ]
+
+    selected_index, audio_path, cache_key, status, spectrogram_path = _autofetch_first_row(
+        audio_service=service,
+        dataset_repo="org/dataset",
+        rows=rows,
+        cache_key="cache:old",
+    )
+
+    assert selected_index == -1
+    assert audio_path is None
+    assert cache_key == ""
+    assert spectrogram_path is None
+    assert "All segments for this species have been validated" in status
+
+
+def test_selected_segment_card_shows_complete_species_message_only_when_all_rows_reviewed() -> None:
+    complete_rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0, "positive"],
+        ["dkey_02", "audio_02", "sp", 0.8, 1.0, 2.0, "negative"],
+    ]
+    pending_rows = [
+        ["dkey_01", "audio_01", "sp", 0.9, 0.0, 1.0, "pending"],
+    ]
+
+    complete_html = _selected_segment_card(complete_rows, -1)
+    pending_html = _selected_segment_card(pending_rows, -1)
+
+    assert "All segments for this species have been validated" in complete_html
+    assert "Select a row manually to review or correct it." in complete_html
+    assert "No segment loaded" in pending_html
+    assert "All segments for this species have been validated" not in pending_html
+
+
 def test_save_selected_validation_with_refresh_success() -> None:
     audio_service = FakeAudioService()
     validation_service = FakeValidationService()
@@ -645,10 +1094,304 @@ def test_save_selected_validation_with_refresh_success() -> None:
     assert cache_key == ""
     assert audio_path is None
     assert refreshed_page == 1
-    assert refreshed_index == 0
+    assert refreshed_index == -1
     assert refreshed_rows[0][0] == "dkey_01"
     assert pending_status == ""
     assert conflict_key == ""
+
+
+def test_failed_validation_does_not_refresh_advance_or_cleanup_audio() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeFailingValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, audio_output, refreshed_rows, refreshed_page, refreshed_index, pending_status, conflict_key = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+    )
+    advanced_index, advanced_audio, advanced_cache_key, advanced_status, spectrogram, title = _advance_after_validation_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+        save_status=status,
+    )
+
+    assert status == "Failed to save validation: storage unavailable"
+    assert cache_key == "cache:audio_11"
+    assert audio_output is None
+    assert refreshed_rows == rows
+    assert refreshed_page == 1
+    assert refreshed_index == 0
+    assert pending_status == ""
+    assert conflict_key == ""
+    assert audio_service.cleaned == []
+    assert audio_service.fetches == []
+    assert advanced_index == 0
+    assert isinstance(advanced_audio, dict)
+    assert advanced_cache_key == "cache:audio_11"
+    assert advanced_status == status
+    assert isinstance(spectrogram, dict)
+    assert isinstance(title, dict)
+
+
+def test_reject_validation_requires_corrected_species_before_saving_or_advancing() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, audio_output, refreshed_rows, refreshed_page, refreshed_index, pending_status, conflict_key = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="negative",
+        validator="validator-demo",
+        notes="wrong species",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+        corrected_species="",
+    )
+    advanced_index, advanced_audio, advanced_cache_key, advanced_status, spectrogram, title = _advance_after_validation_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+        save_status=status,
+    )
+
+    assert status == VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS
+    assert validation_service.calls == []
+    assert audio_service.cleaned == []
+    assert cache_key == "cache:audio_11"
+    assert refreshed_rows == rows
+    assert refreshed_page == 1
+    assert refreshed_index == 0
+    assert pending_status == ""
+    assert conflict_key == ""
+    assert isinstance(audio_output, dict)
+    assert advanced_index == 0
+    assert isinstance(advanced_audio, dict)
+    assert advanced_cache_key == "cache:audio_11"
+    assert advanced_status == VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS
+    assert isinstance(spectrogram, dict)
+    assert isinstance(title, dict)
+
+
+def test_reject_validation_saves_corrected_species_when_provided() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, _, _, _, _, _, _ = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="negative",
+        validator="validator-demo",
+        notes="wrong species",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+        corrected_species="Correct Species",
+    )
+
+    assert "Validation saved" in status
+    assert cache_key == ""
+    assert validation_service.calls[0]["status"] == "negative"
+    assert validation_service.calls[0]["corrected_species"] == "Correct Species"
+
+
+def test_corrected_species_ui_state_marks_error_and_resets_after_save() -> None:
+    blocked_update, blocked_panel_update = _corrected_species_ui_after_validation(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
+    saved_update, saved_panel_update = _corrected_species_ui_after_validation("Validation saved: dkey -> negative")
+    conflict_update, conflict_panel_update = _corrected_species_ui_after_validation("Concurrency conflict: stale")
+
+    assert isinstance(blocked_update, dict)
+    assert blocked_panel_update["visible"] is True
+    assert saved_update["value"] is None
+    assert saved_panel_update["visible"] is False
+    assert "value" not in conflict_update
+    assert conflict_panel_update["visible"] is False
+
+
+def test_corrected_species_error_panel_uses_native_visibility_update() -> None:
+    active_update = _corrected_species_error_update(True)
+    inactive_update = _corrected_species_error_update(False)
+
+    assert active_update["visible"] is True
+    assert inactive_update["visible"] is False
+    assert "bn-corrected-species-alert" in CORRECTED_SPECIES_REQUIRED_ALERT_HTML
+    assert "Corrected species required" in CORRECTED_SPECIES_REQUIRED_ALERT_HTML
+
+
+def test_save_selected_validation_advances_to_highest_confidence_pending_row() -> None:
+    class QueueAfterSave:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="dkey_selected",
+                    audio_id="audio_selected",
+                    scientific_name="sp",
+                    confidence=0.99,
+                    start_time=0,
+                    end_time=1,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_pending_high",
+                    audio_id="audio_pending_high",
+                    scientific_name="sp",
+                    confidence=0.95,
+                    start_time=1,
+                    end_time=2,
+                ),
+                SimpleNamespace(
+                    detection_key="dkey_pending_low",
+                    audio_id="audio_pending_low",
+                    scientific_name="sp",
+                    confidence=0.60,
+                    start_time=2,
+                    end_time=3,
+                ),
+            ]
+
+    class SnapshotAfterSave:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {"dkey_selected": {"status": "positive", "version": 1}}
+
+    audio_service = FakeAudioService()
+    status, cache_key, _, refreshed_rows, _, refreshed_index, _, _ = _save_selected_validation_with_refresh(
+        validation_service=FakeValidationService(),
+        audio_service=audio_service,
+        queue_service=QueueAfterSave(),
+        snapshot_reader=SnapshotAfterSave(),
+        project_slug="demo-project",
+        rows=[["dkey_selected", "audio_selected", "sp", 0.99, 0.0, 1.0, "pending", 0]],
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_selected",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+    )
+
+    selected_index, audio_path, updated_cache_key, _, _, _ = _advance_to_next_row_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+    )
+
+    assert "Validation saved" in status
+    assert [row[0] for row in refreshed_rows] == ["dkey_pending_high", "dkey_pending_low", "dkey_selected"]
+    assert selected_index == 0
+    assert audio_path == "/tmp/audio_pending_high.wav"
+    assert updated_cache_key == "key:audio_pending_high"
+
+
+def test_save_selected_validation_stops_when_species_is_complete() -> None:
+    class QueueAfterFinalSave:
+        def list_all_detections(self, **kwargs: object) -> list[object]:
+            _ = kwargs
+            return [
+                SimpleNamespace(
+                    detection_key="dkey_final",
+                    audio_id="audio_final",
+                    scientific_name="sp",
+                    confidence=0.99,
+                    start_time=0,
+                    end_time=1,
+                )
+            ]
+
+    class SnapshotAfterFinalSave:
+        def load_current_snapshot(self, project_slug: str, actor_username: str = "") -> dict[str, dict[str, object]]:
+            _ = (project_slug, actor_username)
+            return {"dkey_final": {"status": "positive", "version": 1}}
+
+    audio_service = FakeAudioService()
+    status, cache_key, _, refreshed_rows, _, refreshed_index, _, _ = _save_selected_validation_with_refresh(
+        validation_service=FakeValidationService(),
+        audio_service=audio_service,
+        queue_service=QueueAfterFinalSave(),
+        snapshot_reader=SnapshotAfterFinalSave(),
+        project_slug="demo-project",
+        rows=[["dkey_final", "audio_final", "sp", 0.99, 0.0, 1.0, "pending", 0]],
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_final",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+    )
+
+    selected_index, audio_path, updated_cache_key, audio_status, spectrogram_path, title = _advance_to_next_row_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+    )
+
+    assert "Validation saved" in status
+    assert refreshed_index == -1
+    assert selected_index == -1
+    assert audio_path is None
+    assert updated_cache_key == ""
+    assert spectrogram_path is None
+    assert title == "### Segment spectrogram"
+    assert "All segments for this species have been validated" in audio_status
 
 
 def test_save_selected_validation_with_refresh_conflict() -> None:
@@ -721,7 +1464,7 @@ def test_reapply_last_conflict_validation_with_refresh() -> None:
     assert cache_key == ""
     assert audio_path is None
     assert refreshed_page == 1
-    assert refreshed_index == 0
+    assert refreshed_index == -1
     assert refreshed_rows[0][0] == "dkey_01"
     assert pending_status == ""
     assert conflict_key == ""
@@ -766,6 +1509,26 @@ def test_create_app_with_keyboard_shortcuts() -> None:
     # Verify the app is a Gradio Blocks instance
     assert hasattr(app, "queue")
     assert hasattr(app, "launch")
+
+
+def test_validation_shortcuts_are_validate_tab_scoped() -> None:
+    script = _validation_shortcuts_script()
+
+    assert "bn-validation-queue-table" in script
+    assert "validateTabIsActive" in script
+    assert "ArrowUp" in script
+    assert "ArrowDown" in script
+    assert "ArrowLeft" in script
+    assert "ArrowRight" in script
+    assert 'event.code === "Space"' in script
+    assert "Backspace" not in script
+    assert "bn-validate-confirm-btn" in script
+    assert "bn-validate-reject-btn" in script
+    assert "bn-validate-uncertain-btn" in script
+    assert "bn-validate-skip-btn" in script
+    assert "bn-validate-favorite-btn" in script
+    assert "event.repeat" in script
+    assert "isTypingTarget" in script
 
 
 def test_batch_validate_conflicts_all_success() -> None:
@@ -937,6 +1700,10 @@ def test_load_projects_from_file_reads_valid_payload(tmp_path: Path) -> None:
             "project_slug": "project-a",
             "name": "Project A",
             "dataset_repo_id": "org/project-a",
+            "state_backend": "hf_project_store",
+            "state_repo_id": "org/project-a_state",
+            "state_schema_version": 1,
+            "state_status": "ready",
             "active": True,
         }
     ]
@@ -947,6 +1714,9 @@ def test_load_projects_from_file_reads_valid_payload(tmp_path: Path) -> None:
 
     assert len(projects) == 1
     assert projects[0].project_slug == "project-a"
+    assert projects[0].state_backend == "hf_project_store"
+    assert projects[0].state_repo_id == "org/project-a_state"
+    assert projects[0].state_status == "ready"
 
 
 def test_load_user_access_from_file_reads_valid_payload(tmp_path: Path) -> None:
@@ -961,6 +1731,127 @@ def test_load_user_access_from_file_reads_valid_payload(tmp_path: Path) -> None:
 
     assert access["validator_a"]["project-a"].value == "validator"
     assert access["admin_a"]["project-b"].value == "admin"
+
+
+def test_persist_bootstrap_state_blocks_unplanned_project_removal(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    users_file = tmp_path / "user_access.json"
+    invites_file = tmp_path / "invites.json"
+    projects_file.write_text(
+        json.dumps(
+            [
+                {
+                    "project_id": "project-a-id",
+                    "project_slug": "project-a",
+                    "name": "Project A",
+                    "dataset_repo_id": "org/project-a",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    users_file.write_text(json.dumps({"owner": {"project-a": "admin"}}), encoding="utf-8")
+
+    auth_service = AuthService()
+    auth_service.upsert_user_project_role("owner", "project-b", Role.admin)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+    admin_manager.register_project(
+        Project(
+            project_slug="project-b",
+            name="Project B",
+            dataset_repo_id="org/project-b",
+            owner_username="owner",
+        )
+    )
+
+    with pytest.raises(StateSafetyError):
+        _persist_bootstrap_state(
+            projects_path=projects_file,
+            user_access_path=users_file,
+            invites_path=invites_file,
+            admin_manager=admin_manager,
+            auth_service=auth_service,
+        )
+
+    assert json.loads(projects_file.read_text(encoding="utf-8"))[0]["project_slug"] == "project-a"
+
+
+def test_persist_bootstrap_state_allows_explicit_delete_and_creates_backups(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    users_file = tmp_path / "user_access.json"
+    invites_file = tmp_path / "invites.json"
+    projects_file.write_text(
+        json.dumps(
+            [
+                {
+                    "project_id": "project-a-id",
+                    "project_slug": "project-a",
+                    "name": "Project A",
+                    "dataset_repo_id": "org/project-a",
+                    "active": True,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    users_file.write_text(json.dumps({"owner": {"project-a": "admin"}}), encoding="utf-8")
+    invites_file.write_text(json.dumps({}), encoding="utf-8")
+
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    _persist_bootstrap_state(
+        projects_path=projects_file,
+        user_access_path=users_file,
+        invites_path=invites_file,
+        admin_manager=admin_manager,
+        auth_service=auth_service,
+        allowed_removed_project_slugs={"project-a"},
+    )
+
+    assert json.loads(projects_file.read_text(encoding="utf-8")) == []
+    assert json.loads(users_file.read_text(encoding="utf-8")) == {}
+    assert list((tmp_path / ".backups").glob("projects.json.*.bak"))
+    assert list((tmp_path / ".backups").glob("user_access.json.*.bak"))
+
+
+def test_persist_bootstrap_state_writes_project_state_metadata(tmp_path: Path) -> None:
+    projects_file = tmp_path / "projects.json"
+    users_file = tmp_path / "user_access.json"
+    invites_file = tmp_path / "invites.json"
+    projects_file.write_text(json.dumps([]), encoding="utf-8")
+    users_file.write_text(json.dumps({}), encoding="utf-8")
+    invites_file.write_text(json.dumps({}), encoding="utf-8")
+
+    auth_service = AuthService()
+    auth_service.upsert_user_project_role("owner", "project-a", Role.admin)
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+    admin_manager.register_project(
+        Project(
+            project_slug="project-a",
+            name="Project A",
+            dataset_repo_id="org/project-a",
+            owner_username="owner",
+            state_backend="hf_project_store",
+            state_repo_id="org/project-a_state",
+            state_status="ready",
+        )
+    )
+
+    _persist_bootstrap_state(
+        projects_path=projects_file,
+        user_access_path=users_file,
+        invites_path=invites_file,
+        admin_manager=admin_manager,
+        auth_service=auth_service,
+    )
+
+    payload = json.loads(projects_file.read_text(encoding="utf-8"))
+    assert payload[0]["state_backend"] == "hf_project_store"
+    assert payload[0]["state_repo_id"] == "org/project-a_state"
+    assert payload[0]["state_schema_version"] == 1
+    assert payload[0]["state_status"] == "ready"
 
 
 def test_bootstrap_auth_and_projects_uses_config_files_without_demo_fallback(tmp_path: Path) -> None:
@@ -1064,6 +1955,134 @@ def test_bootstrap_auth_and_projects_uses_demo_bootstrap_when_enabled(tmp_path: 
     assert any(p["project_slug"] == "demo-project" for p in admin_manager.list_projects())
 
 
+def test_bootstrap_auth_and_projects_loads_configured_hf_project_state(tmp_path: Path) -> None:
+    class FakeStateLoader:
+        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
+            assert state_repo_id == "owner/project-a_state"
+            assert token == "hf_read"
+            project = Project(
+                project_slug="project-a",
+                name="Project A",
+                dataset_repo_id="owner/project-a",
+                owner_username="owner",
+                state_backend="hf_project_store",
+                state_repo_id=state_repo_id,
+            )
+            return HfProjectStateStoreLoadedProject(
+                state_repo_id=state_repo_id,
+                project=project,
+                user_access={"owner": {"project-a": Role.admin}, "validator": {"project-a": Role.validator}},
+                pending_invites={
+                    "pending-user": {
+                        "project-a": {
+                            "role": "validator",
+                            "invited_by": "owner",
+                            "created_at": "2026-05-24T12:00:00+00:00",
+                            "expires_at": "2099-05-24T12:00:00+00:00",
+                            "username": "pending-user",
+                            "invitee_email": "",
+                        }
+                    }
+                },
+            )
+
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        hf_project_state_repos=("owner/project-a_state",),
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    warning = _bootstrap_auth_and_projects(
+        auth_service,
+        admin_manager,
+        runtime_config,
+        hf_project_state_token="hf_read",
+        hf_project_state_loader=FakeStateLoader(),
+    )
+
+    assert warning == ""
+    assert admin_manager.get_project("project-a") is not None
+    assert auth_service.login("owner") is not None
+    assert auth_service.get_user_role_for_project("validator", "project-a") == Role.validator
+    assert len(auth_service.list_pending_invites("pending-user")) == 1
+
+
+def test_bootstrap_auth_and_projects_reports_hf_project_state_load_errors(tmp_path: Path) -> None:
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        hf_project_state_repos=("owner/project-a_state",),
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    warning = _bootstrap_auth_and_projects(auth_service, admin_manager, runtime_config)
+
+    assert "no HF token" in warning
+
+
+def test_bootstrap_admin_storage_ignores_discovered_state_repo_without_manifest(tmp_path: Path) -> None:
+    class MissingManifestLoader:
+        def load_project_state(self, *, state_repo_id: str, token: str):  # noqa: ANN001
+            _ = (state_repo_id, token)
+            raise HfProjectStateStoreError(
+                "Could not read project.json from jrrribeiro/upload_test1_state: "
+                "404 Client Error. Entry Not Found"
+            )
+
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+        hf_admin_storage_mode_enabled=True,
+        hf_project_state_repos=("jrrribeiro/upload_test1_state",),
+    )
+    auth_service = AuthService()
+    admin_manager = AdminPanelManager(auth_service, invite_notifier=NoopInviteNotifier())
+
+    warning = _bootstrap_auth_and_projects(
+        auth_service,
+        admin_manager,
+        runtime_config,
+        hf_project_state_token="hf_storage",
+        hf_project_state_loader=MissingManifestLoader(),  # type: ignore[arg-type]
+    )
+
+    assert "upload_test1_state" not in warning
+    assert "project.json" not in warning
+
+
 def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_path: Path) -> None:
     projects_file = tmp_path / "projects.json"
     projects_file.write_text(
@@ -1110,6 +2129,52 @@ def test_bootstrap_auth_and_projects_recovers_emergency_admin_when_missing(tmp_p
     assert "Emergency admin access" in warning
     assert emergency_session is not None
     assert emergency_session.role.value == "admin"
+
+
+def test_auto_auth_policy_requires_oauth_in_space_without_demo(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("SPACE_ID", "owner/space")
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=False,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+    )
+
+    allow_username, label, description = _resolve_username_login_policy(runtime_config)
+
+    assert allow_username is False
+    assert "OAuth" in label
+    assert "OAuth" in description
+
+
+def test_auto_auth_policy_allows_username_for_demo(tmp_path: Path) -> None:
+    runtime_config = RuntimeConfig(
+        detection_seed_path=None,
+        validation_base_dir=str(tmp_path / "validations"),
+        bootstrap_base_dir=str(tmp_path / "bootstrap"),
+        page_size=25,
+        projects_file_path=None,
+        user_access_file_path=None,
+        invites_file_path=None,
+        invite_ttl_hours=72,
+        enable_demo_bootstrap=True,
+        invite_email_enabled=False,
+        invite_email_sender="",
+        invite_email_login_url="",
+    )
+
+    allow_username, label, _ = _resolve_username_login_policy(runtime_config)
+
+    assert allow_username is True
+    assert "username" in label
 
 
 def test_load_dataset_detections_for_project_reads_jsonl(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
