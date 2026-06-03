@@ -3,10 +3,10 @@ __pycache__/
 .venv/
 .venv-ci/
 .pytest_cache/
+.sixth/
 .env
 .env.*
 .DS_Store
 .vscode/
 dist/
-build/release/
-build/pyinstaller_uploader/
+build/

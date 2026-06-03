@@ -2,7 +2,7 @@ name: Sync app to Hugging Face Space
 
 on:
   push:
-    branches: [main, feature/project-state-security-privacy-review]
+    branches: [main]
   workflow_dispatch:
 
 jobs:
