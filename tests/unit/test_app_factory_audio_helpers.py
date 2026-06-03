@@ -72,9 +72,10 @@ class FakeFetchResult:
 class FakeAudioService:
     def __init__(self) -> None:
         self.cleaned: list[str] = []
+        self.fetches: list[tuple[str, str]] = []
 
     def fetch(self, dataset_repo: str, audio_id: str) -> FakeFetchResult:
-        _ = dataset_repo
+        self.fetches.append((dataset_repo, audio_id))
         return FakeFetchResult(cache_key=f"key:{audio_id}", local_path=f"/tmp/{audio_id}.wav", source="remote")
 
     def cleanup_after_validation(self, cache_key: str) -> None:
@@ -185,6 +186,21 @@ class FakeConflictValidationService:
         from src.repositories.append_only_validation_repository import OptimisticLockError
 
         raise OptimisticLockError("dkey_01", expected_version or 0, 3)
+
+
+class FakeFailingValidationService:
+    def validate_detection(
+        self,
+        project_slug: str,
+        detection_key: str,
+        status: str,
+        validator: str,
+        notes: str = "",
+        corrected_species: str | None = None,
+        expected_version: int | None = None,
+    ) -> dict[str, str]:
+        _ = (project_slug, detection_key, status, validator, notes, corrected_species, expected_version)
+        raise RuntimeError("storage unavailable")
 
 
 class FakeSnapshotReader:
@@ -1082,6 +1098,58 @@ def test_save_selected_validation_with_refresh_success() -> None:
     assert refreshed_rows[0][0] == "dkey_01"
     assert pending_status == ""
     assert conflict_key == ""
+
+
+def test_failed_validation_does_not_refresh_advance_or_cleanup_audio() -> None:
+    audio_service = FakeAudioService()
+    validation_service = FakeFailingValidationService()
+    rows = [["dkey_01", "audio_11", "sp", 0.9, 0.0, 1.0, "pending", 0]]
+
+    status, cache_key, audio_output, refreshed_rows, refreshed_page, refreshed_index, pending_status, conflict_key = _save_selected_validation_with_refresh(
+        validation_service=validation_service,
+        audio_service=audio_service,
+        queue_service=FakeQueueService(),
+        snapshot_reader=FakeSnapshotReader(),
+        project_slug="demo-project",
+        rows=rows,
+        selected_index=0,
+        status_value="positive",
+        validator="validator-demo",
+        notes="ok",
+        cache_key="cache:audio_11",
+        page=1,
+        scientific_name="sp",
+        min_confidence=0.0,
+        validator_filter="",
+        status_filter="all",
+        updated_after="",
+        show_conflicts_only=False,
+    )
+    advanced_index, advanced_audio, advanced_cache_key, advanced_status, spectrogram, title = _advance_after_validation_with_title(
+        audio_service=audio_service,
+        dataset_repo="org/dataset",
+        rows=refreshed_rows,
+        selected_index=refreshed_index,
+        cache_key=cache_key,
+        save_status=status,
+    )
+
+    assert status == "Failed to save validation: storage unavailable"
+    assert cache_key == "cache:audio_11"
+    assert audio_output is None
+    assert refreshed_rows == rows
+    assert refreshed_page == 1
+    assert refreshed_index == 0
+    assert pending_status == ""
+    assert conflict_key == ""
+    assert audio_service.cleaned == []
+    assert audio_service.fetches == []
+    assert advanced_index == 0
+    assert isinstance(advanced_audio, dict)
+    assert advanced_cache_key == "cache:audio_11"
+    assert advanced_status == status
+    assert isinstance(spectrogram, dict)
+    assert isinstance(title, dict)
 
 
 def test_reject_validation_requires_corrected_species_before_saving_or_advancing() -> None:

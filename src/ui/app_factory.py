@@ -2975,6 +2975,14 @@ def _is_reject_correction_required_status(status_value: object) -> bool:
     return str(status_value or "").strip().startswith(VALIDATION_REJECT_CORRECTION_REQUIRED_STATUS)
 
 
+def _is_validation_saved_status(status_value: object) -> bool:
+    return str(status_value or "").strip().startswith("Validation saved")
+
+
+def _is_validation_conflict_status(status_value: object) -> bool:
+    return "Concurrency conflict" in str(status_value or "")
+
+
 CORRECTED_SPECIES_REQUIRED_ALERT_HTML = """
 <div class="bn-corrected-species-alert">
   <strong>Corrected species required</strong>
@@ -3051,7 +3059,7 @@ def _advance_after_validation_with_title(
     allow_demo_fallback: bool = False,
     hf_token: str | None = None,
 ) -> tuple[int, object, str, object, object, object]:
-    if _is_reject_correction_required_status(save_status):
+    if not _is_validation_saved_status(save_status):
         return int(selected_index), gr.update(), cache_key, save_status, gr.update(), gr.update()
     return _advance_to_next_row_with_title(
         audio_service=audio_service,
@@ -3118,6 +3126,18 @@ def _save_selected_validation_with_refresh(
         corrected_species=corrected_species,
     )
 
+    if not _is_validation_saved_status(save_status) and not _is_validation_conflict_status(save_status):
+        return (
+            save_status,
+            updated_cache_key,
+            audio_path,
+            prior_rows,
+            int(page),
+            int(selected_index),
+            "",
+            "",
+        )
+
     refreshed_rows, page_status, refreshed_page = _page_to_table(
         service=queue_service,
         snapshot_reader=snapshot_reader,
@@ -3138,7 +3158,7 @@ def _save_selected_validation_with_refresh(
     else:
         refreshed_index = 0
 
-    if "Concurrency conflict" in save_status:
+    if _is_validation_conflict_status(save_status):
         conflict_key = selected_key
         refreshed_rows, page_status, refreshed_page = _page_to_table(
             service=queue_service,
